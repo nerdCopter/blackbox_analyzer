@@ -1,18 +1,19 @@
 [package]
 name = "BlackBox_CSV_Render"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021" # Use 2021 edition as it's standard, 2024 is not yet released/stable
-rust-version = "1.73"
+rust-version = "1.96.0" # matches bbl_parser's real floor (src/conversion.rs uses is_multiple_of)
 license = "AGPL-3.0-or-later"
 include = ["src/**", "fonts/**", "Cargo.toml", "LICENSE*", "README.md", "build.rs"]
 
 [dependencies]
 plotters = "0.3"
 csv = "1.1"
+bbl_parser = { version = "1.1", default-features = false, features = ["csv"] }
+tempfile = "3"
 realfft = "3.3"
 num-complex = "0.4"
 ndarray = "0.15"
-ndarray-stats = "0.5"
 colorous = "1.0.16"
 rusttype = "0.9"
 argmin = "0.11"
@@ -20,6 +21,3 @@ argmin = "0.11"
 [build-dependencies]
 anyhow = "1.0"
 vergen = { version = "8", features = ["git", "gitcl"] }
-
-[dev-dependencies]
-rand = "0.8"

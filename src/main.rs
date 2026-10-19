@@ -13,17 +13,43 @@ mod plot_functions;
 mod report;
 mod types;
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::env;
 use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use tempfile::TempDir;
 
 use ndarray::Array1;
 
 use crate::axis_names::AXIS_COUNT;
 use crate::data_analysis::torque_inertia_profiler::{extract_punch_ratios, AircraftProfile};
-use crate::types::{LogParseResult, StepResponseResults};
+use crate::data_input::bbl_reader::print_block_separator;
+use crate::types::{InputExpansionResult, LogParseResult, StepResponseResults};
+
+/// Whether a discovery-time "Skipping ..." warning has printed since the last reset. Gates
+/// `print_discovery_skip_warning` so a whole contiguous group of such warnings (which can come
+/// from either `expand_input_paths`'s direct-file-argument branch or a recursive
+/// `find_csv_files_in_dir_impl` directory walk) shares exactly one leading blank line, rather
+/// than each warning line getting its own. `expand_one_bbl_file` resets this back to `false`
+/// after every eager `.bbl`/`.bfl` export attempt (e.g. under `--estimate-optimal-p`), whether it
+/// succeeds or fails, so a warning group interrupted by that attempt still gets its own leading
+/// blank line instead of silently attaching to whatever the export attempt printed.
+static PRINTED_DISCOVERY_WARNING: AtomicBool = AtomicBool::new(false);
+
+/// Prints a discovery-time "Skipping ..." warning, inserting one blank line via
+/// `print_block_separator()` before the very first such warning of the run and none before any
+/// warning after that — keeping a contiguous group of warnings visually tight while still
+/// separating the group as a whole from whatever printed before it (the startup banner, or
+/// nothing).
+fn print_discovery_skip_warning(message: &str) {
+    if !PRINTED_DISCOVERY_WARNING.swap(true, Ordering::Relaxed) {
+        print_block_separator();
+    }
+    eprintln!("{message}");
+}
 
 // Build version string from git info with fallbacks for builds without vergen metadata
 fn get_version_string() -> String {
@@ -146,9 +172,9 @@ struct AnalysisOptions {
     pub debug_mode: bool,
     pub show_butterworth: bool,
     pub estimate_optimal_p: bool,
-    /// Trim start, in seconds relative to the log's first row. `None` = log start.
+    /// Trim start, in seconds relative to the start of the log. `None` = log start.
     pub trim_start: Option<f64>,
-    /// Trim end, in seconds relative to the log's first row. `None` = log end.
+    /// Trim end, in seconds relative to the start of the log. `None` = log end.
     pub trim_end: Option<f64>,
     /// Raw `--start` argument text, as typed. Used verbatim in the output filename suffix so
     /// two distinct user-supplied values can never collide there, unlike a rounded re-format
@@ -160,11 +186,12 @@ struct AnalysisOptions {
 }
 
 use crate::constants::{
-    DEFAULT_SETPOINT_THRESHOLD, EXCLUDE_END_S, EXCLUDE_START_S, FRAME_LENGTH_S,
-    TRIM_START_DEFAULT_S,
+    BBL_EXTENSION, BFL_EXTENSION, CSV_EXTENSION, DEFAULT_SETPOINT_THRESHOLD, EXCLUDE_END_S,
+    EXCLUDE_START_S, FRAME_LENGTH_S, HEADERS_CSV_SUFFIX, HEADER_CSV_SUFFIX, TRIM_START_DEFAULT_S,
 };
 
 // Specific plot function imports
+use crate::data_analysis::stick_distribution::analyze_stick_distribution;
 use crate::plot_functions::motor_desync::{detect_motor_desync, fallback_oscillation_overlaps};
 use crate::plot_functions::plot_bode::plot_bode_analysis;
 use crate::plot_functions::plot_d_term_heatmap::plot_d_term_heatmap;
@@ -213,8 +240,9 @@ impl Drop for CwdGuard {
 }
 
 // Data input import
+use crate::data_input::bbl_reader::expand_bbl_to_scratch_csvs;
 use crate::data_input::log_data::LogRowData;
-use crate::data_input::log_parser::parse_log_file;
+use crate::data_input::log_parser::{self, parse_log_file};
 use crate::data_input::pid_metadata::parse_pid_metadata;
 
 // PID context import
@@ -225,46 +253,190 @@ use crate::data_analysis::calc_step_response;
 use crate::data_analysis::calc_step_response::{compute_setpoint_authority, SetpointAuthority};
 use crate::data_analysis::filter_response;
 
+/// Options controlling how a `.bbl` input is expanded into per-flight CSVs. Bundled into one
+/// struct (rather than threaded as separate bools/paths) to keep `expand_input_paths` and its
+/// directory-scanning/single-file helpers under clippy's argument-count limit.
+#[derive(Clone, Copy)]
+struct BblExpansionOptions<'a> {
+    /// `-F`/`--force-export`: bypass bbl_parser's own low-value-flight skip heuristic.
+    force_export: bool,
+    /// `--keep`: write flight CSVs to `keep_base_dir` (or the source `.bbl`'s own folder) and
+    /// leave them there, instead of a temp-directory scratch copy removed after processing.
+    keep: bool,
+    keep_base_dir: Option<&'a Path>,
+    /// When true, decode+export a `.bbl` immediately during input discovery (required by
+    /// `--estimate-optimal-p`'s aircraft-grouping/profiling phase, which needs every flight's
+    /// real file materialized before any of them can be processed). When false, discovery only
+    /// records the raw `.bbl` path — decode+export is deferred to immediately before that file's
+    /// own processing, so a multi-file run reads-and-processes one file at a time instead of
+    /// exporting every `.bbl` up front. See the main per-file loop's placeholder-detection branch.
+    eager: bool,
+    /// Case-insensitive `.bbl` basenames (file stems) that appear more than once across this
+    /// run's full input set. Only populated when `keep` is true (collision is only possible when
+    /// writing to a shared permanent directory — scratch/tempdir mode is always exclusive per
+    /// file). Consulted by `expand_bbl_to_scratch_csvs` to decide whether a retained export needs
+    /// a disambiguating suffix; see `find_colliding_bbl_stems`.
+    colliding_stems: &'a HashSet<String>,
+}
+
+/// True for a `.bbl`/`.BBL` or `.bfl`/`.BFL` extension (case-insensitive). Both extensions name
+/// the same binary blackbox log container — `.bfl` is the raw filename some flight controllers
+/// (e.g. BrainFPV) write to the SD card, while `.bbl` is the name Betaflight Configurator and
+/// `blackbox_decode` conventionally use — so both are routed through the same BBL expansion path.
+fn is_bbl_extension(extension: &str) -> bool {
+    extension.eq_ignore_ascii_case(BBL_EXTENSION) || extension.eq_ignore_ascii_case(BFL_EXTENSION)
+}
+
+/// True for a lowercased path ending in `.header.csv` or `.headers.csv` — a `blackbox_decode`-style
+/// metadata sidecar, not a flight-log CSV. Caller must lowercase `lowercase_path` first (both
+/// callers already do, for their own case-insensitive matching needs).
+fn is_header_csv_path(lowercase_path: &str) -> bool {
+    lowercase_path.ends_with(HEADER_CSV_SUFFIX) || lowercase_path.ends_with(HEADERS_CSV_SUFFIX)
+}
+
+/// Pre-scans every `.bbl`/`.BBL` file reachable from `input_paths` (recursing into directories
+/// when `recursive`, matching `find_csv_files_in_dir`'s own inclusion rules) and returns the
+/// case-insensitive basenames that appear more than once. Must run to completion *before* any
+/// `.bbl` file is exported: `bbl_parser`'s `export_to_csv` truncates an existing file at its
+/// target path, so a collision discovered only after the fact is already unrecoverable — the
+/// first file's content is gone by the time a second file's export call returns. This is a
+/// separate, simpler walk from `find_csv_files_in_dir_impl` (no CSV handling, no origin-dir
+/// bookkeeping, silent on read errors) specifically so it never risks regressing that
+/// already-tested walk — only called when `--keep` is set, since scratch/tempdir mode is always
+/// collision-free.
+fn find_colliding_bbl_stems(input_paths: &[String], recursive: bool) -> HashSet<String> {
+    let mut stem_counts: HashMap<String, usize> = HashMap::new();
+    let mut visited = HashSet::new();
+    for input_path_str in input_paths {
+        collect_bbl_stems(
+            Path::new(input_path_str),
+            recursive,
+            &mut visited,
+            &mut stem_counts,
+        );
+    }
+    stem_counts
+        .into_iter()
+        .filter(|&(_, count)| count > 1)
+        .map(|(stem, _)| stem)
+        .collect()
+}
+
+/// Recursive helper for `find_colliding_bbl_stems`. Silent on unreadable paths — any file missed
+/// here still gets the real walk's own error reporting during actual expansion, and a file that
+/// can't be read can't collide with anything either.
+fn collect_bbl_stems(
+    path: &Path,
+    recursive: bool,
+    visited: &mut HashSet<PathBuf>,
+    stem_counts: &mut HashMap<String, usize>,
+) {
+    if path.is_file() {
+        if path
+            .extension()
+            .is_some_and(|ext| is_bbl_extension(&ext.to_string_lossy()))
+        {
+            if let Some(stem) = path.file_stem() {
+                *stem_counts
+                    .entry(stem.to_string_lossy().to_ascii_lowercase())
+                    .or_insert(0) += 1;
+            }
+        }
+        return;
+    }
+    if !path.is_dir() {
+        return;
+    }
+    let Ok(canonical) = path.canonicalize() else {
+        return;
+    };
+    if !visited.insert(canonical) {
+        return; // symlink loop
+    }
+    let Ok(entries) = fs::read_dir(path) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let child = entry.path();
+        if child.is_dir() {
+            if recursive {
+                collect_bbl_stems(&child, recursive, visited, stem_counts);
+            }
+        } else {
+            collect_bbl_stems(&child, recursive, visited, stem_counts);
+        }
+    }
+}
+
 /// Expand input paths to a list of CSV files.
-/// If a path is a file, validate CSV extension before adding.
-/// If a path is a directory, find CSV files (optionally recursing into subdirectories).
-/// Returns (csv_files, total_skipped_subdirectories)
+/// If a path is a file, validate CSV/BBL extension before adding. A `.bbl`/`.BBL` file is
+/// decoded and expanded into one scratch CSV per embedded flight (see `bbl_origin_dirs` below).
+/// If a path is a directory, find CSV/BBL files (optionally recursing into subdirectories).
+/// Returns (csv_files, total_skipped_subdirectories, bbl_origin_dirs, scratch_dirs).
+/// `bbl_origin_dirs` maps each BBL-derived scratch CSV path to its source `.bbl`'s own parent
+/// directory, so the default (no `--output-dir`) output location stays next to the file the
+/// user actually gave, not the scratch directory. `scratch_dirs` lists every temp directory that
+/// must be removed at end of program (empty when `--keep` is set).
 fn expand_input_paths(
     input_paths: &[String],
     recursive: bool,
+    bbl_opts: BblExpansionOptions,
     debug_mode: bool,
-) -> (Vec<String>, usize) {
+) -> InputExpansionResult {
     let mut csv_files = Vec::new();
     let mut total_skipped = 0;
+    let mut bbl_origin_dirs = HashMap::new();
+    let mut scratch_dirs = Vec::new();
 
     for input_path_str in input_paths {
         let input_path = Path::new(input_path_str);
 
         if input_path.is_file() {
-            // It's a file, validate CSV extension before adding
+            // It's a file, validate CSV/BBL extension before adding
             if let Some(extension) = input_path.extension() {
-                if extension.to_string_lossy().eq_ignore_ascii_case("csv") {
+                let extension = extension.to_string_lossy();
+                if extension.eq_ignore_ascii_case(CSV_EXTENSION) {
                     // Skip header files (these are metadata files, not flight logs)
                     let lowercase_path = input_path_str.to_ascii_lowercase();
-                    if lowercase_path.ends_with(".header.csv")
-                        || lowercase_path.ends_with(".headers.csv")
-                    {
-                        eprintln!("⚠️  Skipping header file: {}", input_path_str);
+                    if is_header_csv_path(&lowercase_path) {
+                        print_discovery_skip_warning(&format!(
+                            "⚠️  Skipping header file: {input_path_str}"
+                        ));
                     } else {
                         csv_files.push(input_path_str.clone());
                     }
+                } else if is_bbl_extension(&extension) {
+                    expand_one_bbl_file(
+                        input_path,
+                        bbl_opts,
+                        debug_mode,
+                        &mut csv_files,
+                        &mut bbl_origin_dirs,
+                        &mut scratch_dirs,
+                    );
                 } else {
-                    eprintln!("⚠️  Skipping non-CSV file: {}", input_path_str);
+                    print_discovery_skip_warning(&format!(
+                        "⚠️  Skipping unsupported file: {input_path_str}"
+                    ));
                 }
             } else {
-                eprintln!("⚠️  Skipping file without extension: {}", input_path_str);
+                print_discovery_skip_warning(&format!(
+                    "⚠️  Skipping file without extension: {input_path_str}"
+                ));
             }
         } else if input_path.is_dir() {
-            // It's a directory, find CSV files (recursive only if flag is set)
-            match find_csv_files_in_dir(input_path, recursive, debug_mode) {
-                Ok((mut dir_csv_files, skipped_count)) => {
+            // It's a directory, find CSV/BBL files (recursive only if flag is set)
+            match find_csv_files_in_dir(input_path, recursive, bbl_opts, debug_mode) {
+                Ok((
+                    mut dir_csv_files,
+                    skipped_count,
+                    dir_bbl_origin_dirs,
+                    mut dir_scratch_dirs,
+                )) => {
                     csv_files.append(&mut dir_csv_files);
                     total_skipped += skipped_count;
+                    bbl_origin_dirs.extend(dir_bbl_origin_dirs);
+                    scratch_dirs.append(&mut dir_scratch_dirs);
                 }
                 Err(err) => eprintln!("⚠️  Error processing directory {}: {}", input_path_str, err),
             }
@@ -274,33 +446,113 @@ fn expand_input_paths(
         }
     }
 
-    (csv_files, total_skipped)
+    (csv_files, total_skipped, bbl_origin_dirs, scratch_dirs)
 }
 
-/// Find CSV files in a directory, optionally recursing into subdirectories
-/// Returns (csv_files, skipped_subdirectories_count)
+/// Returns the real source directory to associate with an already-expanded input path, for both
+/// `--output-dir` defaulting and output-filename directory-prefix disambiguation: the original
+/// `.bbl`'s own parent directory when `input_file_str` is a BBL-derived scratch CSV path, or
+/// that path's own parent otherwise. A scratch temp directory must never leak into either —
+/// every caller that once used `Path::new(input_file_str).parent()` directly for one of those
+/// two purposes must go through this instead.
+fn effective_source_dir<'a>(
+    input_file_str: &'a str,
+    bbl_origin_dirs: &'a HashMap<String, PathBuf>,
+) -> Option<&'a Path> {
+    let resolved = bbl_origin_dirs
+        .get(input_file_str)
+        .map(|p| p.as_path())
+        .or_else(|| Path::new(input_file_str).parent())?;
+    // A bare relative filename with no directory component (e.g. "flight.BBL") yields an empty
+    // Path from .parent(), not None — normalize to "." so downstream directory use (creating
+    // it, joining a filename onto it) behaves like the current directory, not an invalid path.
+    Some(if resolved.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        resolved
+    })
+}
+
+/// Decodes one `.bbl`/`.BBL` file into its per-flight scratch CSVs and appends them to
+/// `csv_files`, recording each scratch path's source directory in `bbl_origin_dirs`. Errors
+/// (unparseable/corrupt BBL) are reported and the file is skipped, matching the CSV path's
+/// per-file error handling — one bad input must not abort the whole batch.
+///
+/// When `bbl_opts.eager` is false, decode+export is skipped entirely here: `bbl_path` is pushed
+/// into `csv_files` unchanged, as a placeholder for the main per-file loop to lazily expand
+/// immediately before processing it (see that loop's placeholder-detection branch). This is what
+/// makes a multi-file `.bbl` run read-and-process one file at a time instead of exporting every
+/// file up front — `--estimate-optimal-p` needs the opposite (every flight materialized before
+/// its aircraft group's profiling phase can run), so it always passes `eager: true`.
+fn expand_one_bbl_file(
+    bbl_path: &Path,
+    bbl_opts: BblExpansionOptions,
+    debug_mode: bool,
+    csv_files: &mut Vec<String>,
+    bbl_origin_dirs: &mut HashMap<String, PathBuf>,
+    scratch_dirs: &mut Vec<TempDir>,
+) {
+    if !bbl_opts.eager {
+        csv_files.push(bbl_path.to_string_lossy().to_string());
+        return;
+    }
+
+    let result = expand_bbl_to_scratch_csvs(
+        bbl_path,
+        bbl_opts.force_export,
+        bbl_opts.keep,
+        bbl_opts.keep_base_dir,
+        bbl_opts.colliding_stems,
+        debug_mode,
+    );
+    // Whether this eager export succeeds or fails, something else (an export's own separated
+    // block, or — on failure — the "Skipping BBL file" message below) is now the last thing on
+    // screen, not the preceding discovery-warning group. Reset unconditionally so the next
+    // discovery warning (if any) gets its own leading blank line instead of silently attaching
+    // to whatever this export attempt printed.
+    PRINTED_DISCOVERY_WARNING.store(false, Ordering::Relaxed);
+    match result {
+        Ok((flights, scratch_dir)) => {
+            for (scratch_csv_path, origin_dir) in flights {
+                bbl_origin_dirs.insert(scratch_csv_path.clone(), origin_dir);
+                csv_files.push(scratch_csv_path);
+            }
+            if let Some(dir) = scratch_dir {
+                scratch_dirs.push(dir);
+            }
+        }
+        Err(err) => eprintln!("⚠️  Skipping BBL file {}: {}", bbl_path.display(), err),
+    }
+}
+
+/// Find CSV/BBL files in a directory, optionally recursing into subdirectories
+/// Returns (csv_files, skipped_subdirectories_count, bbl_origin_dirs, scratch_dirs)
 fn find_csv_files_in_dir(
     dir_path: &Path,
     recursive: bool,
+    bbl_opts: BblExpansionOptions,
     debug_mode: bool,
-) -> Result<(Vec<String>, usize), Box<dyn Error>> {
+) -> Result<InputExpansionResult, Box<dyn Error>> {
     let mut visited = HashSet::new();
-    find_csv_files_in_dir_impl(dir_path, &mut visited, recursive, debug_mode)
+    find_csv_files_in_dir_impl(dir_path, &mut visited, recursive, bbl_opts, debug_mode)
 }
 
 /// Internal implementation with symlink loop protection
-/// Returns (csv_files, skipped_subdirectories_count)
+/// Returns (csv_files, skipped_subdirectories_count, bbl_origin_dirs, scratch_dirs)
 fn find_csv_files_in_dir_impl(
     dir_path: &Path,
     visited: &mut HashSet<PathBuf>,
     recursive: bool,
+    bbl_opts: BblExpansionOptions,
     debug_mode: bool,
-) -> Result<(Vec<String>, usize), Box<dyn Error>> {
+) -> Result<InputExpansionResult, Box<dyn Error>> {
     let mut csv_files = Vec::new();
     let mut skipped_count = 0;
+    let mut bbl_origin_dirs = HashMap::new();
+    let mut scratch_dirs = Vec::new();
 
     if !dir_path.is_dir() {
-        return Ok((csv_files, skipped_count));
+        return Ok((csv_files, skipped_count, bbl_origin_dirs, scratch_dirs));
     }
 
     // Canonicalize path to detect symlink loops
@@ -311,7 +563,7 @@ fn find_csv_files_in_dir_impl(
                 "⚠️  Cannot canonicalize directory path: {}",
                 dir_path.display()
             );
-            return Ok((csv_files, skipped_count));
+            return Ok((csv_files, skipped_count, bbl_origin_dirs, scratch_dirs));
         }
     };
 
@@ -321,7 +573,7 @@ fn find_csv_files_in_dir_impl(
             "⚠️  Skipping directory due to symlink loop: {}",
             dir_path.display()
         );
-        return Ok((csv_files, skipped_count));
+        return Ok((csv_files, skipped_count, bbl_origin_dirs, scratch_dirs));
     }
     visited.insert(canonical_path);
 
@@ -333,7 +585,7 @@ fn find_csv_files_in_dir_impl(
                 dir_path.display(),
                 err
             );
-            return Ok((csv_files, skipped_count));
+            return Ok((csv_files, skipped_count, bbl_origin_dirs, scratch_dirs));
         }
     };
 
@@ -354,10 +606,17 @@ fn find_csv_files_in_dir_impl(
         if path.is_dir() {
             // Recurse into subdirectories only if recursive flag is set
             if recursive {
-                match find_csv_files_in_dir_impl(&path, visited, recursive, debug_mode) {
-                    Ok((mut sub_csv_files, sub_skipped)) => {
+                match find_csv_files_in_dir_impl(&path, visited, recursive, bbl_opts, debug_mode) {
+                    Ok((
+                        mut sub_csv_files,
+                        sub_skipped,
+                        sub_bbl_origin_dirs,
+                        mut sub_scratch_dirs,
+                    )) => {
                         csv_files.append(&mut sub_csv_files);
                         skipped_count += sub_skipped;
+                        bbl_origin_dirs.extend(sub_bbl_origin_dirs);
+                        scratch_dirs.append(&mut sub_scratch_dirs);
                     }
                     Err(err) => eprintln!(
                         "⚠️  Error processing subdirectory '{}': {}",
@@ -377,21 +636,35 @@ fn find_csv_files_in_dir_impl(
                 }
             }
         } else if path.is_file() {
-            // Check if it's a CSV file
+            // Check if it's a CSV or BBL file
             if let Some(extension) = path.extension() {
-                if extension.to_string_lossy().eq_ignore_ascii_case("csv") {
+                let extension = extension.to_string_lossy();
+                if extension.eq_ignore_ascii_case(CSV_EXTENSION) {
                     // Skip header files (these are metadata files, not flight logs)
                     if let Some(path_str) = path.to_str() {
                         let lowercase = path_str.to_ascii_lowercase();
-                        if lowercase.ends_with(".header.csv") || lowercase.ends_with(".headers.csv")
-                        {
-                            eprintln!("⚠️  Skipping header file: {}", path_str);
+                        if is_header_csv_path(&lowercase) {
+                            print_discovery_skip_warning(&format!(
+                                "⚠️  Skipping header file: {path_str}"
+                            ));
                         } else {
                             csv_files.push(path_str.to_string());
                         }
                     } else {
-                        eprintln!("⚠️  Skipping file with non-UTF-8 path: {}", path.display());
+                        print_discovery_skip_warning(&format!(
+                            "⚠️  Skipping file with non-UTF-8 path: {}",
+                            path.display()
+                        ));
                     }
+                } else if is_bbl_extension(&extension) {
+                    expand_one_bbl_file(
+                        &path,
+                        bbl_opts,
+                        debug_mode,
+                        &mut csv_files,
+                        &mut bbl_origin_dirs,
+                        &mut scratch_dirs,
+                    );
                 }
             }
         }
@@ -399,7 +672,7 @@ fn find_csv_files_in_dir_impl(
 
     // Sort the files for consistent ordering
     csv_files.sort();
-    Ok((csv_files, skipped_count))
+    Ok((csv_files, skipped_count, bbl_origin_dirs, scratch_dirs))
 }
 
 fn print_usage_and_exit(program_name: &str) {
@@ -409,10 +682,15 @@ fn print_usage_and_exit(program_name: &str) {
     eprintln!("--- INPUT/OUTPUT OPTIONS ---");
     eprintln!();
     eprintln!(
-        "  <inputX>: CSV files, directories, or wildcards (*.csv). Header files auto-excluded."
+        "  <inputX>: CSV, BBL, or BFL files, directories, or wildcards (*.csv, *.bbl, *.bfl). Header"
     );
+    eprintln!("            files auto-excluded. A multi-flight .bbl/.bfl can produce one report per eligible flight.");
     eprintln!("  -O, --output-dir <directory>: Output directory (default: source folder).");
-    eprintln!("  -R, --recursive: Recursively find CSV files in subdirectories.");
+    eprintln!("  -R, --recursive: Recursively find CSV/BBL/BFL files in subdirectories.");
+    eprintln!("  -F, --force-export: Export .bbl flights bbl_parser would otherwise skip as");
+    eprintln!("            low-value (very short / low data density / minimal gyro activity).");
+    eprintln!("  -K, --keep: Keep the exported .csv/.headers.csv files (source folder, or");
+    eprintln!("              -O/--output-dir)");
     eprintln!();
     eprintln!("--- PLOT TYPE SELECTION ---");
     eprintln!();
@@ -444,9 +722,9 @@ fn print_usage_and_exit(program_name: &str) {
     eprintln!("--- TIME WINDOW ---");
     eprintln!();
     eprintln!("  --start <seconds>  Trim analysis to this offset onward, relative to the");
-    eprintln!("                     log's first row. Omit to start at the log start.");
-    eprintln!("  --end <seconds>    Trim analysis up to this offset, relative to the log's");
-    eprintln!("                     first row. Omit to end at the log end.");
+    eprintln!("                     start of the log. Omit to start at the log start.");
+    eprintln!("  --end <seconds>    Trim analysis up to this offset, relative to the");
+    eprintln!("                     start of the log. Omit to end at the log end.");
     eprintln!("                     Independent — use either or both. Applies before every");
     eprintln!("                     analysis and plot (step response may skip if the");
     eprintln!("                     trimmed window is too short).");
@@ -496,12 +774,16 @@ fn parse_trim_flag(
     }
 }
 
-/// Extract an aircraft grouping key from a file path.
+/// Extract an aircraft grouping key from a file path alone.
 ///
+/// Fallback key used when the log header has no usable `Craft name` (see
+/// `aircraft_group_key`) — e.g. no `.headers.csv` sidecar and no embedded header block.
 /// Strips the date-time portion (`_YYYYMMDD_HHMMSS`) so files from the same aircraft
 /// across multiple sessions share one key.  When the craft name follows the timestamp
 /// (e.g. the standard Betaflight naming scheme), it is appended to the prefix so that
-/// different craft logged under the same generic prefix remain distinct.
+/// different craft logged under the same generic prefix remain distinct. This filename
+/// heuristic cannot help when the name was manually changed or is a generic MSC-mode
+/// export with nothing after the timestamp — such files still collapse into one group.
 ///
 /// Examples:
 ///   `EMUF_BLACKBOX_LOG_FOXEERF722V4_426_20240406_132335_notes.19.csv`
@@ -557,13 +839,44 @@ fn extract_aircraft_key(path: &Path) -> String {
     stem.to_string()
 }
 
+/// Resolve the aircraft grouping key for one file.
+///
+/// The log header's `Craft name` is authoritative when present and non-empty — it survives
+/// a pilot renaming the file and is the only signal available for generic/MSC-mode exports,
+/// where the filename carries no craft-distinguishing suffix at all (see
+/// `extract_aircraft_key`). Falls back to the filename-derived key only when no header
+/// metadata is available (no `.headers.csv` sidecar and none embedded in the CSV) or the
+/// header has no `Craft name` entry.
+///
+/// A header-sourced key is namespaced with a `craft:` prefix so it can never collide with a
+/// filename-derived key by coincidence — the two are drawn from different identity sources
+/// and must never be treated as equal. Mixing craft names across two genuinely different
+/// aircraft that share the same pilot-set name is an accepted limitation: it requires pilots
+/// to keep craft names unique, same as any other tool keyed on it.
+///
+/// `use_header_craft_name` skips the header pre-scan entirely when false — grouping only
+/// affects the optimal-P profiler's aircraft grouping, so a run without `--estimate-optimal-p`
+/// has no reason to pay for reading each file's header a second time.
+fn aircraft_group_key(path: &Path, debug_mode: bool, use_header_craft_name: bool) -> String {
+    if use_header_craft_name {
+        if let Some(craft_name) = log_parser::peek_craft_name(path, debug_mode) {
+            return format!("craft:{craft_name}");
+        }
+    }
+    extract_aircraft_key(path)
+}
+
 /// Group a list of file paths by aircraft key.
 ///
 /// Returns a `BTreeMap` (sorted by key) mapping each aircraft key to its files.
-fn group_files_by_aircraft(input_files: &[String]) -> BTreeMap<String, Vec<String>> {
+fn group_files_by_aircraft(
+    input_files: &[String],
+    debug_mode: bool,
+    use_header_craft_name: bool,
+) -> BTreeMap<String, Vec<String>> {
     let mut groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for file in input_files {
-        let key = extract_aircraft_key(Path::new(file));
+        let key = aircraft_group_key(Path::new(file), debug_mode, use_header_craft_name);
         groups.entry(key).or_default().push(file.clone());
     }
     groups
@@ -637,7 +950,9 @@ fn profile_aircraft_group(
 
 fn process_file(
     input_file_str: &str,
-    use_dir_prefix: bool,
+    // `Some(dir)` adds a sanitized `dir`-derived prefix to the output root name (disambiguating
+    // same-named logs from different source folders); `None` skips the prefix entirely.
+    dir_prefix_source: Option<&Path>,
     output_dir: Option<&Path>,
     plot_config: PlotConfig,
     analysis_opts: AnalysisOptions,
@@ -650,15 +965,18 @@ fn process_file(
         eprintln!("Error: Input file not found: {input_file_str}");
         return Ok(()); // Continue to next file if this one is not found
     }
-    println!("\n--- Processing file: {input_file_str} ---");
+    // No leading blank line here — callers own the file-to-file separator, since a scratch CSV
+    // freshly exported from a .bbl needs to stay visually attached to its own "--- Exporting
+    // ... ---" line rather than getting a second blank line of its own.
+    println!("--- Processing file: {input_file_str} ---");
 
     let file_stem_cow = input_path
         .file_stem()
         .unwrap_or_else(|| std::ffi::OsStr::new("unknown_filestem"))
         .to_string_lossy();
-    let mut root_name_string: String = if use_dir_prefix {
+    let mut root_name_string: String = {
         let mut dir_prefix_to_add = String::new();
-        if let Some(parent_dir) = input_path.parent() {
+        if let Some(parent_dir) = dir_prefix_source {
             if let Some(dir_os_str) = parent_dir.file_name() {
                 let dir_name_part = dir_os_str.to_string_lossy();
                 // Add prefix only if parent dir name is meaningful (not empty, not current dir indicator like ".")
@@ -678,8 +996,6 @@ fn process_file(
             }
         }
         format!("{dir_prefix_to_add}{file_stem_cow}")
-    } else {
-        file_stem_cow.into_owned()
     };
 
     // --- Data Reading and Header Status ---
@@ -1781,9 +2097,9 @@ INFO: Skipping Step Response input data filtering for {input_file_str}: {reason}
         vec![]
     };
 
-    for (motor_idx, t) in fallback_oscillation_overlaps(&motor_desync_results, &motor_results) {
+    for (motor_idx, count) in fallback_oscillation_overlaps(&motor_desync_results, &motor_results) {
         println!(
-            "  ⚠️  Motor {motor_idx} Fallback desync event at {t:.2}s coincides with a Motor Oscillation detection on the same motor — may be chronic tune/mechanical resonance rather than a desync"
+            "  ⚠️  Motor {motor_idx} Fallback desync event(s) ({count} overlapping) coincides with a Motor Oscillation detection — see Fallback table for exact times"
         );
     }
 
@@ -1851,6 +2167,11 @@ INFO: Skipping Step Response input data filtering for {input_file_str}: {reason}
     } else {
         vec![]
     };
+
+    // Report-only statistics, not a plot — always computed regardless of --core/--extended/
+    // --step/--bode/--desync, same as Metadata and PID Tuning.
+    let stick_distribution_results =
+        analyze_stick_distribution(&all_log_data, Some(&header_metadata));
 
     // --- Filter configuration (from header metadata, independent of CSV data) ---
     let filter_config = Some(filter_response::parse_filter_config(&header_metadata));
@@ -2082,6 +2403,7 @@ INFO: Skipping Step Response input data filtering for {input_file_str}: {reason}
         eso_results,
         motor_desync_results,
         rc_command_steps,
+        stick_distribution_results,
         png_links,
         skipped_plots,
         filter_config,
@@ -2100,9 +2422,10 @@ INFO: Skipping Step Response input data filtering for {input_file_str}: {reason}
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    // Print version at start of every execution
+    // Print version at start of every execution. No trailing blank line here — every
+    // first-file transition (plain CSV or .bbl export) already prints its own leading blank,
+    // so this would otherwise stack into two blank lines before the very first file only.
     println!("{} {}", env!("CARGO_PKG_NAME"), get_version_string());
-    println!();
 
     // --- Argument Parsing ---
     let args: Vec<String> = env::args().collect();
@@ -2128,6 +2451,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut eso_b0_user_override = false;
     let mut desync_requested = false;
     let mut recursive = false;
+    let mut bbl_force_export = false;
+    let mut keep_bbl_csv = false;
     let mut estimate_optimal_p = false;
     let mut trim_start: Option<f64> = None;
     let mut trim_end: Option<f64> = None;
@@ -2145,6 +2470,11 @@ fn main() -> Result<(), Box<dyn Error>> {
             version_flag_set = true;
         } else if arg == "--recursive" || arg == "-R" {
             recursive = true;
+        } else if arg == "--force-export" || arg == "-F" || arg == "--force" {
+            // --force is an undocumented alias, kept for convenience.
+            bbl_force_export = true;
+        } else if arg == "--keep" || arg == "-K" {
+            keep_bbl_csv = true;
         } else if arg == "--dps" {
             if dps_flag_present {
                 eprintln!("Error: --dps argument specified more than once.");
@@ -2316,7 +2646,26 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     // Expand input paths (files and directories) to a list of CSV files
-    let (input_files, skipped_subdirs) = expand_input_paths(&input_paths, recursive, debug_mode);
+    // Only scanned under --keep: scratch/tempdir mode (the default) is always collision-free
+    // per file, so this walk would be pure overhead for the common case.
+    let colliding_bbl_stems = if keep_bbl_csv {
+        find_colliding_bbl_stems(&input_paths, recursive)
+    } else {
+        HashSet::new()
+    };
+    let bbl_opts = BblExpansionOptions {
+        force_export: bbl_force_export,
+        keep: keep_bbl_csv,
+        keep_base_dir: output_dir.as_deref().map(Path::new),
+        // --estimate-optimal-p's aircraft-grouping/profiling phase needs every flight's real
+        // file materialized before any of them can be processed (see the main loop below) — the
+        // default path defers .bbl expansion instead, so files are read-and-processed one at a
+        // time.
+        eager: estimate_optimal_p,
+        colliding_stems: &colliding_bbl_stems,
+    };
+    let (input_files, skipped_subdirs, bbl_origin_dirs, bbl_scratch_dirs) =
+        expand_input_paths(&input_paths, recursive, bbl_opts, debug_mode);
 
     // Print summary of skipped subdirectories when not using recursive mode
     if !recursive && skipped_subdirs > 0 {
@@ -2325,10 +2674,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         } else {
             "subdirectories"
         };
-        eprintln!(
-            "Note: Skipped {} {} (use --recursive to include subdirectories)",
-            skipped_subdirs, plural
-        );
+        print_discovery_skip_warning(&format!(
+            "Note: Skipped {skipped_subdirs} {plural} (use --recursive to include subdirectories)"
+        ));
     }
 
     if input_files.is_empty() {
@@ -2351,7 +2699,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     if input_files.len() > 1 {
         let parent_dirs_set: HashSet<PathBuf> = input_files
             .iter()
-            .filter_map(|f_str| Path::new(f_str).parent().map(|p| p.to_path_buf()))
+            .filter_map(|f_str| {
+                effective_source_dir(f_str, &bbl_origin_dirs).map(|p| p.to_path_buf())
+            })
             .collect();
         if parent_dirs_set.len() > 1 {
             use_dir_prefix_for_root_name = true;
@@ -2375,7 +2725,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Group input files by aircraft key for two-phase processing.
     // Phase 1 (profiling) aggregates throttle-punch events across all logs for each group.
     // Phase 2 (processing) runs the standard per-file analysis with the group's Td target.
-    let grouped_files = group_files_by_aircraft(&input_files);
+    let grouped_files =
+        group_files_by_aircraft(&input_files, debug_mode, analysis_opts.estimate_optimal_p);
 
     let mut overall_success = true;
     for (craft_key, group_files) in &grouped_files {
@@ -2398,15 +2749,78 @@ fn main() -> Result<(), Box<dyn Error>> {
         // ordered identically to group_files, so a plain iterator pairs them up.
         let mut parsed_cache_iter = parsed_cache.into_iter();
         for input_file_str in group_files {
+            // A deferred (non-eager) .bbl entry is still its own raw, unexpanded path at this
+            // point — decode+export it now, immediately before processing, instead of during
+            // input discovery. This is what keeps a multi-.bbl run reading-and-processing one
+            // file at a time: the previous file is fully done (report written) before this one's
+            // decode even starts. Never reached when bbl_opts.eager is true (--estimate-optimal-p)
+            // — expand_one_bbl_file already replaced every .bbl entry with real scratch CSV paths
+            // during discovery in that mode.
+            let is_deferred_bbl = !bbl_opts.eager
+                && Path::new(input_file_str)
+                    .extension()
+                    .is_some_and(|ext| is_bbl_extension(&ext.to_string_lossy()));
+            if is_deferred_bbl {
+                let bbl_path = Path::new(input_file_str);
+                match expand_bbl_to_scratch_csvs(
+                    bbl_path,
+                    bbl_opts.force_export,
+                    bbl_opts.keep,
+                    bbl_opts.keep_base_dir,
+                    bbl_opts.colliding_stems,
+                    debug_mode,
+                ) {
+                    Ok((flights, scratch_guard)) => {
+                        // Same normalized lookup the eager path uses (falls through to
+                        // bbl_path.parent() since this placeholder was never inserted into
+                        // bbl_origin_dirs) — a bare relative input like "flight.bbl" must get
+                        // "." here, not an empty path, or downstream directory use breaks.
+                        let origin_dir = effective_source_dir(input_file_str, &bbl_origin_dirs);
+                        for (flight_csv_path, _origin_dir) in &flights {
+                            let actual_output_dir = match &output_dir {
+                                None => origin_dir,
+                                Some(dir) => Some(Path::new(dir)),
+                            };
+                            let dir_prefix_source =
+                                use_dir_prefix_for_root_name.then_some(origin_dir).flatten();
+                            if let Err(e) = process_file(
+                                flight_csv_path,
+                                dir_prefix_source,
+                                actual_output_dir,
+                                plot_config,
+                                analysis_opts.clone(),
+                                &aircraft_profile,
+                                None,
+                            ) {
+                                eprintln!("Error: Processing {flight_csv_path}: {e}");
+                                overall_success = false;
+                            }
+                        }
+                        // Drops the exclusively-owned temp directory now (None under --keep).
+                        drop(scratch_guard);
+                    }
+                    Err(err) => eprintln!("⚠️  Skipping BBL file {input_file_str}: {err}"),
+                }
+                continue;
+            }
+
+            let naming_source_dir = effective_source_dir(input_file_str, &bbl_origin_dirs);
             let actual_output_dir = match &output_dir {
-                None => Path::new(input_file_str).parent(),
+                None => naming_source_dir,
                 Some(dir) => Some(Path::new(dir)),
             };
+            let dir_prefix_source = use_dir_prefix_for_root_name
+                .then_some(naming_source_dir)
+                .flatten();
             let pre_parsed = parsed_cache_iter.next();
 
+            // Restores the file-to-file blank line process_file itself no longer prints — this
+            // branch (plain .csv input, or an already-expanded eager .bbl file) has no preceding
+            // "--- Exporting ... ---" line of its own to lean on.
+            print_block_separator();
             if let Err(e) = process_file(
                 input_file_str,
-                use_dir_prefix_for_root_name,
+                dir_prefix_source,
                 actual_output_dir,
                 plot_config,
                 analysis_opts.clone(),
@@ -2418,6 +2832,12 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
         }
     }
+
+    // Scratch CSVs are only used to feed the parser above; drop their exclusively-owned temp
+    // directories now, regardless of outcome. bbl_scratch_dirs is already empty under --keep
+    // (expand_bbl_to_scratch_csvs never records a guard to hold in that mode), so this never
+    // touches --keep output either way.
+    drop(bbl_scratch_dirs);
 
     if overall_success {
         println!(
@@ -2435,5 +2855,312 @@ Some files could not be processed successfully."
         // For now, exiting with 0 if any file succeeded, or if all failed but were handled.
         // To signal overall failure to scripts, one might `std::process::exit(1)` here.
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod aircraft_grouping_tests {
+    use super::*;
+
+    /// Writes a synthetic log CSV with an embedded header block, followed by one data row,
+    /// inside a unique temp subdirectory. `cargo test` runs tests concurrently by default, so
+    /// two tests writing/removing the same OS temp-dir path race non-deterministically; a
+    /// unique subdirectory (rather than a filename suffix) keeps the exact filename callers
+    /// ask for, since `extract_aircraft_key`'s date-pattern parsing is sensitive to it.
+    /// `header_lines` are raw `key,value` lines emitted before the CSV data-header row.
+    fn write_synthetic_log(file_name: &str, header_lines: &[&str]) -> PathBuf {
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let unique_id = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir =
+            std::env::temp_dir().join(format!("bbcsvr_test_{}_{unique_id}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("failed to create synthetic test log dir");
+        let path = dir.join(file_name);
+        let mut contents = String::new();
+        for line in header_lines {
+            contents.push_str(line);
+            contents.push('\n');
+        }
+        contents.push_str("time (us),axisP[0],gyroADC[0]\n0,0,0\n");
+        std::fs::write(&path, contents).expect("failed to write synthetic test log");
+        path
+    }
+
+    /// Removes a synthetic log and the unique temp subdirectory `write_synthetic_log` created
+    /// for it.
+    fn cleanup_synthetic_log(path: &Path) {
+        if let Some(dir) = path.parent() {
+            std::fs::remove_dir_all(dir).ok();
+        }
+    }
+
+    #[test]
+    fn header_craft_name_overrides_generic_filename_key() {
+        let path = write_synthetic_log("bbcsvr_test_craft_override.csv", &["Craft name,MyQuad"]);
+        let key = aircraft_group_key(&path, false, true);
+        cleanup_synthetic_log(&path);
+        assert_eq!(key, "craft:MyQuad");
+    }
+
+    #[test]
+    fn header_lookup_is_skipped_when_disabled() {
+        let path = write_synthetic_log("bbcsvr_test_craft_disabled.csv", &["Craft name,MyQuad"]);
+        let key = aircraft_group_key(&path, false, false);
+        let expected = extract_aircraft_key(&path);
+        cleanup_synthetic_log(&path);
+        assert_eq!(key, expected);
+        assert!(!key.starts_with("craft:"));
+    }
+
+    #[test]
+    fn missing_craft_name_header_falls_back_to_filename_key() {
+        let path = write_synthetic_log(
+            "bbcsvr_test_no_craft_header.csv",
+            &["Firmware revision,4.5.0"],
+        );
+        let key = aircraft_group_key(&path, false, true);
+        let expected = extract_aircraft_key(&path);
+        cleanup_synthetic_log(&path);
+        assert_eq!(key, expected);
+        assert!(!key.starts_with("craft:"));
+    }
+
+    #[test]
+    fn no_header_metadata_at_all_falls_back_to_filename_key() {
+        let path = write_synthetic_log("bbcsvr_test_no_header_at_all.csv", &[]);
+        let key = aircraft_group_key(&path, false, true);
+        let expected = extract_aircraft_key(&path);
+        cleanup_synthetic_log(&path);
+        assert_eq!(key, expected);
+    }
+
+    #[test]
+    fn whitespace_only_craft_name_is_treated_as_absent() {
+        let path = write_synthetic_log("bbcsvr_test_blank_craft_name.csv", &["Craft name,   "]);
+        let key = aircraft_group_key(&path, false, true);
+        let expected = extract_aircraft_key(&path);
+        cleanup_synthetic_log(&path);
+        assert_eq!(key, expected);
+        assert!(!key.starts_with("craft:"));
+    }
+
+    /// A blank `Craft name` line ahead of a real one (e.g. a stray or malformed duplicate
+    /// header) must not shadow the later, valid entry — the first match by key alone would
+    /// return `None` and lose real craft-identity data that was present in the file.
+    #[test]
+    fn blank_craft_name_entry_does_not_shadow_a_later_valid_one() {
+        let path = write_synthetic_log(
+            "bbcsvr_test_duplicate_craft_name.csv",
+            &["Craft name,", "Craft name,MyQuad"],
+        );
+        let key = aircraft_group_key(&path, false, true);
+        cleanup_synthetic_log(&path);
+        assert_eq!(key, "craft:MyQuad");
+    }
+
+    /// Two different aircraft exported with an identical generic filename pattern (no craft
+    /// suffix after the timestamp, e.g. an MSC-mode export) used to collapse into one
+    /// `extract_aircraft_key` group. A distinct header `Craft name` on each file must now keep
+    /// them in separate groups.
+    #[test]
+    fn distinct_craft_names_split_groups_despite_identical_generic_filename_key() {
+        let path_a = write_synthetic_log(
+            "BTFL_BLACKBOX_LOG_20250101_120000.csv",
+            &["Craft name,QuadA"],
+        );
+        let path_b = write_synthetic_log(
+            "BTFL_BLACKBOX_LOG_20250101_120001.csv",
+            &["Craft name,QuadB"],
+        );
+
+        // Both files collapse to the same bare filename-derived key (no craft suffix present).
+        assert_eq!(extract_aircraft_key(&path_a), extract_aircraft_key(&path_b));
+
+        let key_a = aircraft_group_key(&path_a, false, true);
+        let key_b = aircraft_group_key(&path_b, false, true);
+        cleanup_synthetic_log(&path_a);
+        cleanup_synthetic_log(&path_b);
+
+        assert_ne!(key_a, key_b);
+        assert_eq!(key_a, "craft:QuadA");
+        assert_eq!(key_b, "craft:QuadB");
+    }
+
+    /// Documents a known, accepted limitation (not a bug to fix): when neither file carries a
+    /// usable header `Craft name` AND both filenames collapse to the identical generic key,
+    /// there is no remaining signal to distinguish two different physical aircraft — they
+    /// still merge into one group. `craft:`-namespacing only prevents a header-sourced key
+    /// from coincidentally colliding with a filename-derived one; it cannot invent an identity
+    /// signal where none of the inputs provide one.
+    #[test]
+    fn two_generic_filenames_with_no_craft_name_still_merge() {
+        let path_a = write_synthetic_log("BTFL_BLACKBOX_LOG_20250101_120000.csv", &[]);
+        let path_b = write_synthetic_log("BTFL_BLACKBOX_LOG_20250101_120001.csv", &[]);
+
+        let key_a = aircraft_group_key(&path_a, false, true);
+        let key_b = aircraft_group_key(&path_b, false, true);
+        cleanup_synthetic_log(&path_a);
+        cleanup_synthetic_log(&path_b);
+
+        assert_eq!(key_a, key_b);
+        assert!(!key_a.starts_with("craft:"));
+    }
+}
+
+#[cfg(test)]
+mod bbl_input_expansion_tests {
+    use super::*;
+
+    /// Writes an empty/garbage file with the given extension into a unique temp subdirectory,
+    /// returning its path. Mirrors `aircraft_grouping_tests::write_synthetic_log`'s pattern for
+    /// avoiding cross-test filename collisions under concurrent `cargo test` execution.
+    fn write_garbage_file(file_name: &str) -> PathBuf {
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let unique_id = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "bbcsvr_bbl_expand_test_{}_{unique_id}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("failed to create test dir");
+        let path = dir.join(file_name);
+        std::fs::write(&path, b"not a real blackbox log").expect("failed to write test file");
+        path
+    }
+
+    fn cleanup(path: &Path) {
+        if let Some(dir) = path.parent() {
+            std::fs::remove_dir_all(dir).ok();
+        }
+    }
+
+    /// A `.bbl`/`.BBL` extension (either case) must be dispatched to BBL expansion, not treated
+    /// as an unsupported file — verified indirectly via `expand_one_bbl_file`'s error path, since
+    /// hand-crafting valid binary BBL frame data is impractical in a unit test (real decoding is
+    /// covered by the live smoke test against actual flight logs, not by synthetic fixtures).
+    #[test]
+    fn bbl_extension_is_case_insensitively_dispatched() {
+        for file_name in ["flight.bbl", "flight.BBL", "flight.Bbl"] {
+            let path = write_garbage_file(file_name);
+            let mut csv_files = Vec::new();
+            let mut bbl_origin_dirs = HashMap::new();
+            let mut scratch_dirs = Vec::new();
+            let empty_collisions = HashSet::new();
+            let bbl_opts = BblExpansionOptions {
+                force_export: false,
+                keep: false,
+                keep_base_dir: None,
+                eager: true,
+                colliding_stems: &empty_collisions,
+            };
+
+            expand_one_bbl_file(
+                &path,
+                bbl_opts,
+                false,
+                &mut csv_files,
+                &mut bbl_origin_dirs,
+                &mut scratch_dirs,
+            );
+
+            // Garbage content fails to parse, so no scratch CSV is produced — the assertion here
+            // is that dispatch happened at all (extension matched), not that parsing succeeded.
+            assert!(
+                csv_files.is_empty(),
+                "garbage BBL content must not produce a scratch CSV for {file_name}"
+            );
+            cleanup(&path);
+        }
+    }
+
+    /// `eager: false` (the default, non-`--estimate-optimal-p` path) must not decode/export at
+    /// all during discovery — the raw `.bbl` path is pushed unchanged as a placeholder, and
+    /// `bbl_origin_dirs`/`scratch_dirs` stay untouched (nothing to clean up yet; the main
+    /// per-file loop expands it lazily, immediately before processing).
+    #[test]
+    fn deferred_bbl_expansion_pushes_raw_path_unchanged() {
+        let path = write_garbage_file("flight.bbl");
+        let mut csv_files = Vec::new();
+        let mut bbl_origin_dirs = HashMap::new();
+        let mut scratch_dirs = Vec::new();
+        let empty_collisions = HashSet::new();
+        let bbl_opts = BblExpansionOptions {
+            force_export: false,
+            keep: false,
+            keep_base_dir: None,
+            eager: false,
+            colliding_stems: &empty_collisions,
+        };
+
+        expand_one_bbl_file(
+            &path,
+            bbl_opts,
+            false,
+            &mut csv_files,
+            &mut bbl_origin_dirs,
+            &mut scratch_dirs,
+        );
+
+        assert_eq!(csv_files, vec![path.to_string_lossy().to_string()]);
+        assert!(bbl_origin_dirs.is_empty());
+        assert!(scratch_dirs.is_empty());
+        cleanup(&path);
+    }
+
+    /// `.bfl`/`.BFL` (either case) is a synonym for `.bbl`/`.BBL` and must be dispatched to BBL
+    /// expansion by `expand_input_paths` the same way, not skipped as an unsupported file. Uses
+    /// the deferred (`eager: false`) path so dispatch is verified by the raw path being pushed
+    /// unchanged, without needing valid binary BBL frame data.
+    #[test]
+    fn bfl_extension_is_accepted_alongside_bbl() {
+        for file_name in ["flight.bfl", "flight.BFL", "flight.Bfl"] {
+            let path = write_garbage_file(file_name);
+            let empty_collisions = HashSet::new();
+            let bbl_opts = BblExpansionOptions {
+                force_export: false,
+                keep: false,
+                keep_base_dir: None,
+                eager: false,
+                colliding_stems: &empty_collisions,
+            };
+            let (csv_files, _skipped_subdirs, bbl_origin_dirs, scratch_dirs) = expand_input_paths(
+                &[path.to_string_lossy().to_string()],
+                false,
+                bbl_opts,
+                false,
+            );
+
+            assert_eq!(
+                csv_files,
+                vec![path.to_string_lossy().to_string()],
+                "{file_name} must be dispatched as a deferred BBL placeholder, not skipped"
+            );
+            assert!(bbl_origin_dirs.is_empty());
+            assert!(scratch_dirs.is_empty());
+            cleanup(&path);
+        }
+    }
+
+    /// An input file with neither a `.csv` nor `.bbl` extension is skipped without affecting
+    /// other inputs in the same batch.
+    #[test]
+    fn unsupported_extension_is_skipped_not_fatal() {
+        let path = write_garbage_file("flight.txt");
+        let empty_collisions = HashSet::new();
+        let bbl_opts = BblExpansionOptions {
+            force_export: false,
+            keep: false,
+            keep_base_dir: None,
+            eager: true,
+            colliding_stems: &empty_collisions,
+        };
+        let (csv_files, _skipped_subdirs, bbl_origin_dirs, _scratch_dirs) = expand_input_paths(
+            &[path.to_string_lossy().to_string()],
+            false,
+            bbl_opts,
+            false,
+        );
+
+        assert!(csv_files.is_empty());
+        assert!(bbl_origin_dirs.is_empty());
+        cleanup(&path);
     }
 }

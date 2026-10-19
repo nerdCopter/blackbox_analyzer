@@ -11,12 +11,14 @@ use std::path::Path;
 use crate::axis_names::{AXIS_COUNT, AXIS_NAMES};
 use crate::constants::{
     MOTOR_DESYNC_REPORT_MAX_TIMES, MOTOR_OSCILLATION_FREQ_MAX_HZ, MOTOR_OSCILLATION_FREQ_MIN_HZ,
-    MOTOR_OSCILLATION_SECONDS_TO_MS, MOTOR_OSCILLATION_WINDOW_S,
+    MOTOR_OSCILLATION_SECONDS_TO_MS, MOTOR_OSCILLATION_WINDOW_S, RATIO_TO_PERCENT,
+    STICK_DIST_FULL_STICK_RC_COMMAND,
 };
 use crate::data_analysis::filter_response::{
     AllFilterConfigs, DynamicNotchConfig, RpmFilterConfig,
 };
 use crate::data_analysis::optimal_p_estimation::{OptimalPAnalysis, PRecommendation};
+use crate::data_analysis::stick_distribution::StickDistributionResult;
 use crate::data_analysis::transfer_function_estimation::Confidence;
 use crate::eso::EsoResult;
 use crate::plot_functions::motor_desync::{
@@ -67,6 +69,7 @@ pub struct FlightReport {
     pub eso_results: [Option<EsoResult>; AXIS_COUNT],
     pub motor_desync_results: Vec<MotorDesyncResult>,
     pub rc_command_steps: Vec<RcCommandStepResult>,
+    pub stick_distribution_results: Vec<StickDistributionResult>,
     pub png_links: Vec<String>,
     /// Human-readable labels of plot types that were enabled but produced no plottable data.
     pub skipped_plots: Vec<String>,
@@ -130,7 +133,7 @@ pub fn generate_markdown_report(
     }
     writeln!(md)?;
 
-    // --- Filter Configuration ---
+    // --- Gyro Filter Configuration ---
     if let Some(ref fc) = report.filter_config {
         let axis_labels = ["Roll", "Pitch", "Yaw"];
         // Only emit section if at least one axis has any filter configured
@@ -140,11 +143,19 @@ pub fn generate_markdown_report(
                 || fc.gyro[i].dynamic_lpf1.is_some()
                 || fc.gyro[i].imuf.is_some()
         });
+        // IMUF / Pseudo-Kalman is an EmuFlight-only concept; only add the column
+        // when at least one axis actually has it configured (i.e. EmuFlight logs).
+        let has_imuf = (0..3).any(|i| fc.gyro[i].imuf.is_some());
         if has_any {
-            writeln!(md, "## Filter Configuration")?;
+            writeln!(md, "## Gyro Filter Configuration")?;
             writeln!(md)?;
-            writeln!(md, "| Axis | LPF1 | LPF2 | IMUF / Pseudo-Kalman |")?;
-            writeln!(md, "|------|------|------|----------------------|")?;
+            if has_imuf {
+                writeln!(md, "| Axis | LPF1 | LPF2 | IMUF / Pseudo-Kalman |")?;
+                writeln!(md, "|------|------|------|----------------------|")?;
+            } else {
+                writeln!(md, "| Axis | LPF1 | LPF2 |")?;
+                writeln!(md, "|------|------|------|")?;
+            }
             for (i, label) in axis_labels.iter().enumerate() {
                 let lpf1 =
                     fmt_filter_stage(fc.gyro[i].lpf1.as_ref(), fc.gyro[i].dynamic_lpf1.as_ref());
@@ -152,8 +163,12 @@ pub fn generate_markdown_report(
                     .lpf2
                     .as_ref()
                     .map_or("—".into(), fmt_static_filter);
-                let imuf = fc.gyro[i].imuf.as_ref().map_or("—".into(), fmt_imuf);
-                writeln!(md, "| {} | {} | {} | {} |", label, lpf1, lpf2, imuf)?;
+                if has_imuf {
+                    let imuf = fc.gyro[i].imuf.as_ref().map_or("—".into(), fmt_imuf);
+                    writeln!(md, "| {} | {} | {} | {} |", label, lpf1, lpf2, imuf)?;
+                } else {
+                    writeln!(md, "| {} | {} | {} |", label, lpf1, lpf2)?;
+                }
             }
             writeln!(md)?;
 
@@ -648,10 +663,10 @@ pub fn generate_markdown_report(
         let overlaps =
             fallback_oscillation_overlaps(&report.motor_desync_results, &report.motor_results);
         if !overlaps.is_empty() {
-            for (motor_idx, t) in &overlaps {
+            for (motor_idx, count) in &overlaps {
                 writeln!(
                     md,
-                    "**⚠ Note:** Motor {motor_idx}'s Fallback event at {t:.2}s coincides with a Motor Oscillation detection on the same motor — may be chronic tune/mechanical resonance rather than a desync."
+                    "**⚠ Note:** Motor {motor_idx}'s Fallback event(s) ({count} overlapping event(s)) coincides with a Motor Oscillation detection — may be chronic tune/mechanical resonance rather than a desync. See Fallback column above for exact timestamps."
                 )?;
             }
             writeln!(md)?;
@@ -703,6 +718,85 @@ pub fn generate_markdown_report(
         }
     }
 
+    // --- Stick Position & Rate Analysis ---
+    let has_stick_distribution_data = report
+        .stick_distribution_results
+        .iter()
+        .any(|r| r.peak_stick.is_some());
+    if has_stick_distribution_data {
+        writeln!(md, "## Stick Position & Rate Analysis")?;
+        writeln!(md)?;
+        writeln!(
+            md,
+            "| Axis | Peak Stick | Center | Mid | High | Saturation | Saturation (s) | Saturation Events | Center Reversal Rate (Hz) |"
+        )?;
+        writeln!(
+            md,
+            "|------|------------|--------|-----|------|------------|-----------------|--------------------|---------------------------|"
+        )?;
+        for r in &report.stick_distribution_results {
+            if r.peak_stick.is_none() {
+                writeln!(
+                    md,
+                    "| {} | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A |",
+                    r.axis_name
+                )?;
+                continue;
+            }
+            let peak_stick_pct =
+                r.peak_stick.unwrap_or(0.0) / STICK_DIST_FULL_STICK_RC_COMMAND * RATIO_TO_PERCENT;
+            let reversal_rate = r
+                .center_reversal_rate_hz
+                .map_or("N/A".into(), |v| format!("{:.2}", v));
+            writeln!(
+                md,
+                "| {} | {} | {} | {} | {} | {} | {:.1} | {} | {} |",
+                r.axis_name,
+                fmt_zone_pct(peak_stick_pct),
+                fmt_zone_pct(r.center_pct),
+                fmt_zone_pct(r.mid_pct),
+                fmt_zone_pct(r.high_pct),
+                fmt_zone_pct(r.saturation_pct),
+                r.saturation_time_s,
+                r.saturation_event_count,
+                reversal_rate
+            )?;
+        }
+        writeln!(md)?;
+        writeln!(
+            md,
+            "Peak Stick is the highest |rc_command| this flight reached, as a % of true full-stick range (both Betaflight and EmuFlight clamp rcCommand to +/-500 before the rate curve). Center/Mid/High are % of flight time spent below 15%, 15-75%, and above 75% of that same true full-stick range — not this axis's own peak; these three always sum to 100%. Saturation is the % of flight time above 95% — a subset of High, not additional to it. Saturation (s) and Saturation Events report that same threshold in seconds and as a count of separate excursions, not cumulative time. A flight whose Peak Stick never reaches 95% cannot register a Saturation Event."
+        )?;
+        writeln!(md)?;
+
+        writeln!(
+            md,
+            "| Axis | P95 Setpoint (deg/s) | P95 Gyro Achieved (deg/s) | Configured Max Rate (deg/s) | Rate Headroom (P95) |"
+        )?;
+        writeln!(
+            md,
+            "|------|----------------------|----------------------------|------------------------------|----------------------|"
+        )?;
+        for r in &report.stick_distribution_results {
+            let p95_setpoint = r.p95_setpoint.map_or("N/A".into(), |v| format!("{:.0}", v));
+            let p95_gyro = r.p95_gyro.map_or("N/A".into(), |v| format!("{:.0}", v));
+            let configured_max_rate = r
+                .configured_max_rate
+                .map_or("N/A".into(), |v| format!("{:.0}", v));
+            let rate_headroom = r.rate_headroom_pct.map_or("N/A".into(), fmt_zone_pct);
+            writeln!(
+                md,
+                "| {} | {} | {} | {} | {} |",
+                r.axis_name, p95_setpoint, p95_gyro, configured_max_rate, rate_headroom
+            )?;
+        }
+        writeln!(
+            md,
+            "\nP95 Setpoint/P95 Gyro Achieved use the 95th percentile, not the flight's raw maximum — a single crash/tumble sample can put raw max gyro rate an order of magnitude above the rest of the flight. Configured Max Rate is the setpoint at full stick deflection, computed from this log's own rc_rates/rc_expo/rates/rates_type/rate_limits headers — N/A when the header set is incomplete. Rate Headroom is the unused portion of Configured Max Rate: 100% minus (P95 Setpoint as a % of Configured Max Rate). For tracking quality (how closely gyro follows setpoint), see the Step Response Analysis section above — not duplicated here."
+        )?;
+        writeln!(md)?;
+    }
+
     // --- Generated Plots ---
     if !report.png_links.is_empty() {
         writeln!(md, "## Generated Plots")?;
@@ -726,6 +820,12 @@ pub fn generate_markdown_report(
 
     fs::write(output_path, md)?;
     Ok(())
+}
+
+/// Formats a percentage with one decimal place, so a small nonzero value (e.g. 0.34%)
+/// doesn't round away to "0%" under whole-number formatting.
+fn fmt_zone_pct(pct: f64) -> String {
+    format!("{:.1}%", pct)
 }
 
 fn fmt_static_filter(f: &crate::data_analysis::filter_response::FilterConfig) -> String {
