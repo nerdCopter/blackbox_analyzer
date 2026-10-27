@@ -3,6 +3,9 @@ name = "blackbox_analyzer"
 version = "0.2.0"
 edition = "2021" # Use 2021 edition as it's standard, 2024 is not yet released/stable
 rust-version = "1.96.0" # matches bbl_parser's real floor (src/conversion.rs uses is_multiple_of)
+description = "Blackbox log (BBL/BFL/CSV) step-response, filter, vibration and PID analysis for Betaflight/EmuFlight"
+repository = "https://github.com/nerdCopter/blackbox_analyzer"
+readme = "README.md"
 license = "AGPL-3.0-or-later"
 include = ["src/**", "fonts/**", "Cargo.toml", "LICENSE*", "README.md", "build.rs"]
 
