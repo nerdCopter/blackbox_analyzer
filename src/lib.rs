@@ -1,7 +1,5 @@
 // src/lib.rs - Library interface for internal module access
 
-#![allow(non_snake_case)]
-
 pub mod axis_names;
 pub mod constants;
 pub mod data_analysis;

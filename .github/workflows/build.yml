@@ -5,6 +5,9 @@ on:
     branches: [master]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   test:
     name: Test and Lint
@@ -33,13 +36,13 @@ jobs:
         include:
           - os: ubuntu-latest
             artifact_name: binary-linux
-            binary_path: target/release/BlackBox_CSV_Render
+            binary_path: target/release/blackbox_analyzer
           - os: windows-latest
             artifact_name: binary-windows
-            binary_path: target/release/BlackBox_CSV_Render.exe
+            binary_path: target/release/blackbox_analyzer.exe
           - os: macos-latest
             artifact_name: binary-macos
-            binary_path: target/release/BlackBox_CSV_Render
+            binary_path: target/release/blackbox_analyzer
     steps:
       - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@v1

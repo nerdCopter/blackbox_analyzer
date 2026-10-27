@@ -1,10 +1,10 @@
 #!/bin/bash
-# Developer setup script for BlackBox_CSV_Render project
+# Developer setup script for blackbox_analyzer project
 # This script sets up the development environment with pre-commit hooks
 
 set -e
 
-echo "🚀 Setting up BlackBox_CSV_Render development environment..."
+echo "🚀 Setting up blackbox_analyzer development environment..."
 
 # Check if we're in a git repository
 if [ ! -d ".git" ]; then

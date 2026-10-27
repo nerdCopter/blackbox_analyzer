@@ -663,7 +663,9 @@ fn find_csv_files_in_dir_impl(
 }
 
 fn print_usage_and_exit(program_name: &str) {
-    eprintln!("Graphically render statistical data from Blackbox CSV.");
+    eprintln!(
+        "Analyze Betaflight/EmuFlight Blackbox logs (BBL, BFL, or CSV); render plots and a report."
+    );
     eprintln!("\nUsage: {program_name} <input1> [<input2> ...] [OPTIONS]");
     eprintln!();
     eprintln!("--- INPUT/OUTPUT OPTIONS ---");
@@ -674,7 +676,7 @@ fn print_usage_and_exit(program_name: &str) {
     eprintln!("            files auto-excluded. A multi-flight .bbl/.bfl can produce one report per eligible flight.");
     eprintln!("  -O, --output-dir <directory>: Output directory (default: source folder).");
     eprintln!("  -R, --recursive: Recursively find CSV/BBL/BFL files in subdirectories.");
-    eprintln!("  -F, --force-export: Export .bbl flights bbl_parser would otherwise skip as");
+    eprintln!("  -F, --force-export: Export .bbl/.bfl flights bbl_parser would otherwise skip as");
     eprintln!("            low-value (very short / low data density / minimal gyro activity).");
     eprintln!("  -K, --keep: Keep the exported .csv/.headers.csv files (source folder, or");
     eprintln!("              -O/--output-dir)");
