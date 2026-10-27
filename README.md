@@ -2,7 +2,7 @@
 
 _Formerly `BlackBox_CSV_Render`._
 
-## This is an experimental RUST program, mostly created via A.I., to read Betaflight/EmuFlight Blackbox BBL or CSV logs and produce meaningful graphs.
+## This is an experimental RUST program, mostly created via A.I., to read Betaflight/EmuFlight Blackbox BBL, BFL, or CSV logs and produce meaningful graphs.
 
 ## Table of Contents
 - [Prerequisites](#prerequisites)
@@ -44,7 +44,7 @@ Usage: ./blackbox_analyzer <input1> [<input2> ...] [OPTIONS]
             files auto-excluded. A multi-flight .bbl/.bfl can produce one report per eligible flight.
   -O, --output-dir <directory>: Output directory (default: source folder).
   -R, --recursive: Recursively find CSV/BBL/BFL files in subdirectories.
-  -F, --force-export: Export .bbl flights bbl_parser would otherwise skip as low-value
+  -F, --force-export: Export .bbl/.bfl flights bbl_parser would otherwise skip as low-value
                        (very short / low data density / minimal gyro activity).
   -K, --keep: Keep the exported .csv/.headers.csv files (source folder, or -O/--output-dir)
 

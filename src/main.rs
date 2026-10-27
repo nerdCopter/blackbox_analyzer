@@ -676,7 +676,7 @@ fn print_usage_and_exit(program_name: &str) {
     eprintln!("            files auto-excluded. A multi-flight .bbl/.bfl can produce one report per eligible flight.");
     eprintln!("  -O, --output-dir <directory>: Output directory (default: source folder).");
     eprintln!("  -R, --recursive: Recursively find CSV/BBL/BFL files in subdirectories.");
-    eprintln!("  -F, --force-export: Export .bbl flights bbl_parser would otherwise skip as");
+    eprintln!("  -F, --force-export: Export .bbl/.bfl flights bbl_parser would otherwise skip as");
     eprintln!("            low-value (very short / low data density / minimal gyro activity).");
     eprintln!("  -K, --keep: Keep the exported .csv/.headers.csv files (source folder, or");
     eprintln!("              -O/--output-dir)");
