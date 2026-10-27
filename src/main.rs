@@ -663,7 +663,9 @@ fn find_csv_files_in_dir_impl(
 }
 
 fn print_usage_and_exit(program_name: &str) {
-    eprintln!("Graphically render statistical data from Blackbox CSV.");
+    eprintln!(
+        "Analyze Betaflight/EmuFlight Blackbox logs (BBL, BFL, or CSV); render plots and a report."
+    );
     eprintln!("\nUsage: {program_name} <input1> [<input2> ...] [OPTIONS]");
     eprintln!();
     eprintln!("--- INPUT/OUTPUT OPTIONS ---");

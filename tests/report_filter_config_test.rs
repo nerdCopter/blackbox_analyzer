@@ -6,10 +6,10 @@
 
 use std::fs;
 
-use BlackBox_CSV_Render::data_analysis::filter_response::{
+use blackbox_analyzer::data_analysis::filter_response::{
     AllFilterConfigs, AxisFilterConfig, FilterConfig, FilterType, ImufFilterConfig,
 };
-use BlackBox_CSV_Render::report::{generate_markdown_report, FlightReport};
+use blackbox_analyzer::report::{generate_markdown_report, FlightReport};
 
 fn base_report(filter_config: Option<AllFilterConfigs>) -> FlightReport {
     FlightReport {

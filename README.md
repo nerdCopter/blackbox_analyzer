@@ -1,3 +1,7 @@
+# blackbox_analyzer
+
+_Formerly `BlackBox_CSV_Render`._
+
 ## This is an experimental RUST program, mostly created via A.I., to read Betaflight/EmuFlight Blackbox BBL or CSV logs and produce meaningful graphs.
 
 ## Table of Contents
@@ -32,7 +36,7 @@ cargo build --release
 > **Notice:** Default output is **core plots only**. Use `--extended` for all plots.
 
 ```shell
-Usage: ./BlackBox_CSV_Render <input1> [<input2> ...] [OPTIONS]
+Usage: ./blackbox_analyzer <input1> [<input2> ...] [OPTIONS]
 
 === INPUT/OUTPUT OPTIONS ===
 
@@ -87,28 +91,28 @@ Arguments can be in any order. Wildcards (e.g., *.csv) are shell-expanded and wo
 
 ### Example execution commands
 ```shell
-./target/release/BlackBox_CSV_Render path/to/BTFL_Log.csv
+./target/release/blackbox_analyzer path/to/BTFL_Log.csv
 ```
 ```shell
-./target/release/BlackBox_CSV_Render path/to/EMUF_Log.BBL
+./target/release/blackbox_analyzer path/to/EMUF_Log.BBL
 ```
 ```shell
-./target/release/BlackBox_CSV_Render path/to/*LOG*.csv --dps 500 --butterworth
+./target/release/blackbox_analyzer path/to/*LOG*.csv --dps 500 --butterworth
 ```
 ```shell
-./target/release/BlackBox_CSV_Render path1/to/BTFL_*.csv path2/to/EMUF_*.csv --output-dir ./plots --butterworth
+./target/release/blackbox_analyzer path1/to/BTFL_*.csv path2/to/EMUF_*.csv --output-dir ./plots --butterworth
 ```
 ```shell
-./target/release/BlackBox_CSV_Render path/to/ -R --step --output-dir ./step-only
+./target/release/blackbox_analyzer path/to/ -R --step --output-dir ./step-only
 ```
 ```shell
-./target/release/BlackBox_CSV_Render path/to/ --extended --output-dir ./all-plots
+./target/release/blackbox_analyzer path/to/ --extended --output-dir ./all-plots
 ```
 ```shell
-./target/release/BlackBox_CSV_Render path/to/BTFL_Log.csv --step --estimate-optimal-p
+./target/release/blackbox_analyzer path/to/BTFL_Log.csv --step --estimate-optimal-p
 ```
 ```shell
-./target/release/BlackBox_CSV_Render path/to/BTFL_Log.csv --start 40 --desync
+./target/release/blackbox_analyzer path/to/BTFL_Log.csv --start 40 --desync
 ```
 
 ### Time-Window Trim: How To Pick `--start`/`--end`
@@ -195,8 +199,8 @@ To set up your development environment with proper formatting and pre-commit hoo
 
 ```bash
 # Clone and setup
-git clone https://github.com/nerdCopter/BlackBox_CSV_Render.git
-cd BlackBox_CSV_Render
+git clone https://github.com/nerdCopter/blackbox_analyzer.git
+cd blackbox_analyzer
 
 # Run setup script (optional but recommended)
 chmod +x .github/setup-dev.sh

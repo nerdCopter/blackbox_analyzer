@@ -3,23 +3,6 @@
 version = 4
 
 [[package]]
-name = "BlackBox_CSV_Render"
-version = "0.2.0"
-dependencies = [
- "anyhow",
- "bbl_parser",
- "colorous",
- "csv",
- "ndarray",
- "num-complex",
- "plotters",
- "realfft",
- "rusttype",
- "tempfile",
- "vergen",
-]
-
-[[package]]
 name = "ab_glyph_rasterizer"
 version = "0.1.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -80,6 +63,23 @@ name = "bitflags"
 version = "2.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1b8e56985ec62d17e9c1001dc89c88ecd7dc08e47eba5ec7c29c7b5eeecde967"
+
+[[package]]
+name = "blackbox_analyzer"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "bbl_parser",
+ "colorous",
+ "csv",
+ "ndarray",
+ "num-complex",
+ "plotters",
+ "realfft",
+ "rusttype",
+ "tempfile",
+ "vergen",
+]
 
 [[package]]
 name = "bumpalo"

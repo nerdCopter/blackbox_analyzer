@@ -16,7 +16,7 @@
     - [Compared to PIDtoolbox/Matlab (PTstepcalc.m)](#compared-to-pidtoolboxmatlab-ptstepcalcm)
     - [Compared to PlasmaTree/Python (PID-Analyzer.py)](#compared-to-plasmatreepython-pid-analyzerpy)
 
-The Rust program processes Betaflight/EmuFlight Blackbox CSV or BBL logs to generate various plots. Here's a concise overview:
+The Rust program processes Betaflight/EmuFlight Blackbox BBL, BFL, or CSV logs to generate various plots. Here's a concise overview:
 
 ### Configuration
 
