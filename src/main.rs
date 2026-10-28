@@ -1003,14 +1003,16 @@ fn process_file(
     {
         Ok(data) => data,
         Err(e) => {
-            eprintln!("Error: Parsing log file {input_file_str}: {e}");
-            return Ok(()); // Continue to next file
+            // The caller records the failure and continues with the next file.
+            return Err(format!("Parsing log file {input_file_str}: {e}").into());
         }
     };
 
     if all_log_data.is_empty() {
-        println!("No valid data rows read from {input_file_str}, cannot generate plots.");
-        return Ok(());
+        return Err(format!(
+            "No valid data rows read from {input_file_str}, cannot generate plots."
+        )
+        .into());
     }
 
     // Captured before zeroing below — this note is the only place absolute FC uptime is shown,
@@ -2746,11 +2748,7 @@ All files processed successfully."
             "
 Some files could not be processed successfully."
         );
-        // Still return Ok(()) here as we've handled errors per file.
-        // Or, could return a generic error if preferred for the whole batch.
-        // For now, exiting with 0 if any file succeeded, or if all failed but were handled.
-        // To signal overall failure to scripts, one might `std::process::exit(1)` here.
-        Ok(())
+        Err("one or more files could not be processed".into())
     }
 }
 

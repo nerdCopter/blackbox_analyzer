@@ -309,6 +309,27 @@ pub fn peek_craft_name(input_file_path: &Path, debug_mode: bool) -> Option<Strin
     })
 }
 
+/// Flags axes whose PID header (`rollPID`/`pitchPID`/`yawPID`) carries a zero D gain. Betaflight,
+/// EmuFlight and INAV log `axisD[n]` only when `pid[n].D != 0`, which is the third field of that
+/// header; D-Min/D-Max settings do not affect it. Returns false when the header is missing or its
+/// P, I or D field is unparseable, so absence is never assumed to be zero.
+fn zero_d_gain_axes(header_metadata: &[(String, String)]) -> [bool; 3] {
+    let zero_d = |key: &str| {
+        header_metadata
+            .iter()
+            .find(|(k, _)| k.trim().eq_ignore_ascii_case(key))
+            .and_then(|(_, v)| {
+                let mut fields = v.split(',').map(|f| f.trim().parse::<u32>());
+                match (fields.next(), fields.next(), fields.next()) {
+                    (Some(Ok(_)), Some(Ok(_)), Some(Ok(d))) => Some(d == 0),
+                    _ => None,
+                }
+            })
+            .unwrap_or(false)
+    };
+    [zero_d("rollPID"), zero_d("pitchPID"), zero_d("yawPID")]
+}
+
 /// Parses the CSV log file, extracts data, determines header presence, and calculates sample rate.
 ///
 /// Returns a tuple containing:
@@ -378,6 +399,8 @@ pub fn parse_log_file(input_file_path: &Path, debug_mode: bool) -> LogParseResul
     let mut gyro_unfilt_header_found = [false; 3];
     let mut debug_header_found = [false; 4];
     let mut f_term_header_found = [false; 3];
+    // Per-axis: axisD[axis] column is absent and treated as an intentional zero D term.
+    let mut d_term_omitted = [false; 3];
     let mut rc_command_header_found = [false; 4];
 
     let header_indices: Vec<Option<usize>>;
@@ -495,19 +518,33 @@ pub fn parse_log_file(input_file_path: &Path, debug_mode: bool) -> LogParseResul
         }
         let mut essential_pid_headers_found = true;
 
-        // Check essential PID headers (Time, P, I, D[0], D[1]).
+        // D columns (Indices 7-9) are omitted by firmware when the axis D gain is zero.
+        // Yaw D is always optional; roll/pitch D may be absent only with zero-gain metadata.
+        let zero_d_gain = zero_d_gain_axes(&header_metadata);
+        for axis in 0..crate::axis_names::AXIS_NAMES.len() {
+            d_term_omitted[axis] =
+                header_indices[7 + axis].is_none() && (axis == 2 || zero_d_gain[axis]);
+        }
+
+        // Check essential headers (Time, P, I; D unless omitted with zero gain).
         for i in 0..=8 {
-            // Indices 0 through 8
             let name = target_headers[i];
             let found = header_indices[i].is_some();
+            let omitted_d = i >= 7 && d_term_omitted[i - 7];
             if debug_mode {
                 println!(
                     "  '{}': {}",
                     name,
-                    if found { "Found" } else { "Not Found" }
+                    if found {
+                        "Found"
+                    } else if omitted_d {
+                        "Not Found (zero D gain, defaults to 0.0)"
+                    } else {
+                        "Not Found"
+                    }
                 );
             }
-            if !found {
+            if !found && !omitted_d {
                 essential_pid_headers_found = false;
             }
         }
@@ -646,7 +683,7 @@ pub fn parse_log_file(input_file_path: &Path, debug_mode: bool) -> LogParseResul
 
         if !essential_pid_headers_found {
             let missing_essentials: Vec<String> = (0..=8)
-                .filter(|&i| header_indices[i].is_none())
+                .filter(|&i| header_indices[i].is_none() && !(i >= 7 && d_term_omitted[i - 7]))
                 .map(|i| format!("'{}'", target_headers[i]))
                 .collect();
             return Err(format!(
@@ -713,13 +750,12 @@ pub fn parse_log_file(input_file_path: &Path, debug_mode: bool) -> LogParseResul
                         current_row_data.p_term[axis] = parse_f64_by_target_idx(1 + axis); // Indices 1,2,3
                         current_row_data.i_term[axis] = parse_f64_by_target_idx(4 + axis); // Indices 4,5,6
 
-                        // D term with optional axisD[2] fallback
-                        let d_target_idx = 7 + axis; // Indices 7,8,9
-                        let d_val = parse_f64_by_target_idx(d_target_idx);
-                        current_row_data.d_term[axis] = if d_val.is_none() && axis == 2 {
+                        // D term: an omitted column (zero D gain) is 0.0; a present but
+                        // malformed value stays None.
+                        current_row_data.d_term[axis] = if d_term_omitted[axis] {
                             Some(0.0)
                         } else {
-                            d_val
+                            parse_f64_by_target_idx(7 + axis) // Indices 7,8,9
                         };
 
                         // F term with optional axisF[0-2] fallback
@@ -947,6 +983,179 @@ mod tests {
         let aligned = align_channel_indices(&motor_channel_numbers, erpm_pairs);
         assert_eq!(aligned, vec![Some(10), Some(12), Some(13)]);
     }
-}
+    /// Writes a synthetic log into a unique temp dir and parses it. `columns` is the CSV
+    /// header row; each of the two data rows must match its length.
+    fn parse_synthetic(
+        pid_lines: &[&str],
+        columns: &[&str],
+        rows: &[&str],
+    ) -> (tempfile::TempDir, LogParseResult) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("synthetic.csv");
+        let mut contents = String::new();
+        for line in pid_lines {
+            contents.push_str(line);
+            contents.push('\n');
+        }
+        contents.push_str(&columns.join(","));
+        contents.push('\n');
+        for row in rows {
+            contents.push_str(row);
+            contents.push('\n');
+        }
+        std::fs::write(&path, contents).expect("write synthetic log");
+        let result = parse_log_file(&path, false);
+        (dir, result)
+    }
 
-// src/data_input/log_parser.rs
+    const PID_COLS_NO_D: [&str; 7] = [
+        "time (us)",
+        "axisP[0]",
+        "axisP[1]",
+        "axisP[2]",
+        "axisI[0]",
+        "axisI[1]",
+        "axisI[2]",
+    ];
+
+    fn columns_with<'a>(d_cols: &[&'a str]) -> Vec<&'a str> {
+        let mut cols: Vec<&str> = PID_COLS_NO_D.to_vec();
+        cols.extend_from_slice(d_cols);
+        cols.push("gyroADC[0]");
+        cols
+    }
+
+    const ROWS_1_D: [&str; 2] = ["0,1,2,3,4,5,6,7,0", "1000,1,2,3,4,5,6,7,0"];
+
+    #[test]
+    fn omitted_pitch_d_with_zero_gain_parses_as_zero() {
+        // Reproduces the PR #216 report: pitchPID D = 0, axisD[1] and axisD[2] absent.
+        let cols = columns_with(&["axisD[0]"]);
+        let rows = ["0,1,2,3,4,5,6,7,0", "1000,1,2,3,4,5,6,7,0"];
+        let (_dir, result) = parse_synthetic(
+            &["rollPID,26,35,13", "pitchPID,0,0,0", "yawPID,26,35,0"],
+            &cols,
+            &rows,
+        );
+        let data = result.expect("zero-gain pitch D must parse").0;
+        assert_eq!(data[0].d_term, [Some(7.0), Some(0.0), Some(0.0)]);
+    }
+
+    #[test]
+    fn omitted_roll_d_with_zero_gain_parses_as_zero() {
+        let cols = columns_with(&["axisD[1]"]);
+        let (_dir, result) = parse_synthetic(
+            &["rollPID,0,0,0", "pitchPID,26,35,13", "yawPID,26,35,0"],
+            &cols,
+            &ROWS_1_D,
+        );
+        let data = result.expect("zero-gain roll D must parse").0;
+        assert_eq!(data[0].d_term, [Some(0.0), Some(7.0), Some(0.0)]);
+    }
+
+    #[test]
+    fn omitted_d_without_zero_gain_evidence_is_rejected() {
+        // Nonzero D gain but the column is missing: unexplained, must not become zero.
+        let cols = columns_with(&["axisD[0]"]);
+        let (_dir, result) = parse_synthetic(
+            &["rollPID,26,35,13", "pitchPID,26,35,13", "yawPID,26,35,0"],
+            &cols,
+            &ROWS_1_D,
+        );
+        let err = result.expect_err("must reject").to_string();
+        assert!(err.contains("axisD[1]"), "{err}");
+    }
+
+    #[test]
+    fn omitted_d_without_pid_metadata_is_rejected() {
+        let cols = columns_with(&["axisD[0]"]);
+        let (_dir, result) = parse_synthetic(&[], &cols, &ROWS_1_D);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn omitted_d_with_zero_d_and_nonzero_d_max_parses_as_zero() {
+        // Firmware gates axisD on the PID-string D field alone; D-Max does not log the column.
+        let cols = columns_with(&["axisD[0]"]);
+        let (_dir, result) = parse_synthetic(
+            &[
+                "rollPID,26,35,13",
+                "pitchPID,26,35,0,40,0",
+                "yawPID,26,35,0",
+                "d_max,13,40,0",
+                "d_min,13,0,0",
+            ],
+            &cols,
+            &ROWS_1_D,
+        );
+        let data = result.expect("D=0 must parse regardless of D-Max").0;
+        assert_eq!(data[0].d_term, [Some(7.0), Some(0.0), Some(0.0)]);
+    }
+
+    #[test]
+    fn omitted_d_with_unparseable_d_field_is_rejected() {
+        let cols = columns_with(&["axisD[0]"]);
+        let (_dir, result) = parse_synthetic(
+            &["rollPID,26,35,13", "pitchPID,26,35,x", "yawPID,26,35,0"],
+            &cols,
+            &ROWS_1_D,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn omitted_d_with_truncated_pid_string_is_rejected() {
+        let cols = columns_with(&["axisD[0]"]);
+        let (_dir, result) = parse_synthetic(
+            &["rollPID,26,35,13", "pitchPID,26,35", "yawPID,26,35,0"],
+            &cols,
+            &ROWS_1_D,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn malformed_present_d_value_is_not_zeroed() {
+        let cols = columns_with(&["axisD[0]", "axisD[1]", "axisD[2]"]);
+        let rows = ["0,1,2,3,4,5,6,7,8,abc,0", "1000,1,2,3,4,5,6,7,8,9,0"];
+        let (_dir, result) = parse_synthetic(
+            &["rollPID,26,35,13", "pitchPID,0,0,0", "yawPID,26,35,0"],
+            &cols,
+            &rows,
+        );
+        let data = result.expect("parse").0;
+        assert_eq!(data[0].d_term[2], None);
+        assert_eq!(data[1].d_term[2], Some(9.0));
+    }
+
+    #[test]
+    fn missing_required_p_column_still_rejected_with_zero_d_gain() {
+        let cols = [
+            "time (us)",
+            "axisP[0]",
+            "axisI[0]",
+            "axisD[0]",
+            "gyroADC[0]",
+        ];
+        let (_dir, result) = parse_synthetic(
+            &["rollPID,26,35,13", "pitchPID,0,0,0", "yawPID,0,0,0"],
+            &cols,
+            &["0,1,2,3,0", "1000,1,2,3,0"],
+        );
+        let err = result.expect_err("must reject").to_string();
+        assert!(err.contains("axisP[1]"), "{err}");
+    }
+
+    #[test]
+    fn full_d_columns_and_yaw_fallback_unchanged() {
+        let cols = columns_with(&["axisD[0]", "axisD[1]"]);
+        let rows = ["0,1,2,3,4,5,6,7,8,0", "1000,1,2,3,4,5,6,7,8,0"];
+        let (_dir, result) = parse_synthetic(
+            &["rollPID,26,35,13", "pitchPID,26,35,13", "yawPID,26,35,0"],
+            &cols,
+            &rows,
+        );
+        let data = result.expect("parse").0;
+        assert_eq!(data[0].d_term, [Some(7.0), Some(8.0), Some(0.0)]);
+    }
+}
