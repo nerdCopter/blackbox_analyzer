@@ -231,7 +231,7 @@ impl Drop for CwdGuard {
 }
 
 // Data input import
-use crate::data_input::bbl_reader::expand_bbl_to_scratch_csvs;
+use crate::data_input::bbl_reader::{expand_bbl_to_scratch_csvs, FLIGHT_EXPORT_FAILED};
 use crate::data_input::log_data::LogRowData;
 use crate::data_input::log_parser::{self, parse_log_file};
 use crate::data_input::pid_metadata::parse_pid_metadata;
@@ -561,6 +561,7 @@ fn find_csv_files_in_dir_impl(
                 "⚠️  Cannot canonicalize directory path: {}",
                 dir_path.display()
             );
+            INPUT_DISCOVERY_FAILED.store(true, Ordering::Relaxed);
             return Ok((csv_files, skipped_count, bbl_origin_dirs, scratch_dirs));
         }
     };
@@ -583,6 +584,7 @@ fn find_csv_files_in_dir_impl(
                 dir_path.display(),
                 err
             );
+            INPUT_DISCOVERY_FAILED.store(true, Ordering::Relaxed);
             return Ok((csv_files, skipped_count, bbl_origin_dirs, scratch_dirs));
         }
     };
@@ -596,6 +598,7 @@ fn find_csv_files_in_dir_impl(
                     dir_path.display(),
                     err
                 );
+                INPUT_DISCOVERY_FAILED.store(true, Ordering::Relaxed);
                 continue;
             }
         };
@@ -616,11 +619,14 @@ fn find_csv_files_in_dir_impl(
                         bbl_origin_dirs.extend(sub_bbl_origin_dirs);
                         scratch_dirs.append(&mut sub_scratch_dirs);
                     }
-                    Err(err) => eprintln!(
-                        "⚠️  Error processing subdirectory '{}': {}",
-                        path.display(),
-                        err
-                    ),
+                    Err(err) => {
+                        eprintln!(
+                            "⚠️  Error processing subdirectory '{}': {}",
+                            path.display(),
+                            err
+                        );
+                        INPUT_DISCOVERY_FAILED.store(true, Ordering::Relaxed);
+                    }
                 }
             } else {
                 // Skip this subdirectory
@@ -653,6 +659,7 @@ fn find_csv_files_in_dir_impl(
                             "⚠️  Skipping file with non-UTF-8 path: {}",
                             path.display()
                         ));
+                        INPUT_DISCOVERY_FAILED.store(true, Ordering::Relaxed);
                     }
                 } else if is_bbl_extension(&extension) {
                     expand_one_bbl_file(
@@ -1052,32 +1059,30 @@ fn process_file(
         let (log_first, log_last) = match (log_first, log_last) {
             (Some(f), Some(l)) if l > f => (f, l),
             _ => {
-                eprintln!(
-                    "Error: Cannot apply --start/--end trim to {input_file_str}: time data unavailable."
-                );
-                return Ok(());
+                return Err(format!(
+                    "Cannot apply --start/--end trim to {input_file_str}: time data unavailable."
+                )
+                .into());
             }
         };
         let duration = log_last - log_first;
         let rel_start = analysis_opts.trim_start.unwrap_or(TRIM_START_DEFAULT_S);
         let rel_end = analysis_opts.trim_end.unwrap_or(duration);
         if rel_start >= duration {
-            eprintln!(
-                "Error: --start {rel_start:.3}s is at or beyond log duration ({duration:.3}s) for {input_file_str}"
-            );
-            return Ok(());
+            return Err(format!(
+                "--start {rel_start:.3}s is at or beyond log duration ({duration:.3}s) for {input_file_str}"
+            ).into());
         }
         if rel_end > duration {
-            eprintln!(
-                "Error: --end {rel_end:.3}s exceeds log duration ({duration:.3}s) for {input_file_str}"
-            );
-            return Ok(());
+            return Err(format!(
+                "--end {rel_end:.3}s exceeds log duration ({duration:.3}s) for {input_file_str}"
+            )
+            .into());
         }
         if rel_start >= rel_end {
-            eprintln!(
-                "Error: --start ({rel_start:.3}s) must be less than --end ({rel_end:.3}s) for {input_file_str}"
-            );
-            return Ok(());
+            return Err(format!(
+                "--start ({rel_start:.3}s) must be less than --end ({rel_end:.3}s) for {input_file_str}"
+            ).into());
         }
         let window_start = log_first + rel_start;
         let window_end = log_first + rel_end;
@@ -1088,10 +1093,9 @@ fn process_file(
                 .is_some_and(|t| t >= window_start && t <= window_end)
         });
         if all_log_data.is_empty() {
-            eprintln!(
-                "Error: --start/--end window leaves no data rows for {input_file_str} (log spans 0.000s-{duration:.3}s)"
-            );
-            return Ok(());
+            return Err(format!(
+                "--start/--end window leaves no data rows for {input_file_str} (log spans 0.000s-{duration:.3}s)"
+            ).into());
         }
         println!(
             "Note: Trimmed to {rel_start:.3}s-{rel_end:.3}s ({} rows, log duration {duration:.3}s) of {input_file_str}",
@@ -2636,7 +2640,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let grouped_files =
         group_files_by_aircraft(&input_files, debug_mode, analysis_opts.estimate_optimal_p);
 
-    let mut overall_success = !INPUT_DISCOVERY_FAILED.load(Ordering::Relaxed);
+    let mut overall_success = true;
     for (craft_key, group_files) in &grouped_files {
         // Phase 1: torque-inertia profiling across all files in the group.
         // Reuses each file's parse result in Phase 2 below instead of re-parsing.
@@ -2750,6 +2754,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     // touches --keep output either way.
     drop(bbl_scratch_dirs);
 
+    let overall_success = overall_success
+        && !INPUT_DISCOVERY_FAILED.load(Ordering::Relaxed)
+        && !FLIGHT_EXPORT_FAILED.load(Ordering::Relaxed);
     if overall_success {
         println!(
             "

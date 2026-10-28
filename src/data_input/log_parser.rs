@@ -983,8 +983,10 @@ mod tests {
         let aligned = align_channel_indices(&motor_channel_numbers, erpm_pairs);
         assert_eq!(aligned, vec![Some(10), Some(12), Some(13)]);
     }
-    /// Writes a synthetic log into a unique temp dir and parses it. `columns` is the CSV
-    /// header row; each of the two data rows must match its length.
+    /// Writes a synthetic log into a unique temp dir and parses it. `pid_lines` are the
+    /// `key,value` header lines before the CSV, `columns` is the CSV header row, and each
+    /// entry of `rows` must have as many fields as `columns`. The returned `TempDir` must stay
+    /// alive until the caller is done with the result.
     fn parse_synthetic(
         pid_lines: &[&str],
         columns: &[&str],
