@@ -220,6 +220,12 @@ With `--extended`, all plots below are generated. The default (`--core`) generat
   A Skipped Plots section lists any enabled plot type with no plottable data; omitted when nothing was skipped.
 
 
+#### Scope: Tuning Workflow
+
+The tool reports filter configuration, filtering delay and noise spectra. It gives no filter-tuning advice; read the spectrum and delay plots against your own judgment.
+P:D recommendations assume a filter setup already chosen. Tune filters first, then PID, with Feed-Forward OFF.
+Step response is invalid with non-zero F-term. Affected axes are titled "Invalid due to Feed-Forward" in the plot.
+
 #### P:D Ratio Recommendations
 
 The system provides intelligent P:D tuning recommendations based on step-response peak analysis:
@@ -230,7 +236,7 @@ The system provides intelligent P:D tuning recommendations based on step-respons
 - Shows only base D when D-Min/D-Max is disabled
 - Works for all aircraft sizes, including 10+ inch, where D can exceed P
 - Includes warnings for severe overshoot or unreasonable P:D ratios
-- Shows recommendations only when the step response needs improvement (skips optimal peak 0.95–1.04)
+- Shows recommendations only when the step response needs improvement (none for peak 1.00–1.08; see zones above)
 - **Note:** Peak value measures the first maximum after crossing the setpoint; the initial transient dip is normal system behavior
 
 #### Optimal P Estimation (Optional, Experimental)
