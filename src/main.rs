@@ -270,11 +270,17 @@ struct BblExpansionOptions<'a> {
     colliding_stems: &'a HashSet<String>,
 }
 
-/// True when the path's extension marks a supported input (`.csv`, `.bbl`, `.bfl`).
-fn has_supported_input_extension(path: &Path) -> bool {
-    path.extension()
-        .map(|ext| ext.to_string_lossy())
-        .is_some_and(|ext| ext.eq_ignore_ascii_case(CSV_EXTENSION) || is_bbl_extension(&ext))
+/// True when an unreadable directory entry counts as a dropped input. An entry with no extension
+/// might be a directory, so it counts. A `.csv`/`.bbl`/`.bfl` entry counts unless it is a header
+/// sidecar, which discovery skips on purpose. Any other extension is an unsupported file.
+fn unreadable_entry_is_input_failure(path: &Path) -> bool {
+    let Some(extension) = path.extension().map(|ext| ext.to_string_lossy()) else {
+        return true;
+    };
+    if extension.eq_ignore_ascii_case(CSV_EXTENSION) {
+        return !is_header_csv_path(&path.to_string_lossy().to_ascii_lowercase());
+    }
+    is_bbl_extension(&extension)
 }
 
 /// True for a `.bbl`/`.BBL` or `.bfl`/`.BFL` extension (case-insensitive). Both extensions name
@@ -620,12 +626,12 @@ fn find_csv_files_in_dir_impl(
 
         // is_dir()/is_file() report false on a metadata error (e.g. a dangling symlink), which
         // would drop the entry silently; classify through fallible metadata instead. Only an
-        // entry that could be a supported input counts as a failure; other unreadable entries
-        // are skipped like any unsupported file.
+        // entry that could be an input counts as a failure; other unreadable entries are
+        // skipped like any unsupported file.
         let metadata = match fs::metadata(&path) {
             Ok(metadata) => metadata,
             Err(err) => {
-                if has_supported_input_extension(&path) {
+                if unreadable_entry_is_input_failure(&path) {
                     eprintln!("⚠️  Cannot read '{}': {}", path.display(), err);
                     INPUT_DISCOVERY_FAILED.store(true, Ordering::Relaxed);
                 }
@@ -3109,20 +3115,43 @@ mod bbl_input_expansion_tests {
 }
 
 #[cfg(test)]
-mod supported_input_extension_tests {
+mod unreadable_entry_tests {
     use super::*;
 
     #[test]
-    fn csv_bbl_and_bfl_are_supported_case_insensitively() {
+    fn unreadable_csv_bbl_and_bfl_entries_are_failures_case_insensitively() {
         for name in ["a.csv", "a.CSV", "a.bbl", "a.BBL", "a.bfl", "a.BFL"] {
-            assert!(has_supported_input_extension(Path::new(name)), "{name}");
+            assert!(unreadable_entry_is_input_failure(Path::new(name)), "{name}");
         }
     }
 
     #[test]
-    fn unsupported_or_missing_extensions_are_not_inputs() {
-        for name in ["notes.txt", "a.gpx", "a.csv.bak", "noextension", ".hidden"] {
-            assert!(!has_supported_input_extension(Path::new(name)), "{name}");
+    fn unreadable_extensionless_entry_is_a_failure() {
+        // Might be a directory of logs.
+        assert!(unreadable_entry_is_input_failure(Path::new("logs")));
+    }
+
+    #[test]
+    fn unreadable_unsupported_entries_are_skipped() {
+        for name in ["notes.txt", "a.gpx", "a.csv.bak"] {
+            assert!(
+                !unreadable_entry_is_input_failure(Path::new(name)),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn unreadable_header_sidecar_is_skipped() {
+        for name in [
+            "flight.headers.csv",
+            "FLIGHT.HEADERS.CSV",
+            "flight.header.csv",
+        ] {
+            assert!(
+                !unreadable_entry_is_input_failure(Path::new(name)),
+                "{name}"
+            );
         }
     }
 }
