@@ -226,12 +226,12 @@ With `--extended`, all plots below are generated. The default (`--core`) generat
 
 The tool reports filter configuration, filtering delay and noise spectra. It gives no filter-tuning advice; read the spectrum and delay plots against your own judgment.
 P:D recommendations assume a filter setup already chosen. Tune filters first, then PID, with Feed-Forward OFF.
-The tool does not read a Feed-Forward setting. It checks the parsed F-term samples per axis. An axis with any non-zero sample is titled "Invalid due to Feed-Forward" in the step-response plot. P:D recommendations are still generated for that axis.
+The tool does not read a Feed-Forward setting. It checks the parsed F-term samples per axis. An axis with any non-zero sample is titled "Invalid due to Feed-Forward" in the step-response plot. The flag does not suppress otherwise eligible P:D recommendations for that axis.
 
 General practice (not computed by the tool):
-- Betaflight defaults are a good starting point for filters.
-- With RPM filter: raise filter cutoffs until the noise plots show unwanted noise.
-- Without RPM filter: set LPF below the noise peaks, never too low. Lower cutoffs add filtering delay (see the delay plots). Too much delay can cause oscillation.
+- Firmware defaults are a good starting point for filters (Betaflight defaults for Betaflight; EmuFlight has its own IMUF guidance).
+- With RPM filter: change filters in small steps. After each change check gyro and D-term noise, motor temperature and flight behavior. RPM filtering does not remove all noise, and reduced D-term filtering can overheat motors.
+- Without RPM filter: use firmware-specific LPF and notch guidance to attenuate the noise peaks, never too low. Lower cutoffs add filtering delay (see the delay plots). Too much delay can cause oscillation.
 - PID: with Feed-Forward OFF, aim for a step response that reaches 1.0 quickly with slight overshoot at most, then settles at 1.0.
 
 #### P:D Ratio Recommendations
