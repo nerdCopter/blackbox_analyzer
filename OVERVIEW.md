@@ -228,6 +228,12 @@ The tool reports filter configuration, filtering delay and noise spectra. It giv
 P:D recommendations assume a filter setup already chosen. Tune filters first, then PID, with Feed-Forward OFF.
 The tool does not read a Feed-Forward setting. It checks the parsed F-term samples per axis. An axis with any non-zero sample is titled "Invalid due to Feed-Forward" in the step-response plot. P:D recommendations are still generated for that axis.
 
+General practice (not computed by the tool):
+- Betaflight defaults are a good starting point for filters.
+- With RPM filter: raise filter cutoffs until the noise plots show unwanted noise.
+- Without RPM filter: set LPF below the noise peaks, never too low. Lower cutoffs add filtering delay (see the delay plots). Too much delay can cause oscillation.
+- PID: with Feed-Forward OFF, aim for a step response that reaches 1.0 quickly with slight overshoot at most, then settles at 1.0.
+
 #### P:D Ratio Recommendations
 
 The system provides intelligent P:D tuning recommendations based on step-response peak analysis:
