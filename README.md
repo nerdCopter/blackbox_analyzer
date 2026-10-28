@@ -91,7 +91,7 @@ Arguments can be in any order. Wildcards (e.g., *.csv) are shell-expanded and wo
 
 ### Exit status
 - `0`: no input failure was recorded. Inputs skipped on purpose (flights under the low-value filter, header CSVs, unsupported files) do not count as failures.
-- `1`: invalid arguments, no input files found, or at least one input failed: path not found or unreadable, `.bbl`/`.bfl` decode or flight export failure, a log that cannot be parsed or has no data rows, or a `--start`/`--end` window that is out of range for a log. After a per-input failure, the remaining inputs are still processed, the reason is printed to stderr, and the run ends with `Some files could not be processed successfully.`
+- `1`: invalid arguments, no input files found, or at least one input failed: path not found or unreadable, `.bbl`/`.bfl` decode or flight export failure, a log that cannot be parsed or has no data rows, or a `--start`/`--end` window that is out of range for a log. After a per-input failure, the remaining inputs are still processed and the reason is printed to stderr. If discovery produced at least one input, the run ends with `Some files could not be processed successfully.`
 
 ### Example execution commands
 ```shell

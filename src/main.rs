@@ -604,7 +604,18 @@ fn find_csv_files_in_dir_impl(
         };
         let path = entry.path();
 
-        if path.is_dir() {
+        // is_dir()/is_file() report false on a metadata error (e.g. a dangling symlink), which
+        // would drop the entry silently; classify through fallible metadata instead.
+        let metadata = match fs::metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(err) => {
+                eprintln!("⚠️  Cannot read '{}': {}", path.display(), err);
+                INPUT_DISCOVERY_FAILED.store(true, Ordering::Relaxed);
+                continue;
+            }
+        };
+
+        if metadata.is_dir() {
             // Recurse into subdirectories only if recursive flag is set
             if recursive {
                 match find_csv_files_in_dir_impl(&path, visited, recursive, bbl_opts, debug_mode) {
@@ -639,7 +650,7 @@ fn find_csv_files_in_dir_impl(
                     );
                 }
             }
-        } else if path.is_file() {
+        } else if metadata.is_file() {
             // Check if it's a CSV or BBL file
             if let Some(extension) = path.extension() {
                 let extension = extension.to_string_lossy();
