@@ -155,7 +155,7 @@ per-tier baseline mechanics.
 #### PNG Files Generated
 
 **Core (default):**
-- `*_Step_Response_stacked_plot_*.png` — Step response analysis with P:D recommendations (requires Feed-Forward OFF; otherwise flagged invalid)
+- `*_Step_Response_stacked_plot_*.png` — Step response analysis with P:D recommendations; axes with non-zero parsed F-term samples are titled "Invalid due to Feed-Forward"
 - `*_SetpointVsGyro_stacked.png` — Setpoint vs. filtered gyro comparison
 - `*_GyroVsUnfilt_stacked.png` — Filtered vs. unfiltered gyro comparison with delay estimates
 - `*_Gyro_Spectrums_comparative.png` — Frequency-domain gyro amplitude spectrums

@@ -11,6 +11,8 @@
   - [Implementation Details](#implementation-details)
   - [Filter Response Curves](#filter-response-curves)
   - [Bode Plot Analysis (Optional)](#bode-plot-analysis-optional)
+  - [Output and Tuning Recommendations](#output-and-tuning-recommendations)
+    - [Scope: Tuning Workflow](#scope-tuning-workflow)
   - [Optimal P Estimation (Optional, Experimental)](#optimal-p-estimation-optional-experimental)
   - [Step-Response Comparison with Other Analysis Tools](#step-response-comparison-with-other-analysis-tools)
     - [Compared to PIDtoolbox/Matlab (PTstepcalc.m)](#compared-to-pidtoolboxmatlab-ptstepcalcm)
@@ -224,7 +226,7 @@ With `--extended`, all plots below are generated. The default (`--core`) generat
 
 The tool reports filter configuration, filtering delay and noise spectra. It gives no filter-tuning advice; read the spectrum and delay plots against your own judgment.
 P:D recommendations assume a filter setup already chosen. Tune filters first, then PID, with Feed-Forward OFF.
-Step response is invalid with non-zero F-term. Affected axes are titled "Invalid due to Feed-Forward" in the plot.
+The tool does not read a Feed-Forward setting. It checks the parsed F-term samples per axis. An axis with any non-zero sample is titled "Invalid due to Feed-Forward" in the step-response plot. P:D recommendations are still generated for that axis.
 
 #### P:D Ratio Recommendations
 
@@ -236,7 +238,7 @@ The system provides intelligent P:D tuning recommendations based on step-respons
 - Shows only base D when D-Min/D-Max is disabled
 - Works for all aircraft sizes, including 10+ inch, where D can exceed P
 - Includes warnings for severe overshoot or unreasonable P:D ratios
-- Shows recommendations only when the step response needs improvement (none for peak 1.00–1.08; see zones above)
+- Shows recommendations only when the step response needs improvement (no adjustment for 1.02 ≤ peak < 1.08; 1.00 ≤ peak < 1.02 can show an optional D−1 hint; peak ≥ 1.08 can show a D recommendation; see zones above)
 - **Note:** Peak value measures the first maximum after crossing the setpoint; the initial transient dip is normal system behavior
 
 #### Optimal P Estimation (Optional, Experimental)
