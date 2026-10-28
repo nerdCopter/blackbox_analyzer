@@ -270,6 +270,13 @@ struct BblExpansionOptions<'a> {
     colliding_stems: &'a HashSet<String>,
 }
 
+/// True when the path's extension marks a supported input (`.csv`, `.bbl`, `.bfl`).
+fn has_supported_input_extension(path: &Path) -> bool {
+    path.extension()
+        .map(|ext| ext.to_string_lossy())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case(CSV_EXTENSION) || is_bbl_extension(&ext))
+}
+
 /// True for a `.bbl`/`.BBL` or `.bfl`/`.BFL` extension (case-insensitive). Both extensions name
 /// the same binary blackbox log container — `.bfl` is the raw filename some flight controllers
 /// (e.g. BrainFPV) write to the SD card, while `.bbl` is the name Betaflight Configurator and
@@ -612,12 +619,16 @@ fn find_csv_files_in_dir_impl(
         let path = entry.path();
 
         // is_dir()/is_file() report false on a metadata error (e.g. a dangling symlink), which
-        // would drop the entry silently; classify through fallible metadata instead.
+        // would drop the entry silently; classify through fallible metadata instead. Only an
+        // entry that could be a supported input counts as a failure; other unreadable entries
+        // are skipped like any unsupported file.
         let metadata = match fs::metadata(&path) {
             Ok(metadata) => metadata,
             Err(err) => {
-                eprintln!("⚠️  Cannot read '{}': {}", path.display(), err);
-                INPUT_DISCOVERY_FAILED.store(true, Ordering::Relaxed);
+                if has_supported_input_extension(&path) {
+                    eprintln!("⚠️  Cannot read '{}': {}", path.display(), err);
+                    INPUT_DISCOVERY_FAILED.store(true, Ordering::Relaxed);
+                }
                 continue;
             }
         };
@@ -3094,5 +3105,24 @@ mod bbl_input_expansion_tests {
         assert!(csv_files.is_empty());
         assert!(bbl_origin_dirs.is_empty());
         cleanup(&path);
+    }
+}
+
+#[cfg(test)]
+mod supported_input_extension_tests {
+    use super::*;
+
+    #[test]
+    fn csv_bbl_and_bfl_are_supported_case_insensitively() {
+        for name in ["a.csv", "a.CSV", "a.bbl", "a.BBL", "a.bfl", "a.BFL"] {
+            assert!(has_supported_input_extension(Path::new(name)), "{name}");
+        }
+    }
+
+    #[test]
+    fn unsupported_or_missing_extensions_are_not_inputs() {
+        for name in ["notes.txt", "a.gpx", "a.csv.bak", "noextension", ".hidden"] {
+            assert!(!has_supported_input_extension(Path::new(name)), "{name}");
+        }
     }
 }
