@@ -1147,6 +1147,21 @@ mod tests {
     }
 
     #[test]
+    fn present_nonzero_yaw_d_column_is_read_as_data() {
+        // EmuFlight-style log with a nonzero yaw D gain: axisD[2] is logged and must be read.
+        let cols = columns_with(&["axisD[0]", "axisD[1]", "axisD[2]"]);
+        let rows = ["0,1,2,3,4,5,6,7,8,9,0", "1000,1,2,3,4,5,6,7,8,11,0"];
+        let (_dir, result) = parse_synthetic(
+            &["rollPID,26,35,13", "pitchPID,26,35,13", "yawPID,26,35,9"],
+            &cols,
+            &rows,
+        );
+        let data = result.expect("parse").0;
+        assert_eq!(data[0].d_term, [Some(7.0), Some(8.0), Some(9.0)]);
+        assert_eq!(data[1].d_term[2], Some(11.0));
+    }
+
+    #[test]
     fn full_d_columns_and_yaw_fallback_unchanged() {
         let cols = columns_with(&["axisD[0]", "axisD[1]"]);
         let rows = ["0,1,2,3,4,5,6,7,8,0", "1000,1,2,3,4,5,6,7,8,0"];
