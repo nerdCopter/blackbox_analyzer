@@ -948,8 +948,7 @@ fn process_file(
     // --- Setup paths and names ---
     let input_path = Path::new(input_file_str);
     if !input_path.exists() {
-        eprintln!("Error: Input file not found: {input_file_str}");
-        return Ok(()); // Continue to next file if this one is not found
+        return Err(format!("Input file not found: {input_file_str}").into());
     }
     // No leading blank line here — callers own the file-to-file separator, since a scratch CSV
     // freshly exported from a .bbl needs to stay visually attached to its own "--- Exporting
@@ -2697,7 +2696,10 @@ fn main() -> Result<(), Box<dyn Error>> {
                         // Drops the exclusively-owned temp directory now (None under --keep).
                         drop(scratch_guard);
                     }
-                    Err(err) => eprintln!("⚠️  Skipping BBL file {input_file_str}: {err}"),
+                    Err(err) => {
+                        eprintln!("⚠️  Skipping BBL file {input_file_str}: {err}");
+                        overall_success = false;
+                    }
                 }
                 continue;
             }
