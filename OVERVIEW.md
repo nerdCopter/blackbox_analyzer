@@ -11,6 +11,8 @@
   - [Implementation Details](#implementation-details)
   - [Filter Response Curves](#filter-response-curves)
   - [Bode Plot Analysis (Optional)](#bode-plot-analysis-optional)
+  - [Output and Tuning Recommendations](#output-and-tuning-recommendations)
+    - [Scope: Tuning Workflow](#scope-tuning-workflow)
   - [Optimal P Estimation (Optional, Experimental)](#optimal-p-estimation-optional-experimental)
   - [Step-Response Comparison with Other Analysis Tools](#step-response-comparison-with-other-analysis-tools)
     - [Compared to PIDtoolbox/Matlab (PTstepcalc.m)](#compared-to-pidtoolboxmatlab-ptstepcalcm)
@@ -220,6 +222,18 @@ With `--extended`, all plots below are generated. The default (`--core`) generat
   A Skipped Plots section lists any enabled plot type with no plottable data; omitted when nothing was skipped.
 
 
+#### Scope: Tuning Workflow
+
+The tool reports filter configuration, filtering delay and noise spectra. It gives no filter-tuning advice; read the spectrum and delay plots against your own judgment.
+P:D recommendations assume a filter setup already chosen. Tune filters first, then PID, with Feed-Forward OFF.
+The tool does not read a Feed-Forward setting. It checks the parsed F-term samples per axis. An axis with any non-zero sample is titled "Invalid due to Feed-Forward" in the step-response plot. The flag does not suppress otherwise eligible P:D recommendations for that axis.
+
+General practice (not computed by the tool):
+- Firmware defaults are a good starting point for filters.
+- With RPM filter: change filters in small steps. After each change check gyro and D-term noise, motor temperature and flight behavior. RPM filtering does not remove all noise, and reduced D-term filtering can overheat motors.
+- Without RPM filter: use firmware-specific LPF and notch guidance to attenuate the noise peaks, never too low. Lower cutoffs add filtering delay (see the delay plots). Too much delay can cause oscillation.
+- PID: with Feed-Forward OFF, aim for a step response that reaches 1.0 quickly with slight overshoot at most, then settles at 1.0.
+
 #### P:D Ratio Recommendations
 
 The system provides intelligent P:D tuning recommendations based on step-response peak analysis:
@@ -230,7 +244,7 @@ The system provides intelligent P:D tuning recommendations based on step-respons
 - Shows only base D when D-Min/D-Max is disabled
 - Works for all aircraft sizes, including 10+ inch, where D can exceed P
 - Includes warnings for severe overshoot or unreasonable P:D ratios
-- Shows recommendations only when the step response needs improvement (skips optimal peak 0.95–1.04)
+- Shows recommendations only when the step response needs improvement (no adjustment for 1.02 ≤ peak < 1.08; 1.00 ≤ peak < 1.02 can show an optional D−1 hint; peak ≥ 1.08 can show a D recommendation; see zones above)
 - **Note:** Peak value measures the first maximum after crossing the setpoint; the initial transient dip is normal system behavior
 
 #### Optimal P Estimation (Optional, Experimental)
