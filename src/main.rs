@@ -38,6 +38,10 @@ use crate::types::{InputExpansionResult, LogParseResult, StepResponseResults};
 /// blank line instead of silently attaching to whatever the export attempt printed.
 static PRINTED_DISCOVERY_WARNING: AtomicBool = AtomicBool::new(false);
 
+/// Set when input discovery drops an input (unreadable path, directory error, failed eager
+/// `.bbl` export). `main` folds it into the final success status and exit code.
+static INPUT_DISCOVERY_FAILED: AtomicBool = AtomicBool::new(false);
+
 /// Prints a discovery-time "Skipping ..." warning, inserting one blank line via
 /// `print_block_separator()` before the very first such warning of the run and none before any
 /// warning after that — keeping a contiguous group of warnings visually tight while still
@@ -425,11 +429,15 @@ fn expand_input_paths(
                     bbl_origin_dirs.extend(dir_bbl_origin_dirs);
                     scratch_dirs.append(&mut dir_scratch_dirs);
                 }
-                Err(err) => eprintln!("⚠️  Error processing directory {}: {}", input_path_str, err),
+                Err(err) => {
+                    eprintln!("⚠️  Error processing directory {}: {}", input_path_str, err);
+                    INPUT_DISCOVERY_FAILED.store(true, Ordering::Relaxed);
+                }
             }
         } else {
             // Path doesn't exist or isn't accessible
             eprintln!("⚠️  Path not found or not accessible: {}", input_path_str);
+            INPUT_DISCOVERY_FAILED.store(true, Ordering::Relaxed);
         }
     }
 
@@ -508,7 +516,10 @@ fn expand_one_bbl_file(
                 scratch_dirs.push(dir);
             }
         }
-        Err(err) => eprintln!("⚠️  Skipping BBL file {}: {}", bbl_path.display(), err),
+        Err(err) => {
+            eprintln!("⚠️  Skipping BBL file {}: {}", bbl_path.display(), err);
+            INPUT_DISCOVERY_FAILED.store(true, Ordering::Relaxed);
+        }
     }
 }
 
@@ -2625,7 +2636,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let grouped_files =
         group_files_by_aircraft(&input_files, debug_mode, analysis_opts.estimate_optimal_p);
 
-    let mut overall_success = true;
+    let mut overall_success = !INPUT_DISCOVERY_FAILED.load(Ordering::Relaxed);
     for (craft_key, group_files) in &grouped_files {
         // Phase 1: torque-inertia profiling across all files in the group.
         // Reuses each file's parse result in Phase 2 below instead of re-parsing.

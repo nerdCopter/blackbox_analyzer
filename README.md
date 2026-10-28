@@ -89,6 +89,10 @@ Usage: ./blackbox_analyzer <input1> [<input2> ...] [OPTIONS]
 
 Arguments can be in any order. Wildcards (e.g., *.csv) are shell-expanded and work with mixed file/directory patterns.
 
+### Exit status
+- `0`: every input was processed. Flights skipped by the default low-value filter do not count as failures.
+- `1`: at least one input failed (path not found, `.bbl`/`.bfl` decode failure, log that cannot be parsed or has no data rows) or the arguments are invalid. Remaining inputs are still processed. The reason for each failure is printed to stderr, followed by `Some files could not be processed successfully.`
+
 ### Example execution commands
 ```shell
 ./target/release/blackbox_analyzer path/to/BTFL_Log.csv
