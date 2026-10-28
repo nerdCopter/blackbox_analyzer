@@ -549,7 +549,14 @@ fn find_csv_files_in_dir_impl(
     let mut bbl_origin_dirs = HashMap::new();
     let mut scratch_dirs = Vec::new();
 
+    // The caller classified this path as a directory; a different answer now means it vanished
+    // or became inaccessible in between, so record it instead of returning an empty result.
     if !dir_path.is_dir() {
+        eprintln!(
+            "⚠️  Path is no longer a readable directory: {}",
+            dir_path.display()
+        );
+        INPUT_DISCOVERY_FAILED.store(true, Ordering::Relaxed);
         return Ok((csv_files, skipped_count, bbl_origin_dirs, scratch_dirs));
     }
 
