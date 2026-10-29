@@ -663,14 +663,23 @@ fn find_csv_files_in_dir_impl(
                         ));
                     }
                 } else if is_bbl_extension(&extension) {
-                    expand_one_bbl_file(
-                        &path,
-                        bbl_opts,
-                        debug_mode,
-                        &mut csv_files,
-                        &mut bbl_origin_dirs,
-                        &mut scratch_dirs,
-                    );
+                    // A non-UTF-8 path would be converted lossily and later fail to decode as
+                    // a nonexistent file; skip it with a warning, as for CSV paths above.
+                    if path.to_str().is_none() {
+                        print_discovery_skip_warning(&format!(
+                            "⚠️  Skipping file with non-UTF-8 path: {}",
+                            path.display()
+                        ));
+                    } else {
+                        expand_one_bbl_file(
+                            &path,
+                            bbl_opts,
+                            debug_mode,
+                            &mut csv_files,
+                            &mut bbl_origin_dirs,
+                            &mut scratch_dirs,
+                        );
+                    }
                 }
             }
         }
