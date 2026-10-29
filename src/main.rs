@@ -550,27 +550,19 @@ fn find_csv_files_in_dir_impl(
     let mut bbl_origin_dirs = HashMap::new();
     let mut scratch_dirs = Vec::new();
 
-    // The caller classified this path as a directory; a different answer now means it vanished
-    // or became inaccessible in between, so record it instead of returning an empty result.
+    // Failures to open this directory are returned as errors: the top-level caller flags them
+    // as a failed named input, and the recursive caller downgrades them to a warning.
     if !dir_path.is_dir() {
-        eprintln!(
-            "⚠️  Path is no longer a readable directory: {}",
-            dir_path.display()
-        );
-        return Ok((csv_files, skipped_count, bbl_origin_dirs, scratch_dirs));
+        return Err(format!("no longer a readable directory: {}", dir_path.display()).into());
     }
 
     // Canonicalize path to detect symlink loops
-    let canonical_path = match dir_path.canonicalize() {
-        Ok(path) => path,
-        Err(_) => {
-            eprintln!(
-                "⚠️  Cannot canonicalize directory path: {}",
-                dir_path.display()
-            );
-            return Ok((csv_files, skipped_count, bbl_origin_dirs, scratch_dirs));
-        }
-    };
+    let canonical_path = dir_path.canonicalize().map_err(|err| {
+        format!(
+            "cannot canonicalize directory {}: {err}",
+            dir_path.display()
+        )
+    })?;
 
     // Check if we've already visited this directory (symlink loop detection)
     if visited.contains(&canonical_path) {
@@ -582,17 +574,8 @@ fn find_csv_files_in_dir_impl(
     }
     visited.insert(canonical_path);
 
-    let entries = match fs::read_dir(dir_path) {
-        Ok(entries) => entries,
-        Err(err) => {
-            eprintln!(
-                "⚠️  Cannot read directory '{}': {}",
-                dir_path.display(),
-                err
-            );
-            return Ok((csv_files, skipped_count, bbl_origin_dirs, scratch_dirs));
-        }
-    };
+    let entries = fs::read_dir(dir_path)
+        .map_err(|err| format!("cannot read directory {}: {err}", dir_path.display()))?;
 
     for entry in entries {
         let entry = match entry {
