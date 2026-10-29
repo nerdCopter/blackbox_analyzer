@@ -88,12 +88,12 @@ Usage: ./blackbox_analyzer <input1> [<input2> ...] [OPTIONS]
 ```
 
 Arguments can be in any order. Wildcards (e.g., *.csv) are shell-expanded and work with mixed file/directory patterns.
-Command-line arguments must be valid Unicode; a filename with invalid UTF-8 bytes can only be reached through a directory scan, where it is skipped with a warning.
+A command-line argument that is not valid Unicode is reported on stderr and skipped, the remaining inputs are still processed, and the exit status is `1`. If the invalid argument is the value of `--dps`, `--output-dir`/`-O`, `--start` or `--end`, the run stops with exit status `1` before processing. A filename with invalid UTF-8 bytes found by a directory scan is skipped with a warning.
 
 ### Exit status
 For a valid invocation, a failure on one input never stops the remaining inputs, so bulk and recursive runs finish and write all outputs they can; the exit status then reports whether anything failed.
-- `0`: every log that was read succeeded. Warnings do not change it: flights skipped by the low-value filter (with `--estimate-optimal-p`, filtering that leaves no input at all exits `1` as "no input files found"), header CSVs, unsupported files, and unreadable entries found while scanning a directory (for example a dangling symlink).
-- `1`: invalid arguments, no input files found, or at least one input failed: a path you named does not exist or cannot be processed, a log cannot be parsed or has no data rows, a `.bbl`/`.bfl` decode or flight export failure, or a `--start`/`--end` window that is out of range for a log. The reason is printed to stderr, and if discovery produced at least one input the run ends with `Some files could not be processed successfully.`
+- `0`: every log that was read succeeded. Warnings do not change it: flights skipped by the low-value filter (with `--estimate-optimal-p`, filtering that leaves no input prints a notice and also exits `0`), header CSVs, unsupported files, and unreadable entries found while scanning a directory (for example a dangling symlink).
+- `1`: invalid arguments, no input files found, or at least one input failed: a path you named does not exist or cannot be processed, a command-line argument is not valid Unicode, a log cannot be parsed or has no data rows, a `.bbl`/`.bfl` decode or flight export failure, or a `--start`/`--end` window that is out of range for a log. The reason is printed to stderr, and if discovery produced at least one input the run ends with `Some files could not be processed successfully.`
 
 ### Example execution commands
 ```shell

@@ -502,3 +502,6 @@ pub const BFL_EXTENSION: &str = "bfl";
 pub const CSV_EXTENSION: &str = "csv";
 pub const HEADER_CSV_SUFFIX: &str = ".header.csv";
 pub const HEADERS_CSV_SUFFIX: &str = ".headers.csv";
+
+/// Command-line options that consume the next argument as their value.
+pub const VALUE_TAKING_OPTIONS: [&str; 5] = ["--dps", "--output-dir", "-O", "--start", "--end"];
