@@ -88,6 +88,7 @@ Usage: ./blackbox_analyzer <input1> [<input2> ...] [OPTIONS]
 ```
 
 Arguments can be in any order. Wildcards (e.g., *.csv) are shell-expanded and work with mixed file/directory patterns.
+Command-line arguments must be valid Unicode; a filename with invalid UTF-8 bytes can only be reached through a directory scan, where it is skipped with a warning.
 
 ### Exit status
 For a valid invocation, a failure on one input never stops the remaining inputs, so bulk and recursive runs finish and write all outputs they can; the exit status then reports whether anything failed.
