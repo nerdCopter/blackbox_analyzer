@@ -6,11 +6,16 @@ use std::collections::HashSet;
 use std::error::Error;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
 
 use crate::constants::{
     BBL_DISAMBIGUATOR_HEX_WIDTH, BBL_DISAMBIGUATOR_MASK, RENAME_PAIR_MAX_ATTEMPTS,
 };
 use crate::types::BblExpansionResult;
+
+/// Set when a flight fails to export to CSV, so its log is never read. `main` folds it into the
+/// final success status and exit code. Flights skipped by the low-value filter do not set it.
+pub static FLIGHT_EXPORT_FAILED: AtomicBool = AtomicBool::new(false);
 
 /// Prints a blank line separating the next output block from whatever came before it — the
 /// startup banner, a discovery-warning group, or a previous file's own output. Always prints;
@@ -216,6 +221,7 @@ pub fn expand_bbl_to_scratch_csvs(
                     log.log_number,
                     bbl_path.display()
                 );
+                FLIGHT_EXPORT_FAILED.store(true, std::sync::atomic::Ordering::Relaxed);
                 skipped_count += 1;
                 continue;
             }
@@ -235,6 +241,7 @@ pub fn expand_bbl_to_scratch_csvs(
                 log.log_number,
                 bbl_path.display()
             );
+            FLIGHT_EXPORT_FAILED.store(true, std::sync::atomic::Ordering::Relaxed);
             skipped_count += 1;
             continue;
         };

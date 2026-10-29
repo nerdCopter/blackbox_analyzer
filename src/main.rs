@@ -38,6 +38,11 @@ use crate::types::{InputExpansionResult, LogParseResult, StepResponseResults};
 /// blank line instead of silently attaching to whatever the export attempt printed.
 static PRINTED_DISCOVERY_WARNING: AtomicBool = AtomicBool::new(false);
 
+/// Set when an input the user named cannot be read (nonexistent path, directory that cannot be
+/// processed, failed eager `.bbl` export). `main` folds it into the final success status and exit
+/// code. Entries found while scanning a directory only produce warnings.
+static INPUT_DISCOVERY_FAILED: AtomicBool = AtomicBool::new(false);
+
 /// Prints a discovery-time "Skipping ..." warning, inserting one blank line via
 /// `print_block_separator()` before the very first such warning of the run and none before any
 /// warning after that — keeping a contiguous group of warnings visually tight while still
@@ -227,7 +232,7 @@ impl Drop for CwdGuard {
 }
 
 // Data input import
-use crate::data_input::bbl_reader::expand_bbl_to_scratch_csvs;
+use crate::data_input::bbl_reader::{expand_bbl_to_scratch_csvs, FLIGHT_EXPORT_FAILED};
 use crate::data_input::log_data::LogRowData;
 use crate::data_input::log_parser::{self, parse_log_file};
 use crate::data_input::pid_metadata::parse_pid_metadata;
@@ -425,11 +430,15 @@ fn expand_input_paths(
                     bbl_origin_dirs.extend(dir_bbl_origin_dirs);
                     scratch_dirs.append(&mut dir_scratch_dirs);
                 }
-                Err(err) => eprintln!("⚠️  Error processing directory {}: {}", input_path_str, err),
+                Err(err) => {
+                    eprintln!("⚠️  Error processing directory {}: {}", input_path_str, err);
+                    INPUT_DISCOVERY_FAILED.store(true, Ordering::Relaxed);
+                }
             }
         } else {
             // Path doesn't exist or isn't accessible
             eprintln!("⚠️  Path not found or not accessible: {}", input_path_str);
+            INPUT_DISCOVERY_FAILED.store(true, Ordering::Relaxed);
         }
     }
 
@@ -508,7 +517,10 @@ fn expand_one_bbl_file(
                 scratch_dirs.push(dir);
             }
         }
-        Err(err) => eprintln!("⚠️  Skipping BBL file {}: {}", bbl_path.display(), err),
+        Err(err) => {
+            eprintln!("⚠️  Skipping BBL file {}: {}", bbl_path.display(), err);
+            INPUT_DISCOVERY_FAILED.store(true, Ordering::Relaxed);
+        }
     }
 }
 
@@ -538,21 +550,19 @@ fn find_csv_files_in_dir_impl(
     let mut bbl_origin_dirs = HashMap::new();
     let mut scratch_dirs = Vec::new();
 
+    // Failures to open this directory are returned as errors: the top-level caller flags them
+    // as a failed named input, and the recursive caller downgrades them to a warning.
     if !dir_path.is_dir() {
-        return Ok((csv_files, skipped_count, bbl_origin_dirs, scratch_dirs));
+        return Err(format!("no longer a readable directory: {}", dir_path.display()).into());
     }
 
     // Canonicalize path to detect symlink loops
-    let canonical_path = match dir_path.canonicalize() {
-        Ok(path) => path,
-        Err(_) => {
-            eprintln!(
-                "⚠️  Cannot canonicalize directory path: {}",
-                dir_path.display()
-            );
-            return Ok((csv_files, skipped_count, bbl_origin_dirs, scratch_dirs));
-        }
-    };
+    let canonical_path = dir_path.canonicalize().map_err(|err| {
+        format!(
+            "cannot canonicalize directory {}: {err}",
+            dir_path.display()
+        )
+    })?;
 
     // Check if we've already visited this directory (symlink loop detection)
     if visited.contains(&canonical_path) {
@@ -564,17 +574,8 @@ fn find_csv_files_in_dir_impl(
     }
     visited.insert(canonical_path);
 
-    let entries = match fs::read_dir(dir_path) {
-        Ok(entries) => entries,
-        Err(err) => {
-            eprintln!(
-                "⚠️  Cannot read directory '{}': {}",
-                dir_path.display(),
-                err
-            );
-            return Ok((csv_files, skipped_count, bbl_origin_dirs, scratch_dirs));
-        }
-    };
+    let entries = fs::read_dir(dir_path)
+        .map_err(|err| format!("cannot read directory {}: {err}", dir_path.display()))?;
 
     for entry in entries {
         let entry = match entry {
@@ -590,7 +591,23 @@ fn find_csv_files_in_dir_impl(
         };
         let path = entry.path();
 
-        if path.is_dir() {
+        // is_dir()/is_file() report false on a metadata error (e.g. a dangling symlink); use
+        // fallible metadata so the entry is reported instead of vanishing. Unreadable entries
+        // found while scanning a directory are warnings: the other inputs are still processed
+        // and the exit status is unchanged.
+        let metadata = match fs::metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(err) => {
+                print_discovery_skip_warning(&format!(
+                    "⚠️  Cannot read '{}': {}",
+                    path.display(),
+                    err
+                ));
+                continue;
+            }
+        };
+
+        if metadata.is_dir() {
             // Recurse into subdirectories only if recursive flag is set
             if recursive {
                 match find_csv_files_in_dir_impl(&path, visited, recursive, bbl_opts, debug_mode) {
@@ -605,11 +622,13 @@ fn find_csv_files_in_dir_impl(
                         bbl_origin_dirs.extend(sub_bbl_origin_dirs);
                         scratch_dirs.append(&mut sub_scratch_dirs);
                     }
-                    Err(err) => eprintln!(
-                        "⚠️  Error processing subdirectory '{}': {}",
-                        path.display(),
-                        err
-                    ),
+                    Err(err) => {
+                        eprintln!(
+                            "⚠️  Error processing subdirectory '{}': {}",
+                            path.display(),
+                            err
+                        );
+                    }
                 }
             } else {
                 // Skip this subdirectory
@@ -622,7 +641,7 @@ fn find_csv_files_in_dir_impl(
                     );
                 }
             }
-        } else if path.is_file() {
+        } else if metadata.is_file() {
             // Check if it's a CSV or BBL file
             if let Some(extension) = path.extension() {
                 let extension = extension.to_string_lossy();
@@ -644,14 +663,23 @@ fn find_csv_files_in_dir_impl(
                         ));
                     }
                 } else if is_bbl_extension(&extension) {
-                    expand_one_bbl_file(
-                        &path,
-                        bbl_opts,
-                        debug_mode,
-                        &mut csv_files,
-                        &mut bbl_origin_dirs,
-                        &mut scratch_dirs,
-                    );
+                    // A non-UTF-8 path would be converted lossily and later fail to decode as
+                    // a nonexistent file; skip it with a warning, as for CSV paths above.
+                    if path.to_str().is_none() {
+                        print_discovery_skip_warning(&format!(
+                            "⚠️  Skipping file with non-UTF-8 path: {}",
+                            path.display()
+                        ));
+                    } else {
+                        expand_one_bbl_file(
+                            &path,
+                            bbl_opts,
+                            debug_mode,
+                            &mut csv_files,
+                            &mut bbl_origin_dirs,
+                            &mut scratch_dirs,
+                        );
+                    }
                 }
             }
         }
@@ -948,8 +976,7 @@ fn process_file(
     // --- Setup paths and names ---
     let input_path = Path::new(input_file_str);
     if !input_path.exists() {
-        eprintln!("Error: Input file not found: {input_file_str}");
-        return Ok(()); // Continue to next file if this one is not found
+        return Err(format!("Input file not found: {input_file_str}").into());
     }
     // No leading blank line here — callers own the file-to-file separator, since a scratch CSV
     // freshly exported from a .bbl needs to stay visually attached to its own "--- Exporting
@@ -1003,14 +1030,16 @@ fn process_file(
     {
         Ok(data) => data,
         Err(e) => {
-            eprintln!("Error: Parsing log file {input_file_str}: {e}");
-            return Ok(()); // Continue to next file
+            // The caller records the failure and continues with the next file.
+            return Err(format!("Parsing log file {input_file_str}: {e}").into());
         }
     };
 
     if all_log_data.is_empty() {
-        println!("No valid data rows read from {input_file_str}, cannot generate plots.");
-        return Ok(());
+        return Err(format!(
+            "No valid data rows read from {input_file_str}, cannot generate plots."
+        )
+        .into());
     }
 
     // Captured before zeroing below — this note is the only place absolute FC uptime is shown,
@@ -1040,32 +1069,30 @@ fn process_file(
         let (log_first, log_last) = match (log_first, log_last) {
             (Some(f), Some(l)) if l > f => (f, l),
             _ => {
-                eprintln!(
-                    "Error: Cannot apply --start/--end trim to {input_file_str}: time data unavailable."
-                );
-                return Ok(());
+                return Err(format!(
+                    "Cannot apply --start/--end trim to {input_file_str}: time data unavailable."
+                )
+                .into());
             }
         };
         let duration = log_last - log_first;
         let rel_start = analysis_opts.trim_start.unwrap_or(TRIM_START_DEFAULT_S);
         let rel_end = analysis_opts.trim_end.unwrap_or(duration);
         if rel_start >= duration {
-            eprintln!(
-                "Error: --start {rel_start:.3}s is at or beyond log duration ({duration:.3}s) for {input_file_str}"
-            );
-            return Ok(());
+            return Err(format!(
+                "--start {rel_start:.3}s is at or beyond log duration ({duration:.3}s) for {input_file_str}"
+            ).into());
         }
         if rel_end > duration {
-            eprintln!(
-                "Error: --end {rel_end:.3}s exceeds log duration ({duration:.3}s) for {input_file_str}"
-            );
-            return Ok(());
+            return Err(format!(
+                "--end {rel_end:.3}s exceeds log duration ({duration:.3}s) for {input_file_str}"
+            )
+            .into());
         }
         if rel_start >= rel_end {
-            eprintln!(
-                "Error: --start ({rel_start:.3}s) must be less than --end ({rel_end:.3}s) for {input_file_str}"
-            );
-            return Ok(());
+            return Err(format!(
+                "--start ({rel_start:.3}s) must be less than --end ({rel_end:.3}s) for {input_file_str}"
+            ).into());
         }
         let window_start = log_first + rel_start;
         let window_end = log_first + rel_end;
@@ -1076,10 +1103,9 @@ fn process_file(
                 .is_some_and(|t| t >= window_start && t <= window_end)
         });
         if all_log_data.is_empty() {
-            eprintln!(
-                "Error: --start/--end window leaves no data rows for {input_file_str} (log spans 0.000s-{duration:.3}s)"
-            );
-            return Ok(());
+            return Err(format!(
+                "--start/--end window leaves no data rows for {input_file_str} (log spans 0.000s-{duration:.3}s)"
+            ).into());
         }
         println!(
             "Note: Trimmed to {rel_start:.3}s-{rel_end:.3}s ({} rows, log duration {duration:.3}s) of {input_file_str}",
@@ -2695,7 +2721,10 @@ fn main() -> Result<(), Box<dyn Error>> {
                         // Drops the exclusively-owned temp directory now (None under --keep).
                         drop(scratch_guard);
                     }
-                    Err(err) => eprintln!("⚠️  Skipping BBL file {input_file_str}: {err}"),
+                    Err(err) => {
+                        eprintln!("⚠️  Skipping BBL file {input_file_str}: {err}");
+                        overall_success = false;
+                    }
                 }
                 continue;
             }
@@ -2735,6 +2764,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     // touches --keep output either way.
     drop(bbl_scratch_dirs);
 
+    let overall_success = overall_success
+        && !INPUT_DISCOVERY_FAILED.load(Ordering::Relaxed)
+        && !FLIGHT_EXPORT_FAILED.load(Ordering::Relaxed);
     if overall_success {
         println!(
             "
@@ -2746,11 +2778,7 @@ All files processed successfully."
             "
 Some files could not be processed successfully."
         );
-        // Still return Ok(()) here as we've handled errors per file.
-        // Or, could return a generic error if preferred for the whole batch.
-        // For now, exiting with 0 if any file succeeded, or if all failed but were handled.
-        // To signal overall failure to scripts, one might `std::process::exit(1)` here.
-        Ok(())
+        Err("one or more files could not be processed".into())
     }
 }
 
