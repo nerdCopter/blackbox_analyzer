@@ -90,8 +90,9 @@ Usage: ./blackbox_analyzer <input1> [<input2> ...] [OPTIONS]
 Arguments can be in any order. Wildcards (e.g., *.csv) are shell-expanded and work with mixed file/directory patterns.
 
 ### Exit status
-- `0`: no input failure was recorded. Inputs skipped on purpose (flights under the low-value filter, header CSVs, unsupported files) do not count as failures.
-- `1`: invalid arguments, no input files found, or at least one input failed: path not found or unreadable, `.bbl`/`.bfl` decode or flight export failure, a log that cannot be parsed or has no data rows, or a `--start`/`--end` window that is out of range for a log. After a per-input failure, the remaining inputs are still processed and the reason is printed to stderr. If discovery produced at least one input, the run ends with `Some files could not be processed successfully.`
+Every input is always processed. A failure never stops the remaining inputs, so bulk and recursive runs finish and write all outputs they can; the exit status then reports whether anything failed.
+- `0`: every log that was read succeeded. Warnings do not change it: flights skipped by the low-value filter, header CSVs, unsupported files, and unreadable entries found while scanning a directory (for example a dangling symlink).
+- `1`: invalid arguments, no input files found, or at least one input failed: a path you named does not exist or cannot be processed, a log cannot be parsed or has no data rows, a `.bbl`/`.bfl` decode or flight export failure, or a `--start`/`--end` window that is out of range for a log. The reason is printed to stderr, and if discovery produced at least one input the run ends with `Some files could not be processed successfully.`
 
 ### Example execution commands
 ```shell

@@ -38,8 +38,9 @@ use crate::types::{InputExpansionResult, LogParseResult, StepResponseResults};
 /// blank line instead of silently attaching to whatever the export attempt printed.
 static PRINTED_DISCOVERY_WARNING: AtomicBool = AtomicBool::new(false);
 
-/// Set when input discovery drops an input (unreadable path, directory error, failed eager
-/// `.bbl` export). `main` folds it into the final success status and exit code.
+/// Set when an input the user named cannot be read (nonexistent path, directory that cannot be
+/// processed, failed eager `.bbl` export). `main` folds it into the final success status and exit
+/// code. Entries found while scanning a directory only produce warnings.
 static INPUT_DISCOVERY_FAILED: AtomicBool = AtomicBool::new(false);
 
 /// Prints a discovery-time "Skipping ..." warning, inserting one blank line via
@@ -268,19 +269,6 @@ struct BblExpansionOptions<'a> {
     /// file). Consulted by `expand_bbl_to_scratch_csvs` to decide whether a retained export needs
     /// a disambiguating suffix; see `find_colliding_bbl_stems`.
     colliding_stems: &'a HashSet<String>,
-}
-
-/// True when an unreadable directory entry counts as a dropped input. An entry with no extension
-/// might be a directory, so it counts. A `.csv`/`.bbl`/`.bfl` entry counts unless it is a header
-/// sidecar, which discovery skips on purpose. Any other extension is an unsupported file.
-fn unreadable_entry_is_input_failure(path: &Path) -> bool {
-    let Some(extension) = path.extension().map(|ext| ext.to_string_lossy()) else {
-        return true;
-    };
-    if extension.eq_ignore_ascii_case(CSV_EXTENSION) {
-        return !is_header_csv_path(&path.to_string_lossy().to_ascii_lowercase());
-    }
-    is_bbl_extension(&extension)
 }
 
 /// True for a `.bbl`/`.BBL` or `.bfl`/`.BFL` extension (case-insensitive). Both extensions name
@@ -569,7 +557,6 @@ fn find_csv_files_in_dir_impl(
             "⚠️  Path is no longer a readable directory: {}",
             dir_path.display()
         );
-        INPUT_DISCOVERY_FAILED.store(true, Ordering::Relaxed);
         return Ok((csv_files, skipped_count, bbl_origin_dirs, scratch_dirs));
     }
 
@@ -581,7 +568,6 @@ fn find_csv_files_in_dir_impl(
                 "⚠️  Cannot canonicalize directory path: {}",
                 dir_path.display()
             );
-            INPUT_DISCOVERY_FAILED.store(true, Ordering::Relaxed);
             return Ok((csv_files, skipped_count, bbl_origin_dirs, scratch_dirs));
         }
     };
@@ -604,7 +590,6 @@ fn find_csv_files_in_dir_impl(
                 dir_path.display(),
                 err
             );
-            INPUT_DISCOVERY_FAILED.store(true, Ordering::Relaxed);
             return Ok((csv_files, skipped_count, bbl_origin_dirs, scratch_dirs));
         }
     };
@@ -618,23 +603,23 @@ fn find_csv_files_in_dir_impl(
                     dir_path.display(),
                     err
                 );
-                INPUT_DISCOVERY_FAILED.store(true, Ordering::Relaxed);
                 continue;
             }
         };
         let path = entry.path();
 
-        // is_dir()/is_file() report false on a metadata error (e.g. a dangling symlink), which
-        // would drop the entry silently; classify through fallible metadata instead. Only an
-        // entry that could be an input counts as a failure; other unreadable entries are
-        // skipped like any unsupported file.
+        // is_dir()/is_file() report false on a metadata error (e.g. a dangling symlink); use
+        // fallible metadata so the entry is reported instead of vanishing. Unreadable entries
+        // found while scanning a directory are warnings: the other inputs are still processed
+        // and the exit status is unchanged.
         let metadata = match fs::metadata(&path) {
             Ok(metadata) => metadata,
             Err(err) => {
-                if unreadable_entry_is_input_failure(&path) {
-                    eprintln!("⚠️  Cannot read '{}': {}", path.display(), err);
-                    INPUT_DISCOVERY_FAILED.store(true, Ordering::Relaxed);
-                }
+                print_discovery_skip_warning(&format!(
+                    "⚠️  Cannot read '{}': {}",
+                    path.display(),
+                    err
+                ));
                 continue;
             }
         };
@@ -660,7 +645,6 @@ fn find_csv_files_in_dir_impl(
                             path.display(),
                             err
                         );
-                        INPUT_DISCOVERY_FAILED.store(true, Ordering::Relaxed);
                     }
                 }
             } else {
@@ -694,7 +678,6 @@ fn find_csv_files_in_dir_impl(
                             "⚠️  Skipping file with non-UTF-8 path: {}",
                             path.display()
                         ));
-                        INPUT_DISCOVERY_FAILED.store(true, Ordering::Relaxed);
                     }
                 } else if is_bbl_extension(&extension) {
                     expand_one_bbl_file(
@@ -3111,47 +3094,5 @@ mod bbl_input_expansion_tests {
         assert!(csv_files.is_empty());
         assert!(bbl_origin_dirs.is_empty());
         cleanup(&path);
-    }
-}
-
-#[cfg(test)]
-mod unreadable_entry_tests {
-    use super::*;
-
-    #[test]
-    fn unreadable_csv_bbl_and_bfl_entries_are_failures_case_insensitively() {
-        for name in ["a.csv", "a.CSV", "a.bbl", "a.BBL", "a.bfl", "a.BFL"] {
-            assert!(unreadable_entry_is_input_failure(Path::new(name)), "{name}");
-        }
-    }
-
-    #[test]
-    fn unreadable_extensionless_entry_is_a_failure() {
-        // Might be a directory of logs.
-        assert!(unreadable_entry_is_input_failure(Path::new("logs")));
-    }
-
-    #[test]
-    fn unreadable_unsupported_entries_are_skipped() {
-        for name in ["notes.txt", "a.gpx", "a.csv.bak"] {
-            assert!(
-                !unreadable_entry_is_input_failure(Path::new(name)),
-                "{name}"
-            );
-        }
-    }
-
-    #[test]
-    fn unreadable_header_sidecar_is_skipped() {
-        for name in [
-            "flight.headers.csv",
-            "FLIGHT.HEADERS.CSV",
-            "flight.header.csv",
-        ] {
-            assert!(
-                !unreadable_entry_is_input_failure(Path::new(name)),
-                "{name}"
-            );
-        }
     }
 }
