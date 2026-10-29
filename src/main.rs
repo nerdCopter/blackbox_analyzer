@@ -15,6 +15,7 @@ mod types;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::env;
 use std::error::Error;
+use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -232,7 +233,9 @@ impl Drop for CwdGuard {
 }
 
 // Data input import
-use crate::data_input::bbl_reader::{expand_bbl_to_scratch_csvs, FLIGHT_EXPORT_FAILED};
+use crate::data_input::bbl_reader::{
+    expand_bbl_to_scratch_csvs, FLIGHT_EXPORT_FAILED, FLIGHT_FILTERED,
+};
 use crate::data_input::log_data::LogRowData;
 use crate::data_input::log_parser::{self, parse_log_file};
 use crate::data_input::pid_metadata::parse_pid_metadata;
@@ -1031,7 +1034,7 @@ fn process_file(
         Ok(data) => data,
         Err(e) => {
             // The caller records the failure and continues with the next file.
-            return Err(format!("Parsing log file {input_file_str}: {e}").into());
+            return Err(format!("Parsing log: {e}").into());
         }
     };
 
@@ -2385,6 +2388,45 @@ INFO: Skipping Step Response input data filtering for {input_file_str}: {reason}
     Ok(())
 }
 
+/// Result of converting the raw command line to UTF-8 strings.
+struct ConvertedArgs {
+    /// Arguments that are valid Unicode, in order. Index 0 is the program name.
+    args: Vec<String>,
+    /// Lossy display form of every argument that is not valid Unicode.
+    invalid: Vec<String>,
+    /// True when an invalid argument is the value of an option, so the option cannot be honored.
+    invalid_option_value: bool,
+}
+
+/// Splits the raw command line into valid-Unicode arguments and a list of invalid ones.
+/// Invalid arguments are dropped so the remaining inputs can still be processed.
+fn convert_os_args<I: IntoIterator<Item = OsString>>(os_args: I) -> ConvertedArgs {
+    let mut converted = ConvertedArgs {
+        args: Vec::new(),
+        invalid: Vec::new(),
+        invalid_option_value: false,
+    };
+    let mut prev_takes_value = false;
+    for (idx, os_arg) in os_args.into_iter().enumerate() {
+        match os_arg.into_string() {
+            Ok(arg) => {
+                // A token the parser consumes as an option value never starts another option.
+                prev_takes_value = idx > 0
+                    && !prev_takes_value
+                    && crate::constants::VALUE_TAKING_OPTIONS.contains(&arg.as_str());
+                converted.args.push(arg);
+            }
+            Err(bad) if idx == 0 => converted.args.push(bad.to_string_lossy().into_owned()),
+            Err(bad) => {
+                converted.invalid_option_value |= prev_takes_value;
+                prev_takes_value = false;
+                converted.invalid.push(bad.to_string_lossy().into_owned());
+            }
+        }
+    }
+    converted
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     // Print version at start of every execution. No trailing blank line here — every
     // first-file transition (plain CSV or .bbl export) already prints its own leading blank,
@@ -2392,8 +2434,22 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("{} {}", env!("CARGO_PKG_NAME"), get_version_string());
 
     // --- Argument Parsing ---
-    let args: Vec<String> = env::args().collect();
-    let program_name = &args[0];
+    let converted = convert_os_args(env::args_os());
+    for bad in &converted.invalid {
+        eprintln!("Error: argument is not valid Unicode and was skipped: {bad}");
+    }
+    if converted.invalid_option_value {
+        eprintln!("Error: an option value is not valid Unicode.");
+        std::process::exit(1);
+    }
+    if !converted.invalid.is_empty() {
+        INPUT_DISCOVERY_FAILED.store(true, Ordering::Relaxed);
+    }
+    let args = converted.args;
+    let program_name = args
+        .first()
+        .map(String::as_str)
+        .unwrap_or(env!("CARGO_PKG_NAME"));
 
     if args.len() < 2 {
         print_usage_and_exit(program_name);
@@ -2559,6 +2615,9 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Exit if only --version flag was set
     if version_flag_set {
+        if INPUT_DISCOVERY_FAILED.load(Ordering::Relaxed) {
+            std::process::exit(1);
+        }
         return Ok(());
     }
 
@@ -2602,6 +2661,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     if input_files.is_empty() {
+        let failed = INPUT_DISCOVERY_FAILED.load(Ordering::Relaxed)
+            || FLIGHT_EXPORT_FAILED.load(Ordering::Relaxed);
+        if FLIGHT_FILTERED.load(Ordering::Relaxed) && !failed {
+            println!("No flights left to process: all were skipped by the low-value filter.");
+            return Ok(());
+        }
         eprintln!("Error: No CSV files found in the specified input paths.");
         std::process::exit(1);
     }
@@ -3086,5 +3151,83 @@ mod bbl_input_expansion_tests {
         assert!(csv_files.is_empty());
         assert!(bbl_origin_dirs.is_empty());
         cleanup(&path);
+    }
+}
+
+#[cfg(test)]
+mod arg_conversion_tests {
+    use super::*;
+
+    #[cfg(unix)]
+    fn invalid_os(bytes: &[u8]) -> OsString {
+        use std::os::unix::ffi::OsStringExt;
+        OsString::from_vec(bytes.to_vec())
+    }
+
+    #[test]
+    fn convert_os_args_all_valid() {
+        let c = convert_os_args(["prog", "a.csv", "--dps", "500"].map(OsString::from));
+        assert_eq!(c.args, ["prog", "a.csv", "--dps", "500"]);
+        assert!(c.invalid.is_empty());
+        assert!(!c.invalid_option_value);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn convert_os_args_drops_invalid_input_and_keeps_others() {
+        let c = convert_os_args(vec![
+            OsString::from("prog"),
+            invalid_os(b"bad\xff.csv"),
+            OsString::from("good.csv"),
+        ]);
+        assert_eq!(c.args, ["prog", "good.csv"]);
+        assert_eq!(c.invalid.len(), 1);
+        assert!(c.invalid[0].starts_with("bad"));
+        assert!(!c.invalid_option_value);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn convert_os_args_flags_invalid_option_value() {
+        for opt in ["--dps", "--output-dir", "-O", "--start", "--end"] {
+            let c = convert_os_args(vec![
+                OsString::from("prog"),
+                OsString::from(opt),
+                invalid_os(b"\xff"),
+            ]);
+            assert!(c.invalid_option_value, "{opt}");
+        }
+        // A value flag that is not directly before the bad argument does not count.
+        let c = convert_os_args(vec![
+            OsString::from("prog"),
+            OsString::from("--dps"),
+            OsString::from("500"),
+            invalid_os(b"\xff"),
+        ]);
+        assert!(!c.invalid_option_value);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn convert_os_args_option_value_is_not_an_option() {
+        // `--start` is consumed as the --output-dir value, so the bad argument is an input.
+        let c = convert_os_args(vec![
+            OsString::from("prog"),
+            OsString::from("--output-dir"),
+            OsString::from("--start"),
+            invalid_os(b"\xff"),
+            OsString::from("good.csv"),
+        ]);
+        assert!(!c.invalid_option_value);
+        assert_eq!(c.args, ["prog", "--output-dir", "--start", "good.csv"]);
+        assert_eq!(c.invalid.len(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn convert_os_args_invalid_program_name_is_lossy() {
+        let c = convert_os_args(vec![invalid_os(b"pr\xffog"), OsString::from("a.csv")]);
+        assert_eq!(c.args.len(), 2);
+        assert!(c.invalid.is_empty());
     }
 }

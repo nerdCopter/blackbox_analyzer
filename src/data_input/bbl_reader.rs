@@ -17,6 +17,10 @@ use crate::types::BblExpansionResult;
 /// final success status and exit code. Flights skipped by the low-value filter do not set it.
 pub static FLIGHT_EXPORT_FAILED: AtomicBool = AtomicBool::new(false);
 
+/// Set when a flight is skipped by the low-value filter. `main` uses it to tell "every flight was
+/// filtered" (not an error) from "no input files found" when eager expansion leaves no input.
+pub static FLIGHT_FILTERED: AtomicBool = AtomicBool::new(false);
+
 /// Prints a blank line separating the next output block from whatever came before it — the
 /// startup banner, a discovery-warning group, or a previous file's own output. Always prints;
 /// callers are responsible for calling this exactly once per logical block (e.g. once before a
@@ -232,6 +236,7 @@ pub fn expand_bbl_to_scratch_csvs(
                 log.log_number,
                 bbl_path.display()
             );
+            FLIGHT_FILTERED.store(true, std::sync::atomic::Ordering::Relaxed);
             skipped_count += 1;
             continue;
         }
