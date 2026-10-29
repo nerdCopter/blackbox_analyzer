@@ -2410,8 +2410,10 @@ fn convert_os_args<I: IntoIterator<Item = OsString>>(os_args: I) -> ConvertedArg
     for (idx, os_arg) in os_args.into_iter().enumerate() {
         match os_arg.into_string() {
             Ok(arg) => {
-                prev_takes_value =
-                    idx > 0 && crate::constants::VALUE_TAKING_OPTIONS.contains(&arg.as_str());
+                // A token the parser consumes as an option value never starts another option.
+                prev_takes_value = idx > 0
+                    && !prev_takes_value
+                    && crate::constants::VALUE_TAKING_OPTIONS.contains(&arg.as_str());
                 converted.args.push(arg);
             }
             Err(bad) if idx == 0 => converted.args.push(bad.to_string_lossy().into_owned()),
@@ -2613,6 +2615,9 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Exit if only --version flag was set
     if version_flag_set {
+        if INPUT_DISCOVERY_FAILED.load(Ordering::Relaxed) {
+            std::process::exit(1);
+        }
         return Ok(());
     }
 
@@ -3200,6 +3205,22 @@ mod arg_conversion_tests {
             invalid_os(b"\xff"),
         ]);
         assert!(!c.invalid_option_value);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn convert_os_args_option_value_is_not_an_option() {
+        // `--start` is consumed as the --output-dir value, so the bad argument is an input.
+        let c = convert_os_args(vec![
+            OsString::from("prog"),
+            OsString::from("--output-dir"),
+            OsString::from("--start"),
+            invalid_os(b"\xff"),
+            OsString::from("good.csv"),
+        ]);
+        assert!(!c.invalid_option_value);
+        assert_eq!(c.args, ["prog", "--output-dir", "--start", "good.csv"]);
+        assert_eq!(c.invalid.len(), 1);
     }
 
     #[cfg(unix)]

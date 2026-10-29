@@ -56,3 +56,20 @@ fn invalid_option_value_exits_1_without_panic() {
     assert_eq!(out.status.code(), Some(1), "{t}");
     assert!(t.contains("option value is not valid Unicode"), "{t}");
 }
+
+#[test]
+fn version_with_invalid_argument_exits_1() {
+    let out = run(vec![
+        OsString::from("--version"),
+        OsString::from_vec(b"bad\xff.csv".to_vec()),
+    ]);
+    let t = text(&out);
+    assert_eq!(out.status.code(), Some(1), "{t}");
+    assert!(t.contains("not valid Unicode"), "{t}");
+}
+
+#[test]
+fn version_alone_exits_0() {
+    let out = run(vec![OsString::from("--version")]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
+}
