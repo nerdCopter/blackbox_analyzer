@@ -1459,11 +1459,12 @@ pub fn extract_rpm_filter_config(
 }
 
 /// Motor fundamental frequency (Hz) range over a flight, from logged eRPM.
+/// Percentile convention: the sorted sample at index round(pct / 100 * (n - 1)), not nearest-rank.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RpmFundamentalHz {
-    pub low: f64,    // RPM_FILTER_BAND_LOW_PERCENTILE of all motor samples
+    pub low: f64,    // RPM_FILTER_BAND_LOW_PERCENTILE of all motor samples (see below)
     pub median: f64, // Median of all motor samples
-    pub high: f64,   // RPM_FILTER_BAND_HIGH_PERCENTILE of all motor samples
+    pub high: f64,   // RPM_FILTER_BAND_HIGH_PERCENTILE of all motor samples (see below)
 }
 
 /// Motor fundamental frequency range (Hz) from logged eRPM, derived as Betaflight does:
@@ -1518,7 +1519,9 @@ pub fn rpm_filter_legend_text(
                 .copied()
                 .unwrap_or(1.0)
                 * RATIO_TO_PERCENT;
-            let note = if freq < config.min_hz {
+            let note = if weight <= 0.0 {
+                " (disabled)"
+            } else if freq < config.min_hz {
                 " (below min)"
             } else if freq > max_freq_hz {
                 " (off plot)"
@@ -1724,11 +1727,16 @@ mod tests {
         // 14 poles = 7 pairs; 1000 LSB = 100000 eRPM -> 238.095 Hz
         let r = rpm_fundamental_hz_from_erpm([1000.0].into_iter(), 14).unwrap();
         assert!((r.median - 238.095).abs() < 0.01);
-        // 1..=101 LSB pooled: nearest-rank p10 = 11, median = 51, p90 = 91
+        // 1..=101 LSB pooled: sorted index round(pct/100*(n-1)) gives p10 = 11, median = 51, p90 = 91
         let r = rpm_fundamental_hz_from_erpm((1..=101).map(f64::from), 12).unwrap();
         assert!((r.low - 11.0 * hz_per_lsb_12_poles).abs() < 1e-9);
         assert!((r.median - 51.0 * hz_per_lsb_12_poles).abs() < 1e-9);
         assert!((r.high - 91.0 * hz_per_lsb_12_poles).abs() < 1e-9);
+        // 1..=10 LSB: p10 index round(0.9) = 1 -> 2, p90 index round(8.1) = 8 -> 9, median (5 + 6) / 2
+        let r = rpm_fundamental_hz_from_erpm((1..=10).map(f64::from), 12).unwrap();
+        assert!((r.low - 2.0 * hz_per_lsb_12_poles).abs() < 1e-9);
+        assert!((r.median - 5.5 * hz_per_lsb_12_poles).abs() < 1e-9);
+        assert!((r.high - 9.0 * hz_per_lsb_12_poles).abs() < 1e-9);
         // Even count averages the middle pair; zero, negative and NaN samples are ignored
         let r = rpm_fundamental_hz_from_erpm([0.0, -5.0, f64::NAN, 600.0, 1000.0].into_iter(), 12)
             .unwrap();
@@ -1767,7 +1775,7 @@ mod tests {
         );
         // Weight 0 stays in the legend as 0%
         let cfg0 = test_rpm_config(3, vec![1.0, 0.0, 1.0]);
-        assert!(rpm_filter_legend_text(&cfg0, &base, 503.0).contains("0% @ 458Hz"));
+        assert!(rpm_filter_legend_text(&cfg0, &base, 503.0).contains("0% @ 458Hz (disabled)"));
         // Median below min_hz is noted
         let low = RpmFundamentalHz {
             low: 20.0,
