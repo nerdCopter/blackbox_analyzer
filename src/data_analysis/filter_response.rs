@@ -3,7 +3,12 @@
 use std::collections::HashMap;
 
 use crate::axis_names::AXIS_NAMES;
-use crate::constants::RATIO_TO_PERCENT;
+use crate::constants::{
+    PARITY_DIVISOR, RATIO_TO_PERCENT, RPM_FILTER_BAND_HIGH_PERCENTILE,
+    RPM_FILTER_BAND_LOW_PERCENTILE, RPM_FILTER_ERPM_PER_LSB, RPM_FILTER_MIN_MOTOR_POLES,
+    RPM_FILTER_POLES_PER_PAIR, RPM_FILTER_SECONDS_PER_MINUTE,
+};
+use crate::data_input::log_data::LogRowData;
 
 /// Filter types supported by flight controllers
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1343,10 +1348,11 @@ pub fn extract_dterm_dynamic_notch_range(
 /// RPM filter configuration (Betaflight only)
 #[derive(Debug, Clone)]
 pub struct RpmFilterConfig {
-    pub harmonics: u32,    // Number of harmonics (1-12)
-    pub min_hz: f64,       // Minimum frequency to filter
-    pub q_factor: f64,     // Q factor for notch width
-    pub weights: Vec<f64>, // Weight for each harmonic (0.0-1.0)
+    pub harmonics: u32,           // Number of harmonics (1-12)
+    pub min_hz: f64,              // Minimum frequency to filter
+    pub q_factor: f64,            // Q factor for notch width
+    pub weights: Vec<f64>,        // Weight for each harmonic (0.0-1.0)
+    pub motor_poles: Option<u32>, // Header motor_poles; needed to convert eRPM to Hz
     #[allow(dead_code)] // Reserved for future use
     pub fade_range_hz: f64, // Fade-in range
     #[allow(dead_code)] // Reserved for future use
@@ -1432,11 +1438,15 @@ pub fn extract_rpm_filter_config(
                         .and_then(|s| s.parse::<f64>().ok())
                         .unwrap_or(150.0);
 
+                    let motor_poles =
+                        get_value("motor_poles").and_then(|s| s.trim().parse::<u32>().ok());
+
                     return Some(RpmFilterConfig {
                         harmonics,
                         min_hz,
                         q_factor: q / 100.0, // Betaflight stores Q × 100
                         weights,
+                        motor_poles,
                         fade_range_hz,
                         lpf_hz,
                     });
@@ -1448,39 +1458,161 @@ pub fn extract_rpm_filter_config(
     None
 }
 
-/// Estimate motor base frequency from gyro spectrum peaks
-/// Looks for primary peak in spectrum and estimates fundamental motor frequency
-pub fn estimate_motor_base_frequency(
-    gyro_spectrum_data: &[(f64, f64)], // (frequency, amplitude) pairs
-    min_hz: f64,
-    max_hz: f64,
-) -> Option<f64> {
-    if gyro_spectrum_data.is_empty() {
+/// Motor fundamental frequency (Hz) range over a flight, from logged eRPM.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RpmFundamentalHz {
+    pub low: f64,    // RPM_FILTER_BAND_LOW_PERCENTILE of all motor samples
+    pub median: f64, // Median of all motor samples
+    pub high: f64,   // RPM_FILTER_BAND_HIGH_PERCENTILE of all motor samples
+}
+
+/// Motor fundamental frequency range (Hz) from logged eRPM, derived as Betaflight does:
+/// Hz = eRPM_LSB * 100 / 60 / (poles / 2). Samples from all motors are pooled; non-finite and
+/// non-positive samples are ignored. Returns None when no usable eRPM sample exists or
+/// `motor_poles` is below 2.
+pub fn rpm_fundamental_hz_from_erpm(
+    erpms: impl Iterator<Item = f64>,
+    motor_poles: u32,
+) -> Option<RpmFundamentalHz> {
+    if motor_poles < RPM_FILTER_MIN_MOTOR_POLES {
         return None;
     }
-
-    // Guard against invalid search window
-    if max_hz <= min_hz {
+    let mut samples: Vec<f64> = erpms.filter(|v| v.is_finite() && *v > 0.0).collect();
+    if samples.is_empty() {
         return None;
     }
-
-    // Find primary peak above min_hz
-    let mut max_amplitude = 0.0;
-    let mut peak_frequency = 0.0;
-
-    for &(freq, amp) in gyro_spectrum_data {
-        if freq >= min_hz && freq <= max_hz && amp > max_amplitude {
-            max_amplitude = amp;
-            peak_frequency = freq;
-        }
-    }
-
-    if peak_frequency > min_hz {
-        Some(peak_frequency)
+    samples.sort_by(|a, b| a.total_cmp(b));
+    let last = samples.len() - 1;
+    let mid = samples.len() / 2;
+    let median = if samples.len().is_multiple_of(PARITY_DIVISOR) {
+        (samples[mid - 1] + samples[mid]) / 2.0
     } else {
-        // Fallback to typical 5" quad motor frequency
-        Some(180.0)
-    }
+        samples[mid]
+    };
+    let percentile = |pct: f64| samples[((pct / RATIO_TO_PERCENT) * last as f64).round() as usize];
+    let pole_pairs = motor_poles as f64 / RPM_FILTER_POLES_PER_PAIR;
+    let to_hz = |erpm_lsb: f64| {
+        erpm_lsb * RPM_FILTER_ERPM_PER_LSB / RPM_FILTER_SECONDS_PER_MINUTE / pole_pairs
+    };
+    Some(RpmFundamentalHz {
+        low: to_hz(percentile(RPM_FILTER_BAND_LOW_PERCENTILE)),
+        median: to_hz(median),
+        high: to_hz(percentile(RPM_FILTER_BAND_HIGH_PERCENTILE)),
+    })
+}
+
+/// Legend text for the RPM filter overlay: `RPM Filter (N): W% @ medianHz, ...`.
+/// Lists all N configured harmonics at the median motor frequency; one above the plot range or
+/// below `min_hz` is noted.
+pub fn rpm_filter_legend_text(
+    config: &RpmFilterConfig,
+    base: &RpmFundamentalHz,
+    max_freq_hz: f64,
+) -> String {
+    let items: Vec<String> = (1..=config.harmonics)
+        .map(|harmonic| {
+            let freq = base.median * harmonic as f64;
+            let weight = config
+                .weights
+                .get(harmonic as usize - 1)
+                .copied()
+                .unwrap_or(1.0)
+                * RATIO_TO_PERCENT;
+            let note = if freq < config.min_hz {
+                " (below min)"
+            } else if freq > max_freq_hz {
+                " (off plot)"
+            } else {
+                ""
+            };
+            format!("{weight:.0}% @ {freq:.0}Hz{note}")
+        })
+        .collect();
+    format!("RPM Filter ({}): {}", config.harmonics, items.join(", "))
+}
+
+/// Motor fundamental frequency ranges for a whole log: all motors pooled and each motor alone.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RpmMotorFrequencies {
+    pub pooled: RpmFundamentalHz,
+    pub per_motor: Vec<Option<RpmFundamentalHz>>, // Indexed like LogRowData::motors
+}
+
+/// Motor frequency ranges from the log's eRPM channels and `motor_poles`. None when the config
+/// has no pole count or no motor has a usable eRPM sample.
+pub fn rpm_motor_frequencies(
+    log_data: &[LogRowData],
+    config: &RpmFilterConfig,
+) -> Option<RpmMotorFrequencies> {
+    let poles = config.motor_poles?;
+    let motor_count = log_data.first().map(|r| r.motors.len()).unwrap_or(0);
+    let pooled = rpm_fundamental_hz_from_erpm(
+        log_data
+            .iter()
+            .flat_map(|r| r.erpms.iter().flatten().copied()),
+        poles,
+    )?;
+    let per_motor = (0..motor_count)
+        .map(|m| {
+            rpm_fundamental_hz_from_erpm(
+                log_data
+                    .iter()
+                    .filter_map(|r| r.erpms.get(m).copied().flatten()),
+                poles,
+            )
+        })
+        .collect();
+    Some(RpmMotorFrequencies { pooled, per_motor })
+}
+
+/// Console and report lines for the RPM filter motor frequencies as `(label, text)`.
+/// Console prints `RPM Filter {label}: {text}`; the report prints `- **RPM Filter {label}:** {text}`.
+pub fn rpm_motor_frequency_lines(
+    config: &RpmFilterConfig,
+    freqs: Option<&RpmMotorFrequencies>,
+) -> Vec<(&'static str, String)> {
+    let Some(f) = freqs else {
+        return vec![(
+            "motor frequency",
+            "unavailable (log has no eRPM or motor_poles)".to_string(),
+        )];
+    };
+    let range = |r: &RpmFundamentalHz, h: f64| {
+        format!(
+            "{:.0}–{:.0} Hz (median {:.0})",
+            r.low * h,
+            r.high * h,
+            r.median * h
+        )
+    };
+    let percentile_note = format!(
+        "{RPM_FILTER_BAND_LOW_PERCENTILE:.0}th–{RPM_FILTER_BAND_HIGH_PERCENTILE:.0}th percentile"
+    );
+    let harmonics = (1..=config.harmonics)
+        .map(|h| format!("H{h} {}", range(&f.pooled, h as f64)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let per_motor = f
+        .per_motor
+        .iter()
+        .enumerate()
+        .map(|(i, m)| match m {
+            Some(r) => format!("M{i} {}", range(r, 1.0)),
+            None => format!("M{i} no eRPM"),
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    vec![
+        (
+            "motor frequency",
+            format!(
+                "{} (all motors, {percentile_note}, from eRPM)",
+                range(&f.pooled, 1.0)
+            ),
+        ),
+        ("harmonic ranges", harmonics),
+        ("per-motor frequency", per_motor),
+    ]
 }
 
 /// Calculate RPM notch filter frequency response (S-curve)
@@ -1581,6 +1713,107 @@ pub fn generate_rpm_filter_curves(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_rpm_fundamental_hz_from_erpm() {
+        let hz_per_lsb_12_poles = 100.0 / 60.0 / 6.0; // 12 poles = 6 pole pairs
+                                                      // Spec: 840 LSB = 84000 eRPM = 14000 RPM = 233.33 Hz; constant input gives zero spread
+        let r = rpm_fundamental_hz_from_erpm([840.0, 840.0, 840.0].into_iter(), 12).unwrap();
+        assert!((r.median - 233.333).abs() < 0.01);
+        assert_eq!((r.low, r.high), (r.median, r.median));
+        // 14 poles = 7 pairs; 1000 LSB = 100000 eRPM -> 238.095 Hz
+        let r = rpm_fundamental_hz_from_erpm([1000.0].into_iter(), 14).unwrap();
+        assert!((r.median - 238.095).abs() < 0.01);
+        // 1..=101 LSB pooled: nearest-rank p10 = 11, median = 51, p90 = 91
+        let r = rpm_fundamental_hz_from_erpm((1..=101).map(f64::from), 12).unwrap();
+        assert!((r.low - 11.0 * hz_per_lsb_12_poles).abs() < 1e-9);
+        assert!((r.median - 51.0 * hz_per_lsb_12_poles).abs() < 1e-9);
+        assert!((r.high - 91.0 * hz_per_lsb_12_poles).abs() < 1e-9);
+        // Even count averages the middle pair; zero, negative and NaN samples are ignored
+        let r = rpm_fundamental_hz_from_erpm([0.0, -5.0, f64::NAN, 600.0, 1000.0].into_iter(), 12)
+            .unwrap();
+        assert!((r.median - 800.0 * hz_per_lsb_12_poles).abs() < 0.01);
+        // No usable samples, or fewer than 2 poles: no frequency, no guess
+        assert!(rpm_fundamental_hz_from_erpm(std::iter::empty(), 12).is_none());
+        assert!(rpm_fundamental_hz_from_erpm([0.0, 0.0].into_iter(), 12).is_none());
+        assert!(rpm_fundamental_hz_from_erpm([840.0].into_iter(), 1).is_none());
+        assert!(rpm_fundamental_hz_from_erpm([840.0].into_iter(), 0).is_none());
+    }
+
+    fn test_rpm_config(harmonics: u32, weights: Vec<f64>) -> RpmFilterConfig {
+        RpmFilterConfig {
+            harmonics,
+            min_hz: 100.0,
+            q_factor: 5.0,
+            weights,
+            motor_poles: Some(12),
+            fade_range_hz: 50.0,
+            lpf_hz: 150.0,
+        }
+    }
+
+    #[test]
+    fn test_rpm_filter_legend_text() {
+        let base = RpmFundamentalHz {
+            low: 167.0,
+            median: 229.0,
+            high: 290.0,
+        };
+        let cfg = test_rpm_config(3, vec![1.0, 1.0, 1.0]);
+        // Legend lists every configured harmonic at the median; no range
+        assert_eq!(
+            rpm_filter_legend_text(&cfg, &base, 503.0),
+            "RPM Filter (3): 100% @ 229Hz, 100% @ 458Hz, 100% @ 687Hz (off plot)"
+        );
+        // Weight 0 stays in the legend as 0%
+        let cfg0 = test_rpm_config(3, vec![1.0, 0.0, 1.0]);
+        assert!(rpm_filter_legend_text(&cfg0, &base, 503.0).contains("0% @ 458Hz"));
+        // Median below min_hz is noted
+        let low = RpmFundamentalHz {
+            low: 20.0,
+            median: 30.0,
+            high: 40.0,
+        };
+        let cfg2 = test_rpm_config(2, vec![1.0, 1.0]);
+        assert_eq!(
+            rpm_filter_legend_text(&cfg2, &low, 503.0),
+            "RPM Filter (2): 100% @ 30Hz (below min), 100% @ 60Hz (below min)"
+        );
+    }
+
+    #[test]
+    fn test_rpm_motor_frequency_lines() {
+        let cfg = test_rpm_config(2, vec![1.0, 1.0]);
+        let f = RpmMotorFrequencies {
+            pooled: RpmFundamentalHz {
+                low: 167.0,
+                median: 229.0,
+                high: 290.0,
+            },
+            per_motor: vec![
+                Some(RpmFundamentalHz {
+                    low: 160.0,
+                    median: 220.0,
+                    high: 280.0,
+                }),
+                None,
+            ],
+        };
+        let lines = rpm_motor_frequency_lines(&cfg, Some(&f));
+        assert_eq!(lines[0].0, "motor frequency");
+        assert_eq!(
+            lines[0].1,
+            "167–290 Hz (median 229) (all motors, 10th–90th percentile, from eRPM)"
+        );
+        assert_eq!(
+            lines[1].1,
+            "H1 167–290 Hz (median 229), H2 334–580 Hz (median 458)"
+        );
+        assert_eq!(lines[2].1, "M0 160–280 Hz (median 220), M1 no eRPM");
+        let none = rpm_motor_frequency_lines(&cfg, None);
+        assert_eq!(none.len(), 1);
+        assert!(none[0].1.contains("unavailable"));
+    }
 
     #[test]
     fn test_pt1_response() {

@@ -15,7 +15,8 @@ use crate::constants::{
     STICK_DIST_FULL_STICK_RC_COMMAND,
 };
 use crate::data_analysis::filter_response::{
-    AllFilterConfigs, DynamicNotchConfig, RpmFilterConfig,
+    rpm_motor_frequency_lines, AllFilterConfigs, DynamicNotchConfig, RpmFilterConfig,
+    RpmMotorFrequencies,
 };
 use crate::data_analysis::optimal_p_estimation::{OptimalPAnalysis, PRecommendation};
 use crate::data_analysis::stick_distribution::StickDistributionResult;
@@ -74,6 +75,8 @@ pub struct FlightReport {
     pub filter_config: Option<AllFilterConfigs>,
     pub dynamic_notch: Option<DynamicNotchConfig>,
     pub rpm_filter: Option<RpmFilterConfig>,
+    /// Motor frequency ranges derived from eRPM and motor_poles; None when the log lacks either.
+    pub rpm_motor_frequencies: Option<RpmMotorFrequencies>,
     /// True when gyroUnfilt came from debug channels instead of dedicated gyroUnfilt columns.
     pub debug_fallback: bool,
     pub debug_mode_name: Option<&'static str>,
@@ -192,6 +195,11 @@ pub fn generate_markdown_report(
                     rpm.min_hz,
                     weights_str
                 )?;
+                for (label, text) in
+                    rpm_motor_frequency_lines(rpm, report.rpm_motor_frequencies.as_ref())
+                {
+                    writeln!(md, "- **RPM Filter {label}:** {text}")?;
+                }
             }
             if report.dynamic_notch.is_some() || report.rpm_filter.is_some() {
                 writeln!(md)?;

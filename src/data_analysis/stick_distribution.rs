@@ -153,7 +153,7 @@ fn analyze_stick_zones(points: &[(f64, f64)]) -> StickZoneStats {
         // Density of reversals within Center-zone dwell time, not diluted by time spent
         // outside it — two flights with identical center-jitter behavior but different
         // center-zone occupancy should report the same rate here.
-        center_reversal_rate_hz: (center_time > 0.0).then(|| reversal_count as f64 / center_time),
+        center_reversal_rate_hz: (center_time > 0.0).then_some(reversal_count as f64 / center_time),
     }
 }
 

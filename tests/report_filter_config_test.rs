@@ -8,6 +8,7 @@ use std::fs;
 
 use blackbox_analyzer::data_analysis::filter_response::{
     AllFilterConfigs, AxisFilterConfig, FilterConfig, FilterType, ImufFilterConfig,
+    RpmFilterConfig, RpmFundamentalHz, RpmMotorFrequencies,
 };
 use blackbox_analyzer::report::{generate_markdown_report, FlightReport};
 
@@ -32,6 +33,7 @@ fn base_report(filter_config: Option<AllFilterConfigs>) -> FlightReport {
         filter_config,
         dynamic_notch: None,
         rpm_filter: None,
+        rpm_motor_frequencies: None,
         debug_fallback: false,
         debug_mode_name: None,
     }
@@ -97,4 +99,61 @@ fn filter_config_table_includes_imuf_column_when_an_axis_has_imuf() {
 
     assert!(contents.contains("## Gyro Filter Configuration"));
     assert!(contents.contains("| Axis | LPF1 | LPF2 | IMUF / Pseudo-Kalman |"));
+}
+
+fn rpm_report(frequencies: Option<RpmMotorFrequencies>) -> String {
+    // The section is only written when at least one axis has a filter configured
+    let mut fc = AllFilterConfigs::default();
+    fc.gyro[0] = lpf1_only_axis_config();
+    let mut report = base_report(Some(fc));
+    report.rpm_filter = Some(RpmFilterConfig {
+        harmonics: 2,
+        min_hz: 100.0,
+        q_factor: 5.0,
+        weights: vec![1.0, 1.0],
+        motor_poles: Some(12),
+        fade_range_hz: 50.0,
+        lpf_hz: 150.0,
+    });
+    report.rpm_motor_frequencies = frequencies;
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let out_path = dir.path().join("rpm_report.md");
+    generate_markdown_report(&report, &out_path).expect("generate report");
+    fs::read_to_string(&out_path).expect("read report")
+}
+
+#[test]
+fn report_lists_rpm_filter_motor_frequency_ranges() {
+    let contents = rpm_report(Some(RpmMotorFrequencies {
+        pooled: RpmFundamentalHz {
+            low: 167.0,
+            median: 229.0,
+            high: 290.0,
+        },
+        per_motor: vec![
+            Some(RpmFundamentalHz {
+                low: 160.0,
+                median: 220.0,
+                high: 280.0,
+            }),
+            None,
+        ],
+    }));
+    assert!(contents.contains(
+        "- **RPM Filter motor frequency:** 167–290 Hz (median 229) (all motors, 10th–90th percentile, from eRPM)"
+    ));
+    assert!(contents.contains(
+        "- **RPM Filter harmonic ranges:** H1 167–290 Hz (median 229), H2 334–580 Hz (median 458)"
+    ));
+    assert!(contents
+        .contains("- **RPM Filter per-motor frequency:** M0 160–280 Hz (median 220), M1 no eRPM"));
+}
+
+#[test]
+fn report_says_rpm_motor_frequency_unavailable_without_erpm() {
+    let contents = rpm_report(None);
+    assert!(contents.contains(
+        "- **RPM Filter motor frequency:** unavailable (log has no eRPM or motor_poles)"
+    ));
+    assert!(!contents.contains("harmonic ranges"));
 }

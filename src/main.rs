@@ -2093,7 +2093,12 @@ INFO: Skipping Step Response input data filtering for {input_file_str}: {reason}
     };
 
     let motor_results = if plot_config.motor_spectrums {
-        plot_motor_spectrums(&all_log_data, &root_name_string, sample_rate)?
+        plot_motor_spectrums(
+            &all_log_data,
+            &root_name_string,
+            sample_rate,
+            Some(&header_metadata),
+        )?
     } else if plot_config.motor_erpm {
         // Oscillation detection alone (no plot) — keeps the Fallback-tier overlap caveat and
         // the Motor Oscillation report section available under --desync without also writing
@@ -2192,6 +2197,16 @@ INFO: Skipping Step Response input data filtering for {input_file_str}: {reason}
     let filter_config = Some(filter_response::parse_filter_config(&header_metadata));
     let dynamic_notch = filter_response::extract_dynamic_notch_range(Some(&header_metadata));
     let rpm_filter = filter_response::extract_rpm_filter_config(Some(&header_metadata));
+    let rpm_motor_frequencies = rpm_filter
+        .as_ref()
+        .and_then(|c| filter_response::rpm_motor_frequencies(&all_log_data, c));
+    if let Some(ref rpm) = rpm_filter {
+        for (label, text) in
+            filter_response::rpm_motor_frequency_lines(rpm, rpm_motor_frequencies.as_ref())
+        {
+            println!("RPM Filter {label}: {text}");
+        }
+    }
 
     // --- Collect generated PNG filenames ---
     // Only link files this run actually wrote: a plot type being enabled doesn't mean its PNG
@@ -2374,6 +2389,7 @@ INFO: Skipping Step Response input data filtering for {input_file_str}: {reason}
         filter_config,
         dynamic_notch,
         rpm_filter,
+        rpm_motor_frequencies,
         debug_fallback: using_debug_fallback,
         debug_mode_name: debug_mode_label,
     };
