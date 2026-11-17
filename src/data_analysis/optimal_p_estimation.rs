@@ -564,7 +564,8 @@ impl OptimalPAnalysis {
         let rec_d = (recommended_p as f64 / rec_pd).round() as u32;
         // AxisPid::calculate_goal_d_with_range scales from the axis' current P; here the
         // target D follows the recommended P, so the ends are scaled directly.
-        if let Some((min, max)) = d_range {
+        // A target D that rounds to 0 has no representable range: show the single D.
+        if let Some((min, max)) = d_range.filter(|_| rec_d > 0) {
             let scale = rec_d as f64 / current_d as f64;
             // A recommended D-Min of 0 would switch dynamic D off.
             let rec_min = ((min as f64 * scale).round() as u32).max(1);
@@ -708,6 +709,13 @@ mod d_target_tests {
                 .collect(),
         );
         assert_eq!(spread.reliability_label(), "Unreliable");
+    }
+
+    #[test]
+    fn d_target_suffix_shows_a_single_d_when_the_target_rounds_to_zero() {
+        // P 40, D 20, P:D 2.0; recommended P 0 needs D 0, so a range cannot be shown.
+        let a = analysis(Some(20), Some(2.0));
+        assert_eq!(a.d_target_suffix(0, Some((1, 20))), ", D≈0 (-20)");
     }
 
     #[test]

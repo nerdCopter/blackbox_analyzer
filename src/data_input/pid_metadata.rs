@@ -111,6 +111,11 @@ impl AxisPid {
             return (recommended_base_d, None, None);
         }
 
+        // A recommended base D that rounds to 0 has no representable range: base D only.
+        if rec_base == 0 {
+            return (recommended_base_d, None, None);
+        }
+
         // Calculate the scaling factor
         let scale_factor = (rec_base as f64) / (current_base as f64);
 
@@ -1948,6 +1953,17 @@ mod tests {
             pid.roll.near_optimal_recommendation_line(true),
             "Recommendation (conservative): D-Min≈1, D-Max≈2 [optional D−1]"
         );
+    }
+
+    #[test]
+    fn test_goal_d_never_returns_an_inverted_range_for_a_zero_base() {
+        // P 40, D 20, range 1 to 20, target ratio 1000: the recommended base D rounds to 0.
+        let pid = parse_pid_metadata(&headers(
+            "Betaflight 4.5.0",
+            &[("rollPID", "40,50,20"), ("d_min", "1,0,0")],
+        ));
+        let (d, d_min, d_max) = pid.roll.calculate_goal_d_with_range(1000.0, true);
+        assert_eq!((d, d_min, d_max), (Some(0), None, None));
     }
 
     #[test]

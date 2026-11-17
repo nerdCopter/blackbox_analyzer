@@ -266,19 +266,31 @@ fn optimal_p_section_shows_the_d_range_like_the_plot() {
         .lines()
         .find(|l| l.starts_with("- **Recommendation:** Increase P to"))
         .expect("an Increase P recommendation line");
+    // The report carries the shared helpers' exact text for the recommended P.
+    let recommended_p = match &analysis.recommendation {
+        blackbox_analyzer::data_analysis::optimal_p_estimation::PRecommendation::Increase {
+            conservative_p,
+            ..
+        } => *conservative_p,
+        other => panic!("expected an Increase P recommendation, got {other:?}"),
+    };
+    let expected_suffix = analysis.d_target_suffix(recommended_p, Some((20, 30)));
+    assert!(expected_suffix.starts_with(", D-Min≈"), "{expected_suffix}");
     assert!(
-        rec.contains(", D-Min≈") && rec.contains(", D-Max≈"),
+        rec.starts_with(&format!(
+            "- **Recommendation:** Increase P to {recommended_p} ({:+}){expected_suffix} — ",
+            recommended_p as i64 - 40
+        )),
         "{rec}"
     );
-    // The recommended P carries its signed delta, as the plot legend does.
-    assert!(rec.contains(" (+"), "{rec}");
-    let reliability = contents
-        .lines()
-        .find(|l| l.starts_with("- **Reliable:**") || l.starts_with("- **Unreliable:**"))
-        .expect("a reliability line");
+    let expected_reliability = format!(
+        "- **{}:** {}",
+        analysis.td_stats.reliability_label(),
+        analysis.td_stats.reliability_details()
+    );
     assert!(
-        reliability.contains("Consistency=") && reliability.contains("CV="),
-        "{reliability}"
+        contents.contains(&expected_reliability),
+        "{expected_reliability}"
     );
 
     report.d_ranges[0] = None;
