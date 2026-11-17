@@ -1502,7 +1502,7 @@ pub fn rpm_fundamental_hz_from_erpm(
     })
 }
 
-/// Legend text for the RPM filter overlay: `RPM Filter (N): W% @ medianHz, ...`.
+/// Legend text for the RPM filter overlay: `RPM Filter (N) @ median eRPM: W% @ Hz, ...`.
 /// Lists all N configured harmonics at the median motor frequency; one above the plot range or
 /// below `min_hz` is noted.
 pub fn rpm_filter_legend_text(
@@ -1531,7 +1531,11 @@ pub fn rpm_filter_legend_text(
             format!("{weight:.0}% @ {freq:.0}Hz{note}")
         })
         .collect();
-    format!("RPM Filter ({}): {}", config.harmonics, items.join(", "))
+    format!(
+        "RPM Filter ({}) @ median eRPM: {}",
+        config.harmonics,
+        items.join(", ")
+    )
 }
 
 /// Motor fundamental frequency ranges for a whole log: all motors pooled and each motor alone.
@@ -1771,7 +1775,7 @@ mod tests {
         // Legend lists every configured harmonic at the median; no range
         assert_eq!(
             rpm_filter_legend_text(&cfg, &base, 503.0),
-            "RPM Filter (3): 100% @ 229Hz, 100% @ 458Hz, 100% @ 687Hz (off plot)"
+            "RPM Filter (3) @ median eRPM: 100% @ 229Hz, 100% @ 458Hz, 100% @ 687Hz (off plot)"
         );
         // Weight 0 stays in the legend as 0%
         let cfg0 = test_rpm_config(3, vec![1.0, 0.0, 1.0]);
@@ -1785,7 +1789,7 @@ mod tests {
         let cfg2 = test_rpm_config(2, vec![1.0, 1.0]);
         assert_eq!(
             rpm_filter_legend_text(&cfg2, &low, 503.0),
-            "RPM Filter (2): 100% @ 30Hz (below min), 100% @ 60Hz (below min)"
+            "RPM Filter (2) @ median eRPM: 100% @ 30Hz (below min), 100% @ 60Hz (below min)"
         );
     }
 

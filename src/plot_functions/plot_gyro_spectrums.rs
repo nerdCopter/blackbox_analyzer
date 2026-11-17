@@ -379,12 +379,12 @@ pub fn plot_gyro_spectrums(
                         unfilt_plot_series.push(PlotSeries {
                             data: vec![], // No data - just for legend
                             label: format!(
-                                "Dynamic Notch: {} notch{}, Q: {:.0}, range: {:.0}-{:.0}Hz{}",
+                                "Dynamic Notch range: {:.0}-{:.0}Hz, {} notch{}, Q: {:.0}{}",
+                                config.min_hz,
+                                config.max_hz,
                                 config.notch_count,
                                 if config.notch_count > 1 { "es" } else { "" },
                                 config.q_factor,
-                                config.min_hz,
-                                config.max_hz,
                                 if !config.applies_to_yaw {
                                     " (RP only)"
                                 } else {
