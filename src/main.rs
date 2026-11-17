@@ -238,7 +238,7 @@ use crate::data_input::bbl_reader::{
 };
 use crate::data_input::log_data::LogRowData;
 use crate::data_input::log_parser::{self, parse_log_file};
-use crate::data_input::pid_metadata::parse_pid_metadata;
+use crate::data_input::pid_metadata::{format_d_target, parse_pid_metadata};
 
 // PID context import
 use crate::pid_context::PidContext;
@@ -1202,6 +1202,19 @@ fn process_file(
         pid_metadata.yaw.calculate_pd_ratio(),
     ];
 
+    let d_ranges_for_report: [Option<(u32, u32)>; AXIS_COUNT] = {
+        let dmax = pid_metadata.is_dmax_enabled();
+        [&pid_metadata.roll, &pid_metadata.pitch, &pid_metadata.yaw]
+            .map(|axis| axis.d_range_for_display(dmax))
+    };
+
+    let pid_labels_for_report: [String; AXIS_COUNT] = {
+        let fw = pid_metadata.get_firmware_type();
+        let dmax = pid_metadata.is_dmax_enabled();
+        [&pid_metadata.roll, &pid_metadata.pitch, &pid_metadata.yaw]
+            .map(|a| a.format_for_report(fw, dmax))
+    };
+
     let mut has_nonzero_f_term_data = [false; 3];
     for axis in 0..crate::axis_names::AXIS_NAMES.len() {
         if f_term_header_found[axis]
@@ -1587,124 +1600,58 @@ INFO: Skipping Step Response input data filtering for {input_file_str}: {reason}
                                         }
 
                                         // Show conservative recommendation
-                                        if dmax_enabled
-                                            && (recommended_d_min_conservative[axis_index]
-                                                .is_some()
-                                                || recommended_d_max_conservative[axis_index]
-                                                    .is_some())
-                                        {
-                                            // D-Min/D-Max enabled: show D-Min and D-Max, NOT base D
-                                            let d_min_str = recommended_d_min_conservative
-                                                [axis_index]
-                                                .map_or("N/A".to_string(), |v| v.to_string());
-                                            let d_max_str = recommended_d_max_conservative
-                                                [axis_index]
-                                                .map_or("N/A".to_string(), |v| v.to_string());
-                                            println!("  Recommendation (conservative): P:D={:.2} (D-Min≈{}, D-Max≈{})",
-                                                recommended_pd_conservative[axis_index].unwrap(),
-                                                d_min_str, d_max_str);
-                                        } else if let Some(recommended_d) =
-                                            recommended_d_conservative[axis_index]
-                                        {
-                                            // D-Min/D-Max disabled: show only base D
+                                        if let Some(d_text) = format_d_target(
+                                            recommended_d_conservative[axis_index],
+                                            recommended_d_min_conservative[axis_index],
+                                            recommended_d_max_conservative[axis_index],
+                                            dmax_enabled,
+                                        ) {
                                             println!(
-                                                "  Recommendation (conservative): P:D={:.2} (D≈{})",
+                                                "  Recommendation (conservative): P:D={:.2} ({})",
                                                 recommended_pd_conservative[axis_index].unwrap(),
-                                                recommended_d
+                                                d_text
                                             );
                                         }
 
                                         // Show secondary (moderate) recommendation
-                                        if dmax_enabled
-                                            && (recommended_d_min_aggressive[axis_index].is_some()
-                                                || recommended_d_max_aggressive[axis_index]
-                                                    .is_some())
-                                        {
-                                            // D-Min/D-Max enabled: show D-Min and D-Max, NOT base D
-                                            let d_min_str = recommended_d_min_aggressive
-                                                [axis_index]
-                                                .map_or("N/A".to_string(), |v| v.to_string());
-                                            let d_max_str = recommended_d_max_aggressive
-                                                [axis_index]
-                                                .map_or("N/A".to_string(), |v| v.to_string());
-                                            println!("  Recommendation (moderate): P:D={:.2} (D-Min≈{}, D-Max≈{})",
-                                                recommended_pd_aggressive[axis_index].unwrap(),
-                                                d_min_str, d_max_str);
-                                        } else if let Some(recommended_d_mod) =
-                                            recommended_d_aggressive[axis_index]
-                                        {
-                                            // D-Min/D-Max disabled: show only base D
+                                        if let Some(d_text) = format_d_target(
+                                            recommended_d_aggressive[axis_index],
+                                            recommended_d_min_aggressive[axis_index],
+                                            recommended_d_max_aggressive[axis_index],
+                                            dmax_enabled,
+                                        ) {
                                             println!(
-                                                "  Recommendation (moderate): P:D={:.2} (D≈{})",
+                                                "  Recommendation (moderate): P:D={:.2} ({})",
                                                 recommended_pd_aggressive[axis_index].unwrap(),
-                                                recommended_d_mod
+                                                d_text
                                             );
                                         }
 
                                         // Show tertiary (aggressive) recommendation for significant overshoot only
                                         if assessment == "Significant overshoot" {
-                                            let aggressive_pd = current_pd_ratio
-                                                * crate::constants::PD_RATIO_AGGRESSIVE_MULTIPLIER;
-                                            let (rec_d_agg, rec_d_min_agg, rec_d_max_agg) =
-                                                if axis_index == 0 {
-                                                    pid_metadata.roll.calculate_goal_d_with_range(
-                                                        aggressive_pd,
-                                                        dmax_enabled,
-                                                    )
-                                                } else {
-                                                    pid_metadata.pitch.calculate_goal_d_with_range(
-                                                        aggressive_pd,
-                                                        dmax_enabled,
-                                                    )
-                                                };
-                                            if dmax_enabled
-                                                && (rec_d_min_agg.is_some()
-                                                    || rec_d_max_agg.is_some())
-                                            {
-                                                let d_min_str = rec_d_min_agg
-                                                    .map_or("N/A".to_string(), |v| v.to_string());
-                                                let d_max_str = rec_d_max_agg
-                                                    .map_or("N/A".to_string(), |v| v.to_string());
-                                                println!("  Recommendation (aggressive): P:D={:.2} (D-Min≈{}, D-Max≈{})",
-                                                    aggressive_pd, d_min_str, d_max_str);
-                                            } else if let Some(rec_d3) = rec_d_agg {
-                                                println!("  Recommendation (aggressive): P:D={:.2} (D≈{})",
-                                                    aggressive_pd, rec_d3);
+                                            let agg = axis_pid.aggressive_recommendation(
+                                                current_pd_ratio,
+                                                dmax_enabled,
+                                            );
+                                            if let Some(d_text) = format_d_target(
+                                                agg.d,
+                                                agg.d_min,
+                                                agg.d_max,
+                                                dmax_enabled,
+                                            ) {
+                                                println!(
+                                                    "  Recommendation (aggressive): P:D={:.2} ({})",
+                                                    agg.pd_ratio, d_text
+                                                );
                                             }
                                         }
                                     } else if assessment == "Near optimal" {
                                         // Near optimal (1.00–1.02): D−1 hint only — no "none" line,
                                         // since "none" and a concrete suggestion are contradictory.
-                                        if dmax_enabled {
-                                            let d_min_str = axis_pid
-                                                .d_min
-                                                .map(|v| {
-                                                    v.saturating_sub(
-                                                        crate::constants::D_STEP_OPTIONAL,
-                                                    )
-                                                })
-                                                .map_or("N/A".to_string(), |v| v.to_string());
-                                            let d_max_str = axis_pid
-                                                .d_max
-                                                .or(axis_pid.d)
-                                                .map(|v| {
-                                                    v.saturating_sub(
-                                                        crate::constants::D_STEP_OPTIONAL,
-                                                    )
-                                                })
-                                                .map_or("N/A".to_string(), |v| v.to_string());
-                                            println!(
-                                                "  Recommendation (conservative): D-Min≈{}, D-Max≈{} [optional D−1]",
-                                                d_min_str, d_max_str
-                                            );
-                                        } else if let Some(current_d) = axis_pid.d {
-                                            println!(
-                                                "  Recommendation (conservative): D≈{} [optional D−1]",
-                                                current_d.saturating_sub(
-                                                    crate::constants::D_STEP_OPTIONAL
-                                                )
-                                            );
-                                        }
+                                        println!(
+                                            "  {}",
+                                            axis_pid.near_optimal_recommendation_line(dmax_enabled)
+                                        );
                                     } else {
                                         // Optimal zone (1.02–1.08): no adjustment needed
                                         println!(
@@ -1749,22 +1696,14 @@ INFO: Skipping Step Response input data filtering for {input_file_str}: {reason}
                     d_max: recommended_d_max_aggressive[axis_index],
                 });
                 let aggressive = if assessment == "Significant overshoot" {
-                    let aggressive_pd =
-                        current_pd_ratio * crate::constants::PD_RATIO_AGGRESSIVE_MULTIPLIER;
-                    let (rec_d, rec_d_min, rec_d_max) = if axis_index == 0 {
-                        pid_metadata
-                            .roll
-                            .calculate_goal_d_with_range(aggressive_pd, dmax_enabled)
-                    } else {
-                        pid_metadata
-                            .pitch
-                            .calculate_goal_d_with_range(aggressive_pd, dmax_enabled)
-                    };
-                    Some(report::DTermRec {
-                        pd_ratio: aggressive_pd,
-                        d: rec_d,
-                        d_min: rec_d_min,
-                        d_max: rec_d_max,
+                    pid_metadata.get_axis(axis_index).map(|axis| {
+                        let agg = axis.aggressive_recommendation(current_pd_ratio, dmax_enabled);
+                        report::DTermRec {
+                            pd_ratio: agg.pd_ratio,
+                            d: agg.d,
+                            d_min: agg.d_min,
+                            d_max: agg.d_max,
+                        }
                     })
                 } else {
                     None
@@ -1777,6 +1716,13 @@ INFO: Skipping Step Response input data filtering for {input_file_str}: {reason}
                     conservative,
                     moderate,
                     aggressive,
+                    near_optimal_hint: if assessment == "Near optimal" {
+                        pid_metadata
+                            .get_axis(axis_index)
+                            .and_then(|axis| axis.near_optimal_d_hint(dmax_enabled))
+                    } else {
+                        None
+                    },
                     setpoint_authority_name: setpoint_authority_names[axis_index],
                     setpoint_authority_mean: setpoint_authority_means[axis_index],
                     warnings: std::mem::take(&mut step_warnings[axis_index]),
@@ -1916,7 +1862,12 @@ INFO: Skipping Step Response input data filtering for {input_file_str}: {reason}
                                         aircraft_profile.axes[axis_index].event_count;
                                     analysis.source_files = aircraft_profile.file_count;
                                     // Print console output
-                                    println!("{}", analysis.format_console_output(axis_name));
+                                    let d_range = pid_metadata
+                                        .get_axis(axis_index)
+                                        .and_then(|ax| {
+                                            ax.d_range_for_display(pid_metadata.is_dmax_enabled())
+                                        });
+                                    println!("{}", analysis.format_console_output(axis_name, d_range));
                                     // Store for PNG overlay (move instead of clone)
                                     optimal_p_analyses[axis_index] = Some(analysis);
                                 }
@@ -2375,6 +2326,8 @@ INFO: Skipping Step Response input data filtering for {input_file_str}: {reason}
         trim_window,
         header_metadata,
         pd_ratios: pd_ratios_for_report,
+        pid_labels: pid_labels_for_report,
+        d_ranges: d_ranges_for_report,
         step_reports,
         optimal_p: optimal_p_for_report,
         gyro_analysis,

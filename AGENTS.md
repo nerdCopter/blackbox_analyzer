@@ -6,6 +6,11 @@
   - **Exception:** Axis indices (0=Roll, 1=Pitch, 2=Yaw) are managed via `src/axis_names.rs` module with `AXIS_COUNT`, `AXIS_NAMES`, and `axis_name()` function. Use these instead of creating redundant axis index constants.
   - See `src/axis_names.rs` for centralized axis naming (commit 73f8c04)
 - **Before implementing a new statistical/analysis computation**, grep `src/data_analysis/` and `src/plot_functions/` for an existing implementation of the same core primitive (cross-correlation, percentile thresholding, per-row error, event/threshold-crossing counting). Reuse or extend it; if a genuinely new computation is needed, note in a code comment why the existing ones don't cover this case.
+- **Output parity (console, report.md, PNG titles and legends):** any value, label or recommendation shown in more than one output must come from one shared function, never from a copy in each output.
+  - All outputs use the same values and the same decision rules; only presentation differs.
+  - Pass data the report needs through the result structs (`StepAxisReport`, `FlightReport`); do not re-derive it in `report.rs`.
+  - Console and report may be more verbose (extra fields, thresholds, reasoning). Plot titles and legends stay minimal and concise.
+  - Changing one output updates the others in the same change, with a test that the report carries the shared function's text.
 - Run checks in this order:
   1) `cargo clippy --all-targets --all-features -- -D warnings` — fix all warnings.
   2) `cargo fmt --all` — only after clippy passes.

@@ -11,13 +11,12 @@ use crate::constants::{
     COLOR_STEP_RESPONSE_COMBINED, COLOR_STEP_RESPONSE_HIGH_SP, COLOR_STEP_RESPONSE_LOW_SP,
     FINAL_NORMALIZED_STEADY_STATE_TOLERANCE, LINE_WIDTH_PLOT,
     LOW_AUTHORITY_SETPOINT_THRESHOLD_DEG_S, POST_AVERAGING_SMOOTHING_WINDOW, RESPONSE_LENGTH_S,
-    STEADY_STATE_END_S, STEADY_STATE_START_S, TD_COEFFICIENT_OF_VARIATION_MAX,
-    TD_CONSISTENCY_MIN_THRESHOLD,
+    STEADY_STATE_END_S, STEADY_STATE_START_S,
 };
 use crate::data_analysis::calc_step_response; // For average_responses and moving_average_smooth_f64
 use crate::data_analysis::calc_step_response::{compute_setpoint_authority, SetpointAuthority};
 use crate::data_analysis::optimal_p_estimation::{OptimalPAnalysis, PRecommendation};
-use crate::data_input::pid_metadata::PidMetadata;
+use crate::data_input::pid_metadata::{format_d_target, PidMetadata};
 use crate::plot_framework::{draw_stacked_plot, PlotSeries};
 use crate::types::{AllStepResponsePlotData, StepResponseResults};
 
@@ -458,24 +457,19 @@ pub fn plot_step_response(
 
                 // Conservative recommendation (uses dmax_enabled computed at function start)
                 if let Some(rec_pd) = conservative.0.pd_ratios[axis_index] {
-                    let recommendation_label = if dmax_enabled {
-                        // D-Min/D-Max enabled: show D-Min and D-Max, NOT base D
-                        let d_min_str = conservative.0.d_min_values[axis_index]
-                            .map_or("N/A".to_string(), |v| v.to_string());
-                        let d_max_str = conservative.0.d_max_values[axis_index]
-                            .map_or("N/A".to_string(), |v| v.to_string());
-                        format!(
-                            "  Recommendation (conservative): P:D={:.2} (D-Min≈{}, D-Max≈{})",
-                            rec_pd, d_min_str, d_max_str
-                        )
-                    } else if let Some(rec_d) = conservative.0.d_values[axis_index] {
-                        // D-Min/D-Max disabled: show only base D
-                        format!(
-                            "  Recommendation (conservative): P:D={:.2} (D≈{})",
-                            rec_pd, rec_d
-                        )
-                    } else {
-                        format!("  Recommendation (conservative): P:D={:.2}", rec_pd)
+                    let recommendation_label = match format_d_target(
+                        conservative.0.d_values[axis_index],
+                        conservative.0.d_min_values[axis_index],
+                        conservative.0.d_max_values[axis_index],
+                        dmax_enabled,
+                    ) {
+                        Some(d_text) => {
+                            format!(
+                                "  Recommendation (conservative): P:D={:.2} ({})",
+                                rec_pd, d_text
+                            )
+                        }
+                        None => format!("  Recommendation (conservative): P:D={:.2}", rec_pd),
                     };
                     series.push(PlotSeries {
                         data: vec![],
@@ -487,29 +481,10 @@ pub fn plot_step_response(
                     // Near optimal (1.00–1.02): D−1 hint replaces the "none" label —
                     // showing "none" and a concrete suggestion together is contradictory.
                     if let Some(axis_pid_data) = pid_metadata.get_axis(axis_index) {
-                        let d1_label = if dmax_enabled {
-                            let d_min_str = axis_pid_data
-                                .d_min
-                                .map(|v| v.saturating_sub(crate::constants::D_STEP_OPTIONAL))
-                                .map_or("N/A".to_string(), |v| v.to_string());
-                            let d_max_str = axis_pid_data
-                                .d_max
-                                .or(axis_pid_data.d)
-                                .map(|v| v.saturating_sub(crate::constants::D_STEP_OPTIONAL))
-                                .map_or("N/A".to_string(), |v| v.to_string());
-                            format!(
-                                "  Recommendation (conservative): D-Min≈{}, D-Max≈{} [optional D−1]",
-                                d_min_str, d_max_str
-                            )
-                        } else if let Some(current_d) = axis_pid_data.d {
-                            format!(
-                                "  Recommendation (conservative): D≈{} [optional D−1]",
-                                current_d.saturating_sub(crate::constants::D_STEP_OPTIONAL)
-                            )
-                        } else {
-                            "  Recommendation (none): No obvious tuning adjustments needed"
-                                .to_string()
-                        };
+                        let d1_label = format!(
+                            "  {}",
+                            axis_pid_data.near_optimal_recommendation_line(dmax_enabled)
+                        );
                         series.push(PlotSeries {
                             data: vec![],
                             label: d1_label,
@@ -530,24 +505,19 @@ pub fn plot_step_response(
 
                 // Moderate recommendation
                 if let Some(rec_pd) = moderate.0.pd_ratios[axis_index] {
-                    let recommendation_label = if dmax_enabled {
-                        // D-Min/D-Max enabled: show D-Min and D-Max, NOT base D
-                        let d_min_str = moderate.0.d_min_values[axis_index]
-                            .map_or("N/A".to_string(), |v| v.to_string());
-                        let d_max_str = moderate.0.d_max_values[axis_index]
-                            .map_or("N/A".to_string(), |v| v.to_string());
-                        format!(
-                            "  Recommendation (moderate): P:D={:.2} (D-Min≈{}, D-Max≈{})",
-                            rec_pd, d_min_str, d_max_str
-                        )
-                    } else if let Some(rec_d) = moderate.0.d_values[axis_index] {
-                        // D-Min/D-Max disabled: show only base D
-                        format!(
-                            "  Recommendation (moderate): P:D={:.2} (D≈{})",
-                            rec_pd, rec_d
-                        )
-                    } else {
-                        format!("  Recommendation (moderate): P:D={:.2}", rec_pd)
+                    let recommendation_label = match format_d_target(
+                        moderate.0.d_values[axis_index],
+                        moderate.0.d_min_values[axis_index],
+                        moderate.0.d_max_values[axis_index],
+                        dmax_enabled,
+                    ) {
+                        Some(d_text) => {
+                            format!(
+                                "  Recommendation (moderate): P:D={:.2} ({})",
+                                rec_pd, d_text
+                            )
+                        }
+                        None => format!("  Recommendation (moderate): P:D={:.2}", rec_pd),
                     };
                     series.push(PlotSeries {
                         data: vec![],
@@ -559,32 +529,24 @@ pub fn plot_step_response(
                     // Aggressive (third) recommendation for significant overshoot only
                     if current.assessments[axis_index] == Some("Significant overshoot") {
                         if let Some(current_pd) = current.pd_ratios[axis_index] {
-                            let aggressive_pd =
-                                current_pd * crate::constants::PD_RATIO_AGGRESSIVE_MULTIPLIER;
                             if let Some(axis_pid_data) = pid_metadata.get_axis(axis_index) {
-                                let (rec_d_agg, rec_d_min_agg, rec_d_max_agg) = axis_pid_data
-                                    .calculate_goal_d_with_range(aggressive_pd, dmax_enabled);
-                                let agg_label = if dmax_enabled
-                                    && (rec_d_min_agg.is_some() || rec_d_max_agg.is_some())
-                                {
-                                    let d_min_str =
-                                        rec_d_min_agg.map_or("N/A".to_string(), |v| v.to_string());
-                                    let d_max_str =
-                                        rec_d_max_agg.map_or("N/A".to_string(), |v| v.to_string());
-                                    format!(
-                                        "  Recommendation (aggressive): P:D={:.2} (D-Min≈{}, D-Max≈{})",
-                                        aggressive_pd, d_min_str, d_max_str
-                                    )
-                                } else if let Some(rec_d3) = rec_d_agg {
-                                    format!(
-                                        "  Recommendation (aggressive): P:D={:.2} (D≈{})",
-                                        aggressive_pd, rec_d3
-                                    )
-                                } else {
-                                    format!(
+                                let agg = axis_pid_data
+                                    .aggressive_recommendation(current_pd, dmax_enabled);
+                                let aggressive_pd = agg.pd_ratio;
+                                let agg_label = match format_d_target(
+                                    agg.d,
+                                    agg.d_min,
+                                    agg.d_max,
+                                    dmax_enabled,
+                                ) {
+                                    Some(d_text) => format!(
+                                        "  Recommendation (aggressive): P:D={:.2} ({})",
+                                        aggressive_pd, d_text
+                                    ),
+                                    None => format!(
                                         "  Recommendation (aggressive): P:D={:.2}",
                                         aggressive_pd
-                                    )
+                                    ),
                                 };
                                 series.push(PlotSeries {
                                     data: vec![],
@@ -630,18 +592,9 @@ pub fn plot_step_response(
                             stroke_width: 0,
                         });
 
-                        // Td source: group/single, flights, punches
-                        let source_label = if analysis.source_files > 1 {
-                            "File Group"
-                        } else {
-                            "Single File"
-                        };
                         series.push(PlotSeries {
                             data: vec![],
-                            label: format!(
-                                "  Td source: {} — {} flights, {} throttle-punches",
-                                source_label, analysis.source_files, analysis.source_events,
-                            ),
+                            label: format!("  Td source: {}", analysis.source_summary()),
                             color: COLOR_OPTIMAL_P_TEXT,
                             stroke_width: 0,
                         });
@@ -681,24 +634,11 @@ pub fn plot_step_response(
                         });
 
                         // Recommendation — D-suffix helper
-                        let effective_pd = analysis.recommended_pd_conservative.or_else(|| {
-                            analysis
-                                .current_d
-                                .filter(|&d| d > 0)
-                                .map(|d| analysis.current_p as f64 / d as f64)
-                        });
-                        let d_suffix = |recommended_p: u32| -> String {
-                            if let (Some(current_d), Some(rec_pd)) =
-                                (analysis.current_d, effective_pd)
-                            {
-                                if rec_pd > 0.0 && current_d > 0 {
-                                    let rec_d = ((recommended_p as f64) / rec_pd).round() as u32;
-                                    let d_delta = (rec_d as i64) - (current_d as i64);
-                                    return format!(", D≈{} ({:+})", rec_d, d_delta);
-                                }
-                            }
-                            String::new()
-                        };
+                        let d_range = pid_metadata
+                            .get_axis(axis_index)
+                            .and_then(|ax| ax.d_range_for_display(dmax_enabled));
+                        let d_suffix =
+                            |recommended_p: u32| analysis.d_target_suffix(recommended_p, d_range);
 
                         let rec_label = match &analysis.recommendation {
                             PRecommendation::Optimal { .. } => format!(
@@ -737,31 +677,15 @@ pub fn plot_step_response(
 
                         // Reliability — always shown, after recommendation; orange when poor
                         {
-                            let cv_str = analysis.td_stats.coefficient_of_variation.map_or_else(
-                                || "CV=N/A".to_string(),
-                                |cv| {
-                                    format!(
-                                        "CV={:.1}% (⊢≤{:.0}%)",
-                                        cv * 100.0,
-                                        TD_COEFFICIENT_OF_VARIATION_MAX * 100.0,
-                                    )
-                                },
-                            );
-                            let cons_str = format!(
-                                "Consistency={:.0}% (⊢≥{:.0}%)",
-                                analysis.td_stats.consistency * 100.0,
-                                TD_CONSISTENCY_MIN_THRESHOLD * 100.0,
+                            let rel_text = format!(
+                                "  {}: {}",
+                                analysis.td_stats.reliability_label(),
+                                analysis.td_stats.reliability_details()
                             );
                             let (rel_label, rel_color) = if analysis.td_stats.is_consistent() {
-                                (
-                                    format!("  Reliable: {cons_str}, {cv_str}"),
-                                    COLOR_OPTIMAL_P_TEXT,
-                                )
+                                (rel_text, COLOR_OPTIMAL_P_TEXT)
                             } else {
-                                (
-                                    format!("  Unreliable: {cons_str}, {cv_str}"),
-                                    COLOR_OPTIMAL_P_WARNING,
-                                )
+                                (rel_text, COLOR_OPTIMAL_P_WARNING)
                             };
                             series.push(PlotSeries {
                                 data: vec![],

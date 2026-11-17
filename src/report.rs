@@ -21,6 +21,7 @@ use crate::data_analysis::filter_response::{
 use crate::data_analysis::optimal_p_estimation::{OptimalPAnalysis, PRecommendation};
 use crate::data_analysis::stick_distribution::StickDistributionResult;
 use crate::data_analysis::transfer_function_estimation::Confidence;
+use crate::data_input::pid_metadata::format_d_target;
 use crate::plot_functions::motor_desync::{
     fallback_oscillation_overlaps, DesyncConfidence, MotorDesyncResult,
 };
@@ -47,6 +48,8 @@ pub struct StepAxisReport {
     pub conservative: Option<DTermRec>,
     pub moderate: Option<DTermRec>,
     pub aggressive: Option<DTermRec>,
+    /// Optional D-1 hint shown for the near-optimal zone, which has no P:D recommendation.
+    pub near_optimal_hint: Option<String>,
     pub setpoint_authority_name: Option<&'static str>,
     pub setpoint_authority_mean: Option<f32>,
     pub warnings: Vec<String>,
@@ -60,6 +63,10 @@ pub struct FlightReport {
     pub trim_window: Option<(f64, f64, usize)>,
     pub header_metadata: Vec<(String, String)>,
     pub pd_ratios: [Option<f64>; AXIS_COUNT],
+    /// Per-axis gain text (e.g. "P:57 I:66 D:58 FF:0"); empty when the header has no PID data.
+    pub pid_labels: [String; AXIS_COUNT],
+    /// Per-axis D-Min and D-Max (`AxisPid::d_range_for_display`); `None` shows base D.
+    pub d_ranges: [Option<(u32, u32)>; AXIS_COUNT],
     pub step_reports: Vec<StepAxisReport>,
     pub optimal_p: [Option<OptimalPAnalysis>; AXIS_COUNT],
     pub gyro_analysis: Option<GyroAnalysisResult>,
@@ -208,13 +215,18 @@ pub fn generate_markdown_report(
     // --- PID Tuning ---
     writeln!(md, "## PID Tuning")?;
     writeln!(md)?;
-    writeln!(md, "| Axis | P:D Ratio |")?;
-    writeln!(md, "|------|-----------|")?;
+    writeln!(md, "| Axis | PID | P:D Ratio |")?;
+    writeln!(md, "|------|-----|-----------|")?;
     let axis_labels = ["Roll", "Pitch", "Yaw (informational)"];
     for (i, label) in axis_labels.iter().enumerate() {
+        let pid = if report.pid_labels[i].is_empty() {
+            "N/A"
+        } else {
+            report.pid_labels[i].as_str()
+        };
         match report.pd_ratios[i] {
-            Some(r) => writeln!(md, "| {} | {:.2} |", label, r)?,
-            None => writeln!(md, "| {} | N/A |", label)?,
+            Some(r) => writeln!(md, "| {} | {} | {:.2} |", label, pid, r)?,
+            None => writeln!(md, "| {} | {} | N/A |", label, pid)?,
         }
     }
     writeln!(md)?;
@@ -260,9 +272,13 @@ pub fn generate_markdown_report(
                     fmt_dterm_rec(rec)
                 )?;
             }
+            if let Some(hint) = &axis_report.near_optimal_hint {
+                writeln!(md, "- **Recommendation (conservative):** {}", hint)?;
+            }
             if axis_report.conservative.is_none()
                 && axis_report.moderate.is_none()
                 && axis_report.aggressive.is_none()
+                && axis_report.near_optimal_hint.is_none()
             {
                 writeln!(
                     md,
@@ -394,9 +410,14 @@ pub fn generate_markdown_report(
                 writeln!(md, "### {}", AXIS_NAMES[axis_index])?;
                 writeln!(md)?;
                 writeln!(md, "- **Current P:** {}", analysis.current_p)?;
-                if let Some(d) = analysis.current_d {
-                    writeln!(md, "- **Current D:** {}", d)?;
+                match (report.d_ranges[axis_index], analysis.current_d) {
+                    (Some((min, max)), _) => {
+                        writeln!(md, "- **Current D:** D-Min {}, D-Max {}", min, max)?
+                    }
+                    (None, Some(d)) => writeln!(md, "- **Current D:** {}", d)?,
+                    (None, None) => {}
                 }
+                let d_range = report.d_ranges[axis_index];
                 writeln!(
                     md,
                     "- **Td measured:** {:.1} ms ({} samples)",
@@ -421,27 +442,33 @@ pub fn generate_markdown_report(
                     PRecommendation::Increase {
                         conservative_p,
                         reasoning,
-                    } => format!("Increase P to {} — {}", conservative_p, reasoning),
+                    } => format!(
+                        "Increase P to {} ({:+}){} — {}",
+                        conservative_p,
+                        *conservative_p as i64 - analysis.current_p as i64,
+                        analysis.d_target_suffix(*conservative_p, d_range),
+                        reasoning
+                    ),
                     PRecommendation::Decrease {
                         recommended_p,
                         reasoning,
-                    } => format!("Decrease P to {} — {}", recommended_p, reasoning),
+                    } => format!(
+                        "Decrease P to {} ({:+}){} — {}",
+                        recommended_p,
+                        *recommended_p as i64 - analysis.current_p as i64,
+                        analysis.d_target_suffix(*recommended_p, d_range),
+                        reasoning
+                    ),
                     PRecommendation::Investigate { issue } => format!("Investigate — {}", issue),
                 };
                 writeln!(md, "- **Recommendation:** {}", rec_text)?;
-                if analysis.source_files > 1 {
-                    writeln!(
-                        md,
-                        "- **Source:** {} files, {} throttle-punch events",
-                        analysis.source_files, analysis.source_events
-                    )?;
-                } else {
-                    writeln!(
-                        md,
-                        "- **Source:** {} throttle-punch events",
-                        analysis.source_events
-                    )?;
-                }
+                writeln!(
+                    md,
+                    "- **{}:** {}",
+                    analysis.td_stats.reliability_label(),
+                    analysis.td_stats.reliability_details()
+                )?;
+                writeln!(md, "- **Source:** {}", analysis.source_summary())?;
                 writeln!(md)?;
             }
         }
@@ -878,16 +905,14 @@ fn fmt_imuf(f: &crate::data_analysis::filter_response::ImufFilterConfig) -> Stri
 }
 
 fn fmt_dterm_rec(rec: &DTermRec) -> String {
-    if rec.d_min.is_some() || rec.d_max.is_some() {
-        let d_min_s = rec.d_min.map_or("N/A".to_string(), |v| v.to_string());
-        let d_max_s = rec.d_max.map_or("N/A".to_string(), |v| v.to_string());
-        format!(
-            "P:D={:.2} (D-Min≈{}, D-Max≈{})",
-            rec.pd_ratio, d_min_s, d_max_s
-        )
-    } else if let Some(d) = rec.d {
-        format!("P:D={:.2} (D≈{})", rec.pd_ratio, d)
-    } else {
-        format!("P:D={:.2}", rec.pd_ratio)
+    // A range end present means the axis has a valid D-Min/D-Max pair (see main.rs callers).
+    match format_d_target(
+        rec.d,
+        rec.d_min,
+        rec.d_max,
+        rec.d_min.is_some() || rec.d_max.is_some(),
+    ) {
+        Some(d_text) => format!("P:D={:.2} ({})", rec.pd_ratio, d_text),
+        None => format!("P:D={:.2}", rec.pd_ratio),
     }
 }

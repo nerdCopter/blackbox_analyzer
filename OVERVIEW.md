@@ -90,10 +90,10 @@ All analysis parameters, thresholds, plot dimensions, and algorithmic constants 
                     * **Moderate** (PD_RATIO_MODERATE_MULTIPLIER = 0.75): Reduces P:D ratio by 25%, increasing D by ~33%. For experienced pilots.
                     * **Aggressive** (PD_RATIO_AGGRESSIVE_MULTIPLIER = 0.65): Reduces P:D ratio by 35%, increasing D by ~54%. For tuning significant overshoot zones (>1.20).
                 * **D-Min/D-Max Support:**
-                    * Automatically detects if D-Min/D-Max system is enabled (Betaflight 4.0+)
-                    * When enabled: Recommends proportional D-Min and D-Max values maintaining current ratio relationships
-                    * When disabled: Recommends only base D value
-                    * Handles firmware differences (BF <4.6: D=max, D-Min=min; BF 4.6+: D=min, D-Max=max)
+                    * Detects dynamic D per log from the `d_min` header (BF 4.0–4.5, base D = max) or the `d_max` header (BF 2025.12+, base D = min); active when `0 < D-Min < D-Max`
+                    * When enabled: plot titles, legends, console and report show D-Min/D-Max and recommend proportional D-Min and D-Max values
+                    * When disabled (no range, or the D-Max slider at 0): shows and recommends only base D
+                    * Feedforward is shown as `FF:n` (`DF:n` for EmuFlight, which hides a zero)
                 * **Safety Features:**
                     * Warnings for severe overshoot (Peak > 1.5) suggesting mechanical issues
                     * Warnings for unreasonable P:D ratios (< 0.3 or > 3.0)
@@ -201,7 +201,7 @@ All analysis parameters, thresholds, plot dimensions, and algorithmic constants 
 
 With `--extended`, all plots below are generated. The default (`--core`) generates only the core subset (see [README.md](README.md#output) for the exact split); `--step`, `--bode`, and `--desync` each restrict output to their own single plot:
 
-- **`*_Step_Response_stacked_plot_*.png`** — Step response visualization with P:D recommendations overlay
+- **`*_Step_Response_stacked_plot_*.png`** — Step response visualization with P:D recommendations overlay; each axis title shows its P, I, D (or D-Min/D-Max) and FF
 - **`*_PIDsum_PIDerror_Setpoint_stacked.png`** — Time-domain traces of PIDsum, PID error, and setpoint
 - **`*_SetpointVsGyro_stacked.png`** — Setpoint command vs. filtered gyro response comparison
 - **`*_GyroVsUnfilt_stacked.png`** — Filtered vs. unfiltered gyro comparison with calculated filtering delay
@@ -218,7 +218,7 @@ With `--extended`, all plots below are generated. The default (`--core`) generat
 
 #### Generated Reports
 
-- **`*_report.md`** — Structured markdown flight report written alongside PNGs on every run. Content is assembled from typed result structs returned by each analysis pass — no CSV re-reading. Sections: Metadata (firmware revision, craft name, PIDs, sample rate, gyroUnfilt source warning), Gyro Filter Configuration (per-axis LPF1/LPF2 table, with an IMUF / Pseudo-Kalman column added only for EmuFlight logs, plus Dynamic Notch, RPM filter), PID Tuning P:D ratios, Step Response Analysis (Roll/Pitch: peak value, assessment, setpoint authority, P:D recommendations), Gyro Analysis (per-axis filtering delay with confidence, spectrum peaks), D-Term Analysis (per-axis filtering delay with N/A disambiguation, spectrum peaks), Motor Oscillation table (per-motor sliding-window spectrum check, catches a brief burst a whole-log average would dilute away), Motor Desync Detection (per-motor motor[N] vs eRPM[N] divergence table, self-relative to that same motor's own behavior elsewhere in the flight; De Facto/Possible confidence tiers require bidirectional DShot telemetry; a lower-confidence Fallback tier runs instead when it's absent), Stick Input Smoothness (RC Command step detection, with an rc_smoothing recommendation when an axis is classified Blocky), Stick Position & Rate Analysis (computed regardless of plot selection, not gated by `--core`/`--extended`/etc. — per-axis Center/Mid/High/Saturation zone-time percentages, Saturation Events, Center reversal rate, P95 Setpoint/P95 Gyro Achieved, Configured Max Rate and Rate Headroom from the header's rate-curve config — no tuning advisory; omitted from the report only when no axis has at least two usable RC Command samples), and relative links to all generated PNGs. Optimal P Estimation and Bode Analysis sections are included when those features produce results.
+- **`*_report.md`** — Structured markdown flight report written alongside PNGs on every run. Content is assembled from typed result structs returned by each analysis pass — no CSV re-reading. Sections: Metadata (firmware revision, craft name, PIDs, sample rate, gyroUnfilt source warning), Gyro Filter Configuration (per-axis LPF1/LPF2 table, with an IMUF / Pseudo-Kalman column added only for EmuFlight logs, plus Dynamic Notch, RPM filter), PID Tuning (per-axis gains: P, I, D or D-Min/D-Max, FF, and P:D ratios), Step Response Analysis (Roll/Pitch: peak value, assessment, setpoint authority, P:D recommendations), Gyro Analysis (per-axis filtering delay with confidence, spectrum peaks), D-Term Analysis (per-axis filtering delay with N/A disambiguation, spectrum peaks), Motor Oscillation table (per-motor sliding-window spectrum check, catches a brief burst a whole-log average would dilute away), Motor Desync Detection (per-motor motor[N] vs eRPM[N] divergence table, self-relative to that same motor's own behavior elsewhere in the flight; De Facto/Possible confidence tiers require bidirectional DShot telemetry; a lower-confidence Fallback tier runs instead when it's absent), Stick Input Smoothness (RC Command step detection, with an rc_smoothing recommendation when an axis is classified Blocky), Stick Position & Rate Analysis (computed regardless of plot selection, not gated by `--core`/`--extended`/etc. — per-axis Center/Mid/High/Saturation zone-time percentages, Saturation Events, Center reversal rate, P95 Setpoint/P95 Gyro Achieved, Configured Max Rate and Rate Headroom from the header's rate-curve config — no tuning advisory; omitted from the report only when no axis has at least two usable RC Command samples), and relative links to all generated PNGs. Optimal P Estimation and Bode Analysis sections are included when those features produce results.
   A Skipped Plots section lists any enabled plot type with no plottable data; omitted when nothing was skipped.
 
 
@@ -241,7 +241,7 @@ The system provides intelligent P:D tuning recommendations based on step-respons
 - **Conservative recommendations** (+≈18% D): Safe incremental steps; 2–3 iterations to optimal
 - **Moderate recommendations** (+≈33% D): For experienced pilots; 1–2 iterations to optimal
 - Automatically handles D-Min/D-Max systems (Betaflight 4.0+)
-- Shows only base D when D-Min/D-Max is disabled
+- Shows only base D when D-Min/D-Max is not configured (no range, or the D-Max slider at 0)
 - Works for all aircraft sizes, including 10+ inch, where D can exceed P
 - Includes warnings for severe overshoot or unreasonable P:D ratios
 - Shows recommendations only when the step response needs improvement (no adjustment for 1.02 ≤ peak < 1.08; 1.00 ≤ peak < 1.02 can show an optional D−1 hint; peak ≥ 1.08 can show a D recommendation; see zones above)

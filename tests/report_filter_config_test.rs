@@ -10,7 +10,7 @@ use blackbox_analyzer::data_analysis::filter_response::{
     AllFilterConfigs, AxisFilterConfig, FilterConfig, FilterType, ImufFilterConfig,
     RpmFilterConfig, RpmFundamentalHz, RpmMotorFrequencies,
 };
-use blackbox_analyzer::report::{generate_markdown_report, FlightReport};
+use blackbox_analyzer::report::{generate_markdown_report, FlightReport, StepAxisReport};
 
 fn base_report(filter_config: Option<AllFilterConfigs>) -> FlightReport {
     FlightReport {
@@ -19,6 +19,8 @@ fn base_report(filter_config: Option<AllFilterConfigs>) -> FlightReport {
         trim_window: None,
         header_metadata: vec![],
         pd_ratios: [None, None, None],
+        pid_labels: Default::default(),
+        d_ranges: Default::default(),
         step_reports: vec![],
         optimal_p: [None, None, None],
         gyro_analysis: None,
@@ -179,4 +181,202 @@ fn report_lists_rpm_filter_without_gyro_lowpass_fields() {
     assert!(!contents.contains("| Axis | LPF1 | LPF2 |"));
     assert!(contents.contains("- **RPM Filter:** 3 harmonics, Q=5, min 100 Hz"));
     assert!(contents.contains("- **RPM Filter motor frequency:** unavailable"));
+}
+
+#[test]
+fn pid_tuning_table_shows_zero_ff_label() {
+    let mut report = base_report(None);
+    report.pid_labels = [
+        "P:57 I:66 D:58 D-Min:58 D-Max:80 FF:0".to_string(),
+        "P:59 I:69 D:72 D-Min:44 D-Max:90 FF:0".to_string(),
+        String::new(),
+    ];
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let out_path = dir.path().join("pid_report.md");
+    generate_markdown_report(&report, &out_path).expect("generate report");
+    let contents = fs::read_to_string(&out_path).expect("read report");
+
+    assert!(contents.contains("| Axis | PID | P:D Ratio |"));
+    assert!(contents.contains("| Roll | P:57 I:66 D:58 D-Min:58 D-Max:80 FF:0 | N/A |"));
+    assert!(contents.contains("| Yaw (informational) | N/A | N/A |"));
+}
+
+fn step_axis(hint: Option<String>) -> StepAxisReport {
+    StepAxisReport {
+        axis_name: "Roll",
+        peak_value: 1.01,
+        assessment: "Near optimal",
+        current_pd_ratio: 1.2,
+        conservative: None,
+        moderate: None,
+        aggressive: None,
+        near_optimal_hint: hint,
+        setpoint_authority_name: None,
+        setpoint_authority_mean: None,
+        warnings: Vec::new(),
+    }
+}
+
+#[test]
+fn near_optimal_hint_replaces_the_none_line_in_the_report() {
+    let dir = tempfile::tempdir().expect("create temp dir");
+
+    let mut report = base_report(None);
+    report.step_reports = vec![step_axis(Some(
+        "D-Min≈19, D-Max≈29 [optional D−1]".to_string(),
+    ))];
+    let with_hint = dir.path().join("hint_report.md");
+    generate_markdown_report(&report, &with_hint).expect("generate report");
+    let contents = fs::read_to_string(&with_hint).expect("read report");
+    assert!(
+        contents.contains("- **Recommendation (conservative):** D-Min≈19, D-Max≈29 [optional D−1]")
+    );
+    assert!(!contents.contains("No obvious tuning adjustments needed"));
+
+    let mut report = base_report(None);
+    report.step_reports = vec![step_axis(None)];
+    let without = dir.path().join("none_report.md");
+    generate_markdown_report(&report, &without).expect("generate report");
+    let contents = fs::read_to_string(&without).expect("read report");
+    assert!(contents.contains("- **Recommendation:** No obvious tuning adjustments needed"));
+}
+
+#[test]
+fn optimal_p_section_shows_the_d_range_like_the_plot() {
+    use blackbox_analyzer::data_analysis::optimal_p_estimation::OptimalPAnalysis;
+
+    // P 40, D 20, P:D target 2.0; a Td far above the target gives an Increase P recommendation.
+    let samples: Vec<f64> = (0..40).map(|i| 60.0 + (i % 5) as f64).collect();
+    let analysis =
+        OptimalPAnalysis::analyze(&samples, 40, Some(20), None, Some(2.0), Some((25.0, 3.0)))
+            .expect("analysis from synthetic Td samples");
+    let dir = tempfile::tempdir().expect("create temp dir");
+
+    let mut report = base_report(None);
+    report.optimal_p[0] = Some(analysis.clone());
+    report.d_ranges[0] = Some((20, 30));
+    let ranged = dir.path().join("ranged_report.md");
+    generate_markdown_report(&report, &ranged).expect("generate report");
+    let contents = fs::read_to_string(&ranged).expect("read report");
+    assert!(
+        contents.contains("- **Current D:** D-Min 20, D-Max 30"),
+        "{contents}"
+    );
+    let rec = contents
+        .lines()
+        .find(|l| l.starts_with("- **Recommendation:** Increase P to"))
+        .expect("an Increase P recommendation line");
+    // The report carries the shared helpers' exact text for the recommended P.
+    let recommended_p = match &analysis.recommendation {
+        blackbox_analyzer::data_analysis::optimal_p_estimation::PRecommendation::Increase {
+            conservative_p,
+            ..
+        } => *conservative_p,
+        other => panic!("expected an Increase P recommendation, got {other:?}"),
+    };
+    let expected_suffix = analysis.d_target_suffix(recommended_p, Some((20, 30)));
+    assert!(expected_suffix.starts_with(", D-Min≈"), "{expected_suffix}");
+    assert!(
+        rec.starts_with(&format!(
+            "- **Recommendation:** Increase P to {recommended_p} ({:+}){expected_suffix} — ",
+            recommended_p as i64 - 40
+        )),
+        "{rec}"
+    );
+    let expected_reliability = format!(
+        "- **{}:** {}",
+        analysis.td_stats.reliability_label(),
+        analysis.td_stats.reliability_details()
+    );
+    assert!(
+        contents.contains(&expected_reliability),
+        "{expected_reliability}"
+    );
+
+    report.d_ranges[0] = None;
+    let single = dir.path().join("single_report.md");
+    generate_markdown_report(&report, &single).expect("generate report");
+    let contents = fs::read_to_string(&single).expect("read report");
+    assert!(contents.contains("- **Current D:** 20"));
+    let rec = contents
+        .lines()
+        .find(|l| l.starts_with("- **Recommendation:** Increase P to"))
+        .expect("an Increase P recommendation line");
+    assert!(rec.contains(", D≈") && !rec.contains("D-Min"), "{rec}");
+}
+
+#[test]
+fn near_optimal_hint_report_text_matches_the_shared_helper_for_roll_and_pitch() {
+    use blackbox_analyzer::data_input::pid_metadata::parse_pid_metadata;
+
+    // BF 4.5: roll has a range (20 to 30); pitch has d_min 0, so it shows a single D.
+    let headers: Vec<(String, String)> = [
+        ("Firmware revision", "Betaflight 4.5.0"),
+        ("rollPID", "40,50,30"),
+        ("pitchPID", "42,52,40"),
+        ("d_min", "20,0,0"),
+    ]
+    .iter()
+    .map(|(k, v)| (k.to_string(), v.to_string()))
+    .collect();
+    let pid = parse_pid_metadata(&headers);
+    let on = pid.is_dmax_enabled();
+    let roll_hint = pid.roll.near_optimal_d_hint(on).expect("roll hint");
+    let pitch_hint = pid.pitch.near_optimal_d_hint(on).expect("pitch hint");
+    assert!(roll_hint.contains("D-Min≈"), "{roll_hint}");
+    assert!(
+        pitch_hint.starts_with("D≈") && !pitch_hint.contains("D-Min"),
+        "{pitch_hint}"
+    );
+
+    let mut report = base_report(None);
+    let mut roll = step_axis(Some(roll_hint.clone()));
+    roll.axis_name = "Roll";
+    let mut pitch = step_axis(Some(pitch_hint.clone()));
+    pitch.axis_name = "Pitch";
+    report.step_reports = vec![roll, pitch];
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let path = dir.path().join("two_axis_report.md");
+    generate_markdown_report(&report, &path).expect("generate report");
+    let contents = fs::read_to_string(&path).expect("read report");
+    // Each hint sits in its own axis section, not just anywhere in the report.
+    let section = |axis: &str| -> String {
+        let head = format!("### {axis}\n");
+        let start = contents.find(&head).expect("axis section");
+        let rest = &contents[start + head.len()..];
+        rest.split("\n### ").next().unwrap_or(rest).to_string()
+    };
+    let roll_section = section("Roll");
+    let pitch_section = section("Pitch");
+    assert!(roll_section.contains(&format!("- **Recommendation (conservative):** {roll_hint}")));
+    assert!(!roll_section.contains(&pitch_hint));
+    assert!(pitch_section.contains(&format!(
+        "- **Recommendation (conservative):** {pitch_hint}"
+    )));
+    assert!(!pitch_section.contains(&roll_hint));
+}
+
+#[test]
+fn optimal_p_source_line_uses_the_shared_summary() {
+    use blackbox_analyzer::data_analysis::optimal_p_estimation::OptimalPAnalysis;
+
+    let samples: Vec<f64> = (0..40).map(|i| 60.0 + (i % 5) as f64).collect();
+    let mut analysis =
+        OptimalPAnalysis::analyze(&samples, 40, Some(20), None, Some(2.0), Some((25.0, 3.0)))
+            .expect("analysis from synthetic Td samples");
+    analysis.source_files = 11;
+    analysis.source_events = 94;
+    let expected = analysis.source_summary();
+    assert_eq!(expected, "File Group — 11 flights, 94 throttle-punches");
+
+    let mut report = base_report(None);
+    report.optimal_p[1] = Some(analysis);
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let path = dir.path().join("source_report.md");
+    generate_markdown_report(&report, &path).expect("generate report");
+    let contents = fs::read_to_string(&path).expect("read report");
+    assert!(
+        contents.contains(&format!("- **Source:** {expected}")),
+        "{contents}"
+    );
 }

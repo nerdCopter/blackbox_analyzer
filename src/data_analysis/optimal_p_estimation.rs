@@ -195,6 +195,35 @@ impl TdStatistics {
         })
     }
 
+    /// Consistency and CV text with their thresholds, shared by the plot legend, console and
+    /// report, for example `Consistency=86% (⊢≥70%), CV=24.8% (⊢≤40%)`.
+    pub fn reliability_details(&self) -> String {
+        let cv_str = self.coefficient_of_variation.map_or_else(
+            || "CV=N/A".to_string(),
+            |cv| {
+                format!(
+                    "CV={:.1}% (⊢≤{:.0}%)",
+                    cv * 100.0,
+                    TD_COEFFICIENT_OF_VARIATION_MAX * 100.0,
+                )
+            },
+        );
+        format!(
+            "Consistency={:.0}% (⊢≥{:.0}%), {cv_str}",
+            self.consistency * 100.0,
+            TD_CONSISTENCY_MIN_THRESHOLD * 100.0,
+        )
+    }
+
+    /// `Reliable` or `Unreliable`, from `is_consistent`.
+    pub fn reliability_label(&self) -> &'static str {
+        if self.is_consistent() {
+            "Reliable"
+        } else {
+            "Unreliable"
+        }
+    }
+
     /// Check if measurements are consistent enough for reliable analysis
     pub fn is_consistent(&self) -> bool {
         // Need at least 2 samples for meaningful consistency check
@@ -502,8 +531,58 @@ impl OptimalPAnalysis {
         }
     }
 
+    /// Td source text shared by the legend, console and report, for example
+    /// `File Group — 11 flights, 94 throttle-punches`.
+    pub fn source_summary(&self) -> String {
+        let label = if self.source_files > 1 {
+            "File Group"
+        } else {
+            "Single File"
+        };
+        format!(
+            "{} — {} flights, {} throttle-punches",
+            label, self.source_files, self.source_events
+        )
+    }
+
+    /// Recommended-D text appended to a P recommendation, shared by the console and the plot
+    /// legend. Scales the D that matches the P:D ratio: base D as `, D≈x (+n)`, or, when
+    /// `d_range` holds the axis D-Min and D-Max (dynamic D enabled), both ends by the same
+    /// factor as `, D-Min≈a (+n), D-Max≈b (+n)`. Empty when D or the ratio is unknown.
+    pub fn d_target_suffix(&self, recommended_p: u32, d_range: Option<(u32, u32)>) -> String {
+        let effective_pd = self.recommended_pd_conservative.or_else(|| {
+            self.current_d
+                .filter(|&d| d > 0)
+                .map(|d| self.current_p as f64 / d as f64)
+        });
+        let (Some(current_d), Some(rec_pd)) = (self.current_d, effective_pd) else {
+            return String::new();
+        };
+        if rec_pd <= 0.0 || current_d == 0 {
+            return String::new();
+        }
+        let rec_d = (recommended_p as f64 / rec_pd).round() as u32;
+        // AxisPid::calculate_goal_d_with_range scales from the axis' current P; here the
+        // target D follows the recommended P, so the ends are scaled directly.
+        // A target D that rounds to 0 has no representable range: show the single D.
+        if let Some((min, max)) = d_range.filter(|_| rec_d > 0) {
+            let scale = rec_d as f64 / current_d as f64;
+            // A recommended D-Min of 0 would switch dynamic D off.
+            let rec_min = ((min as f64 * scale).round() as u32).max(1);
+            let rec_max = (max as f64 * scale).round() as u32;
+            return format!(
+                ", D-Min≈{} ({:+}), D-Max≈{} ({:+})",
+                rec_min,
+                rec_min as i64 - min as i64,
+                rec_max,
+                rec_max as i64 - max as i64
+            );
+        }
+        format!(", D≈{} ({:+})", rec_d, rec_d as i64 - current_d as i64)
+    }
+
     /// Format analysis as human-readable console output
-    pub fn format_console_output(&self, axis_name: &str) -> String {
+    pub fn format_console_output(&self, axis_name: &str, d_range: Option<(u32, u32)>) -> String {
         let mut output = String::new();
 
         // Header: axis name and Td measurement
@@ -515,16 +594,7 @@ impl OptimalPAnalysis {
             self.td_tolerance_ms,
             self.td_stats.num_samples,
         ));
-        // Td source: group/single, flights, punches
-        let source_label = if self.source_files > 1 {
-            "File Group"
-        } else {
-            "Single File"
-        };
-        output.push_str(&format!(
-            "  Td source: {} — {} flights, {} throttle-punches\n",
-            source_label, self.source_files, self.source_events,
-        ));
+        output.push_str(&format!("  Td source: {}\n", self.source_summary()));
         output.push_str(&format!("  Noise: {}\n", self.noise_level.name()));
 
         // Deviation
@@ -543,23 +613,6 @@ impl OptimalPAnalysis {
         // Current P
         output.push_str(&format!("  Current P={}\n", self.current_p));
 
-        // Recommendation — shared D-suffix helper
-        let effective_pd = self.recommended_pd_conservative.or_else(|| {
-            self.current_d
-                .filter(|&d| d > 0)
-                .map(|d| self.current_p as f64 / d as f64)
-        });
-        let d_suffix = |recommended_p: u32| -> String {
-            if let (Some(current_d), Some(rec_pd)) = (self.current_d, effective_pd) {
-                if rec_pd > 0.0 && current_d > 0 {
-                    let rec_d = (recommended_p as f64 / rec_pd).round() as u32;
-                    let d_delta = rec_d as i32 - current_d as i32;
-                    return format!(", D≈{} ({:+})", rec_d, d_delta);
-                }
-            }
-            String::new()
-        };
-
         match &self.recommendation {
             PRecommendation::Optimal { .. } => {
                 output.push_str(&format!(
@@ -573,7 +626,7 @@ impl OptimalPAnalysis {
                     "  Recommendation (Conservative): P≈{} ({:+}){}\n",
                     conservative_p,
                     p_delta,
-                    d_suffix(*conservative_p),
+                    self.d_target_suffix(*conservative_p, d_range),
                 ));
             }
             PRecommendation::Decrease { recommended_p, .. } => {
@@ -582,7 +635,7 @@ impl OptimalPAnalysis {
                     "  Recommendation (Decrease): P≈{} ({:+}){}\n",
                     recommended_p,
                     p_delta,
-                    d_suffix(*recommended_p),
+                    self.d_target_suffix(*recommended_p, d_range),
                 ));
             }
             PRecommendation::Investigate { issue } => {
@@ -591,27 +644,110 @@ impl OptimalPAnalysis {
         }
 
         // Reliability — always shown, after recommendation
-        let cv_str = self.td_stats.coefficient_of_variation.map_or_else(
-            || "CV=N/A".to_string(),
-            |cv| {
-                format!(
-                    "CV={:.1}% (⊢≤{:.0}%)",
-                    cv * 100.0,
-                    TD_COEFFICIENT_OF_VARIATION_MAX * 100.0,
-                )
-            },
-        );
-        let cons_str = format!(
-            "Consistency={:.0}% (⊢≥{:.0}%)",
-            self.td_stats.consistency * 100.0,
-            TD_CONSISTENCY_MIN_THRESHOLD * 100.0,
-        );
-        if self.td_stats.is_consistent() {
-            output.push_str(&format!("  Reliable: {cons_str}, {cv_str}\n"));
-        } else {
-            output.push_str(&format!("  Unreliable: {cons_str}, {cv_str}\n"));
-        }
+        output.push_str(&format!(
+            "  {}: {}\n",
+            self.td_stats.reliability_label(),
+            self.td_stats.reliability_details()
+        ));
 
         output
+    }
+}
+
+#[cfg(test)]
+mod d_target_tests {
+    use super::*;
+
+    fn analysis(current_d: Option<u32>, rec_pd: Option<f64>) -> OptimalPAnalysis {
+        let samples: Vec<f64> = (0..40).map(|i| 28.0 + (i % 5) as f64).collect();
+        OptimalPAnalysis::analyze(&samples, 40, current_d, None, rec_pd, Some((25.0, 3.0)))
+            .expect("analysis from synthetic Td samples")
+    }
+
+    #[test]
+    fn d_target_suffix_scales_base_d() {
+        // P 40, D 20, target P:D 2.0 -> recommended P 44 needs D = 44 / 2.0 = 22.
+        let a = analysis(Some(20), Some(2.0));
+        assert_eq!(a.d_target_suffix(44, None), ", D≈22 (+2)");
+    }
+
+    #[test]
+    fn d_target_suffix_scales_both_ends_with_dynamic_d() {
+        // Same D scale factor 22 / 20 = 1.1 applied to D-Min 20 and D-Max 30.
+        let a = analysis(Some(20), Some(2.0));
+        assert_eq!(
+            a.d_target_suffix(44, Some((20, 30))),
+            ", D-Min≈22 (+2), D-Max≈33 (+3)"
+        );
+        // Equal ends stay equal.
+        assert_eq!(
+            a.d_target_suffix(44, Some((20, 20))),
+            ", D-Min≈22 (+2), D-Max≈22 (+2)"
+        );
+    }
+
+    #[test]
+    fn reliability_text_uses_the_shared_thresholds() {
+        let stats = |samples: Vec<f64>| {
+            OptimalPAnalysis::analyze(&samples, 40, Some(20), None, Some(2.0), Some((25.0, 3.0)))
+                .expect("analysis from synthetic Td samples")
+                .td_stats
+        };
+        // Identical samples: no spread, so the CV limit and consistency minimum are met.
+        let steady = stats(vec![30.0; 40]);
+        assert_eq!(steady.reliability_label(), "Reliable");
+        let text = steady.reliability_details();
+        assert!(text.starts_with("Consistency="), "{text}");
+        assert!(
+            text.contains("(⊢≥70%)") && text.contains("(⊢≤40%)"),
+            "{text}"
+        );
+        // Samples alternating between 10 and 50 ms give a CV far above the 40% limit.
+        let spread = stats(
+            (0..40)
+                .map(|i| if i % 2 == 0 { 10.0 } else { 50.0 })
+                .collect(),
+        );
+        assert_eq!(spread.reliability_label(), "Unreliable");
+    }
+
+    #[test]
+    fn d_target_suffix_shows_a_single_d_when_the_target_rounds_to_zero() {
+        // P 40, D 20, P:D 2.0; recommended P 0 needs D 0, so a range cannot be shown.
+        let a = analysis(Some(20), Some(2.0));
+        assert_eq!(a.d_target_suffix(0, Some((1, 20))), ", D≈0 (-20)");
+    }
+
+    #[test]
+    fn d_target_suffix_keeps_d_min_above_zero() {
+        // P 40, D 20, P:D 2.0; recommended P 4 needs D 2, so D-Min 1 would scale to 0.1.
+        let a = analysis(Some(20), Some(2.0));
+        assert_eq!(
+            a.d_target_suffix(4, Some((1, 20))),
+            ", D-Min≈1 (+0), D-Max≈2 (-18)"
+        );
+    }
+
+    #[test]
+    fn source_summary_names_single_and_group_files() {
+        let mut a = analysis(Some(20), Some(2.0));
+        a.source_files = 1;
+        a.source_events = 5;
+        assert_eq!(
+            a.source_summary(),
+            "Single File — 1 flights, 5 throttle-punches"
+        );
+        a.source_files = 11;
+        a.source_events = 94;
+        assert_eq!(
+            a.source_summary(),
+            "File Group — 11 flights, 94 throttle-punches"
+        );
+    }
+
+    #[test]
+    fn d_target_suffix_empty_without_d_or_ratio() {
+        assert_eq!(analysis(None, None).d_target_suffix(44, Some((20, 30))), "");
+        assert_eq!(analysis(Some(0), Some(2.0)).d_target_suffix(44, None), "");
     }
 }
