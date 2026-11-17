@@ -6,7 +6,7 @@ use std::error::Error;
 use crate::axis_names::AXIS_NAMES;
 use crate::constants::{
     COLOR_GYRO_VS_UNFILT_FILT, COLOR_GYRO_VS_UNFILT_UNFILT, LINE_WIDTH_PLOT,
-    PEAK_LABEL_MIN_AMPLITUDE, SPECTRUM_NOISE_FLOOR_HZ, SPECTRUM_Y_AXIS_FLOOR,
+    PEAK_LABEL_MIN_AMPLITUDE, RPM_FILTER_COLOR, SPECTRUM_NOISE_FLOOR_HZ, SPECTRUM_Y_AXIS_FLOOR,
     SPECTRUM_Y_AXIS_HEADROOM_FACTOR, TUKEY_ALPHA,
 };
 use crate::data_analysis::calc_step_response; // For tukeywin
@@ -76,6 +76,9 @@ pub fn plot_gyro_spectrums(
     // Extract dynamic notch range for graphical visualization
     let dynamic_notch_range = filter_response::extract_dynamic_notch_range(header_metadata);
 
+    // The RPM notch runs at the PID loop rate (gyro rate / pid_process_denom)
+    let rpm_filter_rate_hz = filter_response::extract_rpm_filter_rate(header_metadata);
+
     // Extract RPM filter configuration for Betaflight
     let rpm_filter_config = filter_response::extract_rpm_filter_config(header_metadata);
 
@@ -87,6 +90,13 @@ pub fn plot_gyro_spectrums(
             config.harmonics, config.q_factor, config.min_hz, weights_str
         );
     }
+
+    // Median motor fundamental from logged eRPM and header motor_poles (same for every axis).
+    // No eRPM or no pole count: the RPM overlay is not drawn; no frequency is guessed.
+    let rpm_base_hz = rpm_filter_config
+        .as_ref()
+        .and_then(|c| filter_response::rpm_motor_frequencies(log_data, c))
+        .map(|f| f.pooled);
 
     let mut all_fft_raw_data: AllFFTData = Default::default();
     let mut global_max_y_unfilt = 0.0f64;
@@ -372,12 +382,12 @@ pub fn plot_gyro_spectrums(
                         unfilt_plot_series.push(PlotSeries {
                             data: vec![], // No data - just for legend
                             label: format!(
-                                "Dynamic Notch: {} notch{}, Q: {:.0}, range: {:.0}-{:.0}Hz{}",
+                                "Dynamic Notch range: {:.0}-{:.0}Hz, {} notch{}, Q: {:.0}{}",
+                                config.min_hz,
+                                config.max_hz,
                                 config.notch_count,
                                 if config.notch_count > 1 { "es" } else { "" },
                                 config.q_factor,
-                                config.min_hz,
-                                config.max_hz,
                                 if !config.applies_to_yaw {
                                     " (RP only)"
                                 } else {
@@ -392,41 +402,27 @@ pub fn plot_gyro_spectrums(
 
                 // 3. RPM Filter (if configured - Betaflight only)
                 // Signal path order: Dynamic Notch → RPM Filter → Gyro LPF1 → Gyro LPF2 → IMUF
-                if let Some(ref rpm_config) = rpm_filter_config {
-                    // Estimate motor base frequency from the unfiltered gyro spectrum data
-                    // We'll use a reasonable range for typical 5" quads (100-500 Hz)
-                    let motor_base_hz = if let Some((unfilt_data, _, _, _)) =
-                        all_fft_raw_data[axis_index].as_ref()
-                    {
-                        filter_response::estimate_motor_base_frequency(
-                            unfilt_data,
-                            rpm_config.min_hz,
-                            500.0, // Max search frequency for motor base
-                        )
-                        .unwrap_or(180.0) // Default to typical 5" quad motor frequency
-                    } else {
-                        180.0 // Fallback if no spectrum data
-                    };
-
+                if let (Some(rpm_config), Some(motor_base_hz)) =
+                    (rpm_filter_config.as_ref(), rpm_base_hz)
+                {
                     // Generate RPM filter notch curves
                     let rpm_curves = filter_response::generate_rpm_filter_curves(
                         rpm_config,
-                        motor_base_hz,
+                        motor_base_hz.median,
                         max_freq_val,
                         1000, // Number of points for smooth curves
+                        rpm_filter_rate_hz,
                     );
 
                     // Use subtle blue color to distinguish from other filters
-                    let rpm_filter_color = RGBColor(70, 130, 180); // Steel blue
+                    let rpm_filter_color =
+                        RGBColor(RPM_FILTER_COLOR.0, RPM_FILTER_COLOR.1, RPM_FILTER_COLOR.2); // Steel blue
 
                     // Draw individual RPM curves
-                    let mut has_curves = false;
 
                     for item in rpm_curves.iter() {
                         let (_harmonic_num, _label, rpm_curve_data, _center_hz) = item;
                         if !rpm_curve_data.is_empty() {
-                            has_curves = true;
-
                             // Scale RPM filter response to overlay on spectrum
                             let filter_curve_amplitude = overall_max_y_amplitude * 0.3;
                             let filter_curve_offset = overall_max_y_amplitude * 0.05;
@@ -452,26 +448,27 @@ pub fn plot_gyro_spectrums(
                     }
 
                     // Add single legend-only series (no data, just for legend)
-                    if has_curves {
-                        // Format: "RPM Filter: W @ xxxHz, W @ xxxHz, ..."
-                        let mut legend_items = Vec::new();
-                        for item in rpm_curves.iter() {
-                            let (harmonic_num, _label, _curve_data, center_hz) = item;
-                            let weight = rpm_config
-                                .weights
-                                .get(*harmonic_num as usize - 1)
-                                .copied()
-                                .unwrap_or(1.0)
-                                * 100.0;
-                            legend_items.push(format!("{:.0}% @ {:.0}Hz", weight, center_hz));
-                        }
-                        unfilt_plot_series.push(PlotSeries {
-                            data: vec![], // No data - just for legend
-                            label: format!("RPM Filter: {}", legend_items.join(", ")),
-                            color: rpm_filter_color,
-                            stroke_width: 1,
-                        });
-                    }
+                    unfilt_plot_series.push(PlotSeries {
+                        data: vec![], // No data - just for legend
+                        label: filter_response::rpm_filter_legend_text(
+                            rpm_config,
+                            &motor_base_hz,
+                            max_freq_val,
+                            rpm_filter_rate_hz,
+                        ),
+                        color: rpm_filter_color,
+                        stroke_width: 1,
+                    });
+                } else if let Some(rpm_config) = rpm_filter_config.as_ref() {
+                    unfilt_plot_series.push(PlotSeries {
+                        data: vec![], // No data - just for legend
+                        label: format!(
+                            "RPM Filter ({}): not drawn, log has no eRPM or motor_poles",
+                            rpm_config.harmonics
+                        ),
+                        color: RGBColor(RPM_FILTER_COLOR.0, RPM_FILTER_COLOR.1, RPM_FILTER_COLOR.2),
+                        stroke_width: 1,
+                    });
                 }
 
                 // 4-6. Gyro LPF1, LPF2, IMUF filters

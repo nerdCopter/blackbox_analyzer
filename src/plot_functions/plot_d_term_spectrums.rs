@@ -446,12 +446,12 @@ pub fn plot_d_term_spectrums(
                     use crate::plot_framework::FrequencyRange;
 
                     let label = format!(
-                        "D-term Dynamic Notch: {} notch{}, Q: {:.0}, range: {:.0}-{:.0}Hz{}",
+                        "D-term Dynamic Notch range: {:.0}-{:.0}Hz, {} notch{}, Q: {:.0}{}",
+                        config.min_hz,
+                        config.max_hz,
                         config.notch_count,
                         if config.notch_count > 1 { "es" } else { "" },
                         config.q_factor,
-                        config.min_hz,
-                        config.max_hz,
                         if !config.applies_to_yaw {
                             " (RP only)"
                         } else {

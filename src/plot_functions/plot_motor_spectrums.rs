@@ -8,10 +8,13 @@ use crate::constants::{
     MOTOR_OSCILLATION_FREQ_MAX_HZ, MOTOR_OSCILLATION_FREQ_MIN_HZ, MOTOR_OSCILLATION_HOP_FRACTION,
     MOTOR_OSCILLATION_MAX_GAP_TOLERANCE, MOTOR_OSCILLATION_THRESHOLD_MULTIPLIER,
     MOTOR_OSCILLATION_WINDOW_S, MOTOR_SPECTRUM_AXIS_ORIGIN,
-    MOTOR_SPECTRUM_Y_LABEL_PRECISION_THRESHOLD, NYQUIST_DIVISOR, TUKEY_ALPHA,
+    MOTOR_SPECTRUM_Y_LABEL_PRECISION_THRESHOLD, NYQUIST_DIVISOR, RPM_FILTER_COLOR,
+    RPM_FILTER_CURVE_AMPLITUDE_FRACTION, RPM_FILTER_CURVE_OFFSET_FRACTION, RPM_FILTER_CURVE_POINTS,
+    TUKEY_ALPHA,
 };
 use crate::data_analysis::calc_step_response; // For tukeywin
 use crate::data_analysis::fft_utils; // For fft_forward
+use crate::data_analysis::filter_response;
 use crate::data_input::log_data::LogRowData;
 use crate::plot_framework::record_written_this_run;
 use plotters::prelude::*;
@@ -223,8 +226,18 @@ pub fn plot_motor_spectrums(
     log_data: &[LogRowData],
     root_name: &str,
     sample_rate: Option<f64>,
+    header_metadata: Option<&[(String, String)]>,
 ) -> Result<Vec<MotorOscillationResult>, Box<dyn Error>> {
     let output_file = format!("{root_name}_Motor_Spectrums_stacked.png");
+
+    // RPM filter overlay: each motor's own median frequency from its eRPM channel and the header
+    // motor_poles. No eRPM or pole count for a motor: that motor's overlay is not drawn.
+    let rpm_filter_config = filter_response::extract_rpm_filter_config(header_metadata);
+    // The RPM notch runs at the PID loop rate (gyro rate / pid_process_denom)
+    let rpm_filter_rate_hz = filter_response::extract_rpm_filter_rate(header_metadata);
+    let rpm_freqs = rpm_filter_config
+        .as_ref()
+        .and_then(|c| filter_response::rpm_motor_frequencies(log_data, c));
 
     let sr_value = if let Some(sr) = sample_rate {
         sr
@@ -431,10 +444,66 @@ pub fn plot_motor_spectrums(
                     )
                 });
 
+            // RPM filter curves at this motor's median frequency (same look as the gyro plot)
+            if let Some(rpm_config) = rpm_filter_config.as_ref() {
+                let rpm_color =
+                    RGBColor(RPM_FILTER_COLOR.0, RPM_FILTER_COLOR.1, RPM_FILTER_COLOR.2);
+                let motor_hz = rpm_freqs
+                    .as_ref()
+                    .and_then(|f| f.per_motor.get(motor_idx).copied().flatten());
+                let legend_text = if let Some(base) = motor_hz {
+                    let y_max = crate::constants::MOTOR_SPECTRUM_Y_AXIS_MAX;
+                    for (_, _, curve, _) in filter_response::generate_rpm_filter_curves(
+                        rpm_config,
+                        base.median,
+                        x_max,
+                        RPM_FILTER_CURVE_POINTS,
+                        rpm_filter_rate_hz,
+                    ) {
+                        chart.draw_series(LineSeries::new(
+                            curve
+                                .into_iter()
+                                .filter(|(f, _)| *f <= x_max)
+                                .map(|(f, r)| {
+                                    (
+                                        f,
+                                        y_max
+                                            * (RPM_FILTER_CURVE_OFFSET_FRACTION
+                                                + r * RPM_FILTER_CURVE_AMPLITUDE_FRACTION),
+                                    )
+                                }),
+                            ShapeStyle::from(rpm_color).stroke_width(1),
+                        ))?;
+                    }
+                    filter_response::rpm_filter_legend_text(
+                        rpm_config,
+                        &base,
+                        x_max,
+                        rpm_filter_rate_hz,
+                    )
+                } else {
+                    format!(
+                        "RPM Filter ({}): not drawn, no eRPM or motor_poles for this motor",
+                        rpm_config.harmonics
+                    )
+                };
+                chart
+                    .draw_series(std::iter::empty::<PathElement<(f64, f64)>>())?
+                    .label(legend_text)
+                    .legend(move |(x, y)| {
+                        PathElement::new(
+                            vec![(x, y), (x + 20, y)],
+                            ShapeStyle::from(&rpm_color).stroke_width(LINE_WIDTH_PLOT),
+                        )
+                    });
+            }
+
             chart
                 .configure_series_labels()
+                .position(SeriesLabelPosition::UpperRight)
                 .background_style(WHITE.mix(0.8))
                 .border_style(BLACK)
+                .label_font(crate::font_config::FONT_TUPLE_LEGEND)
                 .draw()?;
         }
     }

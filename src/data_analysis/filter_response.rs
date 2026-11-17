@@ -3,7 +3,15 @@
 use std::collections::HashMap;
 
 use crate::axis_names::AXIS_NAMES;
-use crate::constants::RATIO_TO_PERCENT;
+use crate::constants::{
+    PARITY_DIVISOR, RATIO_TO_PERCENT, RPM_FILTER_BAND_HIGH_PERCENTILE,
+    RPM_FILTER_BAND_LOW_PERCENTILE, RPM_FILTER_CURVE_MIN_ATTENUATION,
+    RPM_FILTER_CURVE_START_FLOOR_HZ, RPM_FILTER_CURVE_START_FRACTION,
+    RPM_FILTER_DEFAULT_GYRO_RATE_HZ, RPM_FILTER_ERPM_PER_LSB, RPM_FILTER_MAX_HZ_RATE_FRACTION,
+    RPM_FILTER_MICROSECONDS_PER_SECOND, RPM_FILTER_MIN_MOTOR_POLES, RPM_FILTER_POLES_PER_PAIR,
+    RPM_FILTER_SECONDS_PER_MINUTE,
+};
+use crate::data_input::log_data::LogRowData;
 
 /// Filter types supported by flight controllers
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1343,12 +1351,12 @@ pub fn extract_dterm_dynamic_notch_range(
 /// RPM filter configuration (Betaflight only)
 #[derive(Debug, Clone)]
 pub struct RpmFilterConfig {
-    pub harmonics: u32,    // Number of harmonics (1-12)
-    pub min_hz: f64,       // Minimum frequency to filter
-    pub q_factor: f64,     // Q factor for notch width
-    pub weights: Vec<f64>, // Weight for each harmonic (0.0-1.0)
-    #[allow(dead_code)] // Reserved for future use
-    pub fade_range_hz: f64, // Fade-in range
+    pub harmonics: u32,           // Number of harmonics (1-12)
+    pub min_hz: f64,              // Minimum frequency to filter
+    pub q_factor: f64,            // Q factor for notch width
+    pub weights: Vec<f64>,        // Weight for each harmonic (0.0-1.0)
+    pub motor_poles: Option<u32>, // Header motor_poles; needed to convert eRPM to Hz
+    pub fade_range_hz: f64,       // Notch fades in over this range above min_hz
     #[allow(dead_code)] // Reserved for future use
     pub lpf_hz: f64, // RPM signal LPF
 }
@@ -1432,11 +1440,15 @@ pub fn extract_rpm_filter_config(
                         .and_then(|s| s.parse::<f64>().ok())
                         .unwrap_or(150.0);
 
+                    let motor_poles =
+                        get_value("motor_poles").and_then(|s| s.trim().parse::<u32>().ok());
+
                     return Some(RpmFilterConfig {
                         harmonics,
                         min_hz,
                         q_factor: q / 100.0, // Betaflight stores Q × 100
                         weights,
+                        motor_poles,
                         fade_range_hz,
                         lpf_hz,
                     });
@@ -1448,70 +1460,226 @@ pub fn extract_rpm_filter_config(
     None
 }
 
-/// Estimate motor base frequency from gyro spectrum peaks
-/// Looks for primary peak in spectrum and estimates fundamental motor frequency
-pub fn estimate_motor_base_frequency(
-    gyro_spectrum_data: &[(f64, f64)], // (frequency, amplitude) pairs
-    min_hz: f64,
-    max_hz: f64,
-) -> Option<f64> {
-    if gyro_spectrum_data.is_empty() {
-        return None;
-    }
-
-    // Guard against invalid search window
-    if max_hz <= min_hz {
-        return None;
-    }
-
-    // Find primary peak above min_hz
-    let mut max_amplitude = 0.0;
-    let mut peak_frequency = 0.0;
-
-    for &(freq, amp) in gyro_spectrum_data {
-        if freq >= min_hz && freq <= max_hz && amp > max_amplitude {
-            max_amplitude = amp;
-            peak_frequency = freq;
-        }
-    }
-
-    if peak_frequency > min_hz {
-        Some(peak_frequency)
-    } else {
-        // Fallback to typical 5" quad motor frequency
-        Some(180.0)
-    }
+/// Motor fundamental frequency (Hz) range over a flight, from logged eRPM.
+/// Percentile convention: the sorted sample at index round(pct / 100 * (n - 1)), not nearest-rank.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RpmFundamentalHz {
+    pub low: f64,    // RPM_FILTER_BAND_LOW_PERCENTILE of all motor samples (see below)
+    pub median: f64, // Median of all motor samples
+    pub high: f64,   // RPM_FILTER_BAND_HIGH_PERCENTILE of all motor samples (see below)
 }
 
-/// Calculate RPM notch filter frequency response (S-curve)
-/// Transfer function: H(f) = 1 - depth * (1 / (1 + ((f - f0) / (f0 / Q))^2))
-/// Returns amplitude multiplication factor (0.0 = full attenuation, 1.0 = no filtering)
+/// Motor fundamental frequency range (Hz) from logged eRPM, derived as Betaflight does:
+/// Hz = eRPM_LSB * 100 / 60 / (poles / 2). Samples from all motors are pooled; non-finite and
+/// non-positive samples are ignored. Returns None when no usable eRPM sample exists or
+/// `motor_poles` is below 2.
+pub fn rpm_fundamental_hz_from_erpm(
+    erpms: impl Iterator<Item = f64>,
+    motor_poles: u32,
+) -> Option<RpmFundamentalHz> {
+    if motor_poles < RPM_FILTER_MIN_MOTOR_POLES {
+        return None;
+    }
+    let mut samples: Vec<f64> = erpms.filter(|v| v.is_finite() && *v > 0.0).collect();
+    if samples.is_empty() {
+        return None;
+    }
+    samples.sort_by(|a, b| a.total_cmp(b));
+    let last = samples.len() - 1;
+    let mid = samples.len() / 2;
+    let median = if samples.len().is_multiple_of(PARITY_DIVISOR) {
+        (samples[mid - 1] + samples[mid]) / 2.0
+    } else {
+        samples[mid]
+    };
+    let percentile = |pct: f64| samples[((pct / RATIO_TO_PERCENT) * last as f64).round() as usize];
+    let pole_pairs = motor_poles as f64 / RPM_FILTER_POLES_PER_PAIR;
+    let to_hz = |erpm_lsb: f64| {
+        erpm_lsb * RPM_FILTER_ERPM_PER_LSB / RPM_FILTER_SECONDS_PER_MINUTE / pole_pairs
+    };
+    Some(RpmFundamentalHz {
+        low: to_hz(percentile(RPM_FILTER_BAND_LOW_PERCENTILE)),
+        median: to_hz(median),
+        high: to_hz(percentile(RPM_FILTER_BAND_HIGH_PERCENTILE)),
+    })
+}
+
+/// Legend text for the RPM filter overlay: `RPM Filter (N) @ median eRPM: W% @ Hz, ...`.
+/// Lists all N configured harmonics at the median motor frequency; one above the plot range or
+/// below `min_hz` is noted.
+pub fn rpm_filter_legend_text(
+    config: &RpmFilterConfig,
+    base: &RpmFundamentalHz,
+    max_freq_hz: f64,
+    sample_rate_hz: f64,
+) -> String {
+    let items: Vec<String> = (1..=config.harmonics)
+        .map(|harmonic| {
+            let freq = base.median * harmonic as f64;
+            let weight = config
+                .weights
+                .get(harmonic as usize - 1)
+                .copied()
+                .unwrap_or(1.0)
+                * RATIO_TO_PERCENT;
+            let note = if weight <= 0.0 {
+                " (disabled)"
+            } else if freq < config.min_hz && config.fade_range_hz > 0.0 {
+                " (below min)"
+            } else if freq
+                .max(config.min_hz)
+                .min(RPM_FILTER_MAX_HZ_RATE_FRACTION * sample_rate_hz)
+                > max_freq_hz
+            {
+                // Same clamped center the curve generator draws
+                " (off plot)"
+            } else {
+                ""
+            };
+            format!("{weight:.0}% @ {freq:.0}Hz{note}")
+        })
+        .collect();
+    format!(
+        "RPM Filter ({}) @ median eRPM: {}",
+        config.harmonics,
+        items.join(", ")
+    )
+}
+
+/// Motor fundamental frequency ranges for a whole log: all motors pooled and each motor alone.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RpmMotorFrequencies {
+    pub pooled: RpmFundamentalHz,
+    pub per_motor: Vec<Option<RpmFundamentalHz>>, // Indexed like LogRowData::motors
+}
+
+/// Motor frequency ranges from the log's eRPM channels and `motor_poles`. None when the config
+/// has no pole count or no motor has a usable eRPM sample.
+pub fn rpm_motor_frequencies(
+    log_data: &[LogRowData],
+    config: &RpmFilterConfig,
+) -> Option<RpmMotorFrequencies> {
+    let poles = config.motor_poles?;
+    let motor_count = log_data.first().map(|r| r.motors.len()).unwrap_or(0);
+    let pooled = rpm_fundamental_hz_from_erpm(
+        log_data
+            .iter()
+            .flat_map(|r| r.erpms.iter().flatten().copied()),
+        poles,
+    )?;
+    let per_motor = (0..motor_count)
+        .map(|m| {
+            rpm_fundamental_hz_from_erpm(
+                log_data
+                    .iter()
+                    .filter_map(|r| r.erpms.get(m).copied().flatten()),
+                poles,
+            )
+        })
+        .collect();
+    Some(RpmMotorFrequencies { pooled, per_motor })
+}
+
+/// Console and report lines for the RPM filter motor frequencies as `(label, text)`.
+/// Console prints `RPM Filter {label}: {text}`; the report prints `- **RPM Filter {label}:** {text}`.
+pub fn rpm_motor_frequency_lines(
+    config: &RpmFilterConfig,
+    freqs: Option<&RpmMotorFrequencies>,
+) -> Vec<(&'static str, String)> {
+    let Some(f) = freqs else {
+        return vec![(
+            "motor frequency",
+            "unavailable (log has no eRPM or motor_poles)".to_string(),
+        )];
+    };
+    let range = |r: &RpmFundamentalHz, h: f64| {
+        format!(
+            "{:.0}–{:.0} Hz (median {:.0})",
+            r.low * h,
+            r.high * h,
+            r.median * h
+        )
+    };
+    let percentile_note = format!(
+        "{RPM_FILTER_BAND_LOW_PERCENTILE:.0}th–{RPM_FILTER_BAND_HIGH_PERCENTILE:.0}th percentile"
+    );
+    let harmonics = (1..=config.harmonics)
+        .map(|h| format!("H{h} {}", range(&f.pooled, h as f64)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let per_motor = f
+        .per_motor
+        .iter()
+        .enumerate()
+        .map(|(i, m)| match m {
+            Some(r) => format!("M{i} {}", range(r, 1.0)),
+            None => format!("M{i} no eRPM"),
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    vec![
+        (
+            "motor frequency",
+            format!(
+                "{} (all motors, {percentile_note}, from eRPM)",
+                range(&f.pooled, 1.0)
+            ),
+        ),
+        ("harmonic ranges", harmonics),
+        ("per-motor frequency", per_motor),
+    ]
+}
+
+/// Magnitude response of Betaflight's RPM notch (`rpmNotchApply` in `common/filter.c`).
+/// The filter is a state-variable band-pass subtracted from the input:
+/// `out = in - (weight / Q) * BP(in)`, so H(s) = 1 - weight * (s / Q) / (s^2 + s / Q + 1)
+/// with s = j * x. The digital form warps frequency as x = tan(pi f / fs) / tan(pi f0 / fs).
+/// Returns the amplitude factor (1 - weight at the center, 1.0 far away). The -3 dB width of a
+/// full-depth notch is about f0 / Q.
 pub fn rpm_notch_response(
     frequency_hz: f64,
     notch_center_hz: f64,
     q_factor: f64,
-    depth: f64, // 0.0 to 1.0 (from weight)
+    weight: f64,         // 0.0 to 1.0 (harmonic weight, after any fade)
+    sample_rate_hz: f64, // Rate the filter runs at (gyro rate)
 ) -> f64 {
-    if q_factor <= 0.0 || notch_center_hz <= 0.0 {
+    if q_factor <= 0.0 || notch_center_hz <= 0.0 || sample_rate_hz <= 0.0 {
         return 1.0; // No filtering
     }
+    let nyquist = sample_rate_hz / 2.0;
+    if frequency_hz <= 0.0 || frequency_hz >= nyquist || notch_center_hz >= nyquist {
+        return 1.0;
+    }
+    let weight = weight.clamp(0.0, 1.0);
+    let x = (std::f64::consts::PI * frequency_hz / sample_rate_hz).tan()
+        / (std::f64::consts::PI * notch_center_hz / sample_rate_hz).tan();
+    let k = 1.0 / q_factor;
+    let real = 1.0 - x * x;
+    let numerator = real.powi(2) + (x * k * (1.0 - weight)).powi(2);
+    let denominator = real.powi(2) + (x * k).powi(2);
+    (numerator / denominator).sqrt()
+}
 
-    // Clamp depth to valid range to avoid negative responses
-    let depth = depth.clamp(0.0, 1.0);
-
-    // Bandwidth = f0 / Q
-    let bandwidth = notch_center_hz / q_factor;
-
-    // Frequency difference from notch center
-    let delta_f = frequency_hz - notch_center_hz;
-
-    // Notch response (Lorentzian/Cauchy distribution)
-    // At center: returns 1 - depth
-    // Far from center: returns 1.0
-    let response = 1.0 / (1.0 + (delta_f / bandwidth).powi(2));
-
-    // Apply depth scaling
-    1.0 - (depth * response)
+/// Rate (Hz) the Betaflight RPM filter runs at: the PID loop rate, which is the gyro rate
+/// divided by `pid_process_denom` (`gyro_init.c`: `targetLooptime = activePidLoopDenom * 1e6 /
+/// sampleRateHz`; `rpmFilterInit(.., gyro.targetLooptime)`). The blackbox `looptime` header is the
+/// gyro sample period in microseconds. Falls back to `RPM_FILTER_DEFAULT_GYRO_RATE_HZ` when
+/// `looptime` is absent or unusable, and to a denominator of 1 when `pid_process_denom` is.
+pub fn extract_rpm_filter_rate(header_metadata: Option<&[(String, String)]>) -> f64 {
+    let get = |key: &str| -> Option<f64> {
+        header_metadata?
+            .iter()
+            .find(|(k, _)| k == key)
+            .and_then(|(_, v)| v.trim().parse::<f64>().ok())
+    };
+    let gyro_rate = get("looptime")
+        .filter(|us| *us > 0.0)
+        .map(|us| RPM_FILTER_MICROSECONDS_PER_SECOND / us)
+        .unwrap_or(RPM_FILTER_DEFAULT_GYRO_RATE_HZ);
+    let denom = get("pid_process_denom")
+        .filter(|d| *d >= 1.0)
+        .unwrap_or(1.0);
+    gyro_rate / denom
 }
 
 /// Generate RPM filter notch curves for all harmonics
@@ -1521,13 +1689,15 @@ pub fn generate_rpm_filter_curves(
     motor_base_hz: f64,
     max_frequency_hz: f64,
     num_points: usize,
+    sample_rate_hz: f64,
 ) -> Vec<RpmFilterCurveData> {
     if num_points < 2 {
         return Vec::new();
     }
 
     let mut curves = Vec::new();
-    let min_plot_start = (config.min_hz * 0.5).max(1.0);
+    let min_plot_start =
+        (config.min_hz * RPM_FILTER_CURVE_START_FRACTION).max(RPM_FILTER_CURVE_START_FLOOR_HZ);
 
     // Early return if no valid frequency span
     if max_frequency_hz <= min_plot_start {
@@ -1541,10 +1711,16 @@ pub fn generate_rpm_filter_curves(
 
     // Generate curve for each harmonic
     for harmonic_num in 1..=config.harmonics {
-        let harmonic_freq = motor_base_hz * harmonic_num as f64;
+        let raw_freq = motor_base_hz * harmonic_num as f64;
 
-        // Skip if below minimum or above display range
-        if harmonic_freq < config.min_hz || harmonic_freq > max_frequency_hz {
+        // Betaflight clamps the notch center to [min_hz, 0.48 * rate] (rpm_filter.c), so the
+        // display range check uses the clamped center. A center below min_hz sits at min_hz
+        // with weight 0 when the fade range is positive (the margin is 0), and with full weight
+        // when the fade range is 0.
+        let harmonic_freq = raw_freq
+            .max(config.min_hz)
+            .min(RPM_FILTER_MAX_HZ_RATE_FRACTION * sample_rate_hz);
+        if harmonic_freq > max_frequency_hz {
             continue;
         }
 
@@ -1559,15 +1735,35 @@ pub fn generate_rpm_filter_curves(
         if weight <= 0.0 {
             continue;
         }
+        // Betaflight fades a notch out as its center approaches min_hz (rpm_filter.c)
+        let margin_hz = harmonic_freq - config.min_hz;
+        let weight = if config.fade_range_hz > 0.0 && margin_hz < config.fade_range_hz {
+            weight * (margin_hz / config.fade_range_hz)
+        } else {
+            weight
+        };
 
         // Generate curve points
         let mut curve_points = Vec::with_capacity(num_points);
 
         for i in 0..num_points {
             let freq = (log_start + i as f64 * log_step).exp();
-            let response = rpm_notch_response(freq, harmonic_freq, config.q_factor, weight);
+            let response =
+                rpm_notch_response(freq, harmonic_freq, config.q_factor, weight, sample_rate_hz);
             curve_points.push((freq, response));
         }
+
+        // Keep only the span where the notch attenuates by at least the threshold, plus one
+        // neighbor each side so the line joins the flat level. No such span: nothing to draw.
+        let threshold = 1.0 - RPM_FILTER_CURVE_MIN_ATTENUATION;
+        let (Some(first), Some(last)) = (
+            curve_points.iter().position(|p| p.1 <= threshold),
+            curve_points.iter().rposition(|p| p.1 <= threshold),
+        ) else {
+            continue;
+        };
+        let curve_points =
+            curve_points[first.saturating_sub(1)..=(last + 1).min(num_points - 1)].to_vec();
 
         // Create label
         let label = format!("RPM H{} @ {:.0}Hz", harmonic_num, harmonic_freq);
@@ -1581,6 +1777,301 @@ pub fn generate_rpm_filter_curves(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_rpm_fundamental_hz_from_erpm() {
+        let hz_per_lsb_12_poles = 100.0 / 60.0 / 6.0; // 12 poles = 6 pole pairs
+                                                      // Spec: 840 LSB = 84000 eRPM = 14000 RPM = 233.33 Hz; constant input gives zero spread
+        let r = rpm_fundamental_hz_from_erpm([840.0, 840.0, 840.0].into_iter(), 12).unwrap();
+        assert!((r.median - 233.333).abs() < 0.01);
+        assert_eq!((r.low, r.high), (r.median, r.median));
+        // 14 poles = 7 pairs; 1000 LSB = 100000 eRPM -> 238.095 Hz
+        let r = rpm_fundamental_hz_from_erpm([1000.0].into_iter(), 14).unwrap();
+        assert!((r.median - 238.095).abs() < 0.01);
+        // 1..=101 LSB pooled: sorted index round(pct/100*(n-1)) gives p10 = 11, median = 51, p90 = 91
+        let r = rpm_fundamental_hz_from_erpm((1..=101).map(f64::from), 12).unwrap();
+        assert!((r.low - 11.0 * hz_per_lsb_12_poles).abs() < 1e-9);
+        assert!((r.median - 51.0 * hz_per_lsb_12_poles).abs() < 1e-9);
+        assert!((r.high - 91.0 * hz_per_lsb_12_poles).abs() < 1e-9);
+        // 1..=10 LSB: p10 index round(0.9) = 1 -> 2, p90 index round(8.1) = 8 -> 9, median (5 + 6) / 2
+        let r = rpm_fundamental_hz_from_erpm((1..=10).map(f64::from), 12).unwrap();
+        assert!((r.low - 2.0 * hz_per_lsb_12_poles).abs() < 1e-9);
+        assert!((r.median - 5.5 * hz_per_lsb_12_poles).abs() < 1e-9);
+        assert!((r.high - 9.0 * hz_per_lsb_12_poles).abs() < 1e-9);
+        // Even count averages the middle pair; zero, negative and NaN samples are ignored
+        let r = rpm_fundamental_hz_from_erpm([0.0, -5.0, f64::NAN, 600.0, 1000.0].into_iter(), 12)
+            .unwrap();
+        assert!((r.median - 800.0 * hz_per_lsb_12_poles).abs() < 0.01);
+        // No usable samples, or fewer than 2 poles: no frequency, no guess
+        assert!(rpm_fundamental_hz_from_erpm(std::iter::empty(), 12).is_none());
+        assert!(rpm_fundamental_hz_from_erpm([0.0, 0.0].into_iter(), 12).is_none());
+        assert!(rpm_fundamental_hz_from_erpm([840.0].into_iter(), 1).is_none());
+        assert!(rpm_fundamental_hz_from_erpm([840.0].into_iter(), 0).is_none());
+    }
+
+    fn test_rpm_config(harmonics: u32, weights: Vec<f64>) -> RpmFilterConfig {
+        RpmFilterConfig {
+            harmonics,
+            min_hz: 100.0,
+            q_factor: 5.0,
+            weights,
+            motor_poles: Some(12),
+            fade_range_hz: 50.0,
+            lpf_hz: 150.0,
+        }
+    }
+
+    #[test]
+    fn test_rpm_filter_legend_text() {
+        let base = RpmFundamentalHz {
+            low: 167.0,
+            median: 229.0,
+            high: 290.0,
+        };
+        let cfg = test_rpm_config(3, vec![1.0, 1.0, 1.0]);
+        // Legend lists every configured harmonic at the median; no range
+        assert_eq!(
+            rpm_filter_legend_text(&cfg, &base, 503.0, 8000.0),
+            "RPM Filter (3) @ median eRPM: 100% @ 229Hz, 100% @ 458Hz, 100% @ 687Hz (off plot)"
+        );
+        // Weight 0 stays in the legend as 0%
+        let cfg0 = test_rpm_config(3, vec![1.0, 0.0, 1.0]);
+        assert!(
+            rpm_filter_legend_text(&cfg0, &base, 503.0, 8000.0).contains("0% @ 458Hz (disabled)")
+        );
+        // Median below min_hz is noted
+        let low = RpmFundamentalHz {
+            low: 20.0,
+            median: 30.0,
+            high: 40.0,
+        };
+        let cfg2 = test_rpm_config(2, vec![1.0, 1.0]);
+        assert_eq!(
+            rpm_filter_legend_text(&cfg2, &low, 503.0, 8000.0),
+            "RPM Filter (2) @ median eRPM: 100% @ 30Hz (below min), 100% @ 60Hz (below min)"
+        );
+    }
+
+    #[test]
+    fn test_rpm_filter_legend_uses_clamped_center() {
+        // H3 raw 2100 Hz is clamped to 0.48 * 4000 = 1920 Hz, inside the 2000 Hz plot: not off plot
+        let cfg = test_rpm_config(3, vec![1.0, 1.0, 1.0]);
+        let base = RpmFundamentalHz {
+            low: 600.0,
+            median: 700.0,
+            high: 800.0,
+        };
+        let text = rpm_filter_legend_text(&cfg, &base, 2000.0, 4000.0);
+        assert!(
+            text.contains("100% @ 2100Hz,") || text.ends_with("100% @ 2100Hz"),
+            "{text}"
+        );
+        assert!(!text.contains("off plot"), "{text}");
+        // Below the clamp the raw center decides: a plot limit under 1920 Hz marks it off plot
+        assert!(rpm_filter_legend_text(&cfg, &base, 1500.0, 4000.0).contains("2100Hz (off plot)"));
+        // Fade 0: a median below min_hz is clamped to min_hz at full weight, not "below min"
+        let mut no_fade = test_rpm_config(1, vec![1.0]);
+        no_fade.fade_range_hz = 0.0;
+        let low = RpmFundamentalHz {
+            low: 80.0,
+            median: 90.0,
+            high: 95.0,
+        };
+        assert_eq!(
+            rpm_filter_legend_text(&no_fade, &low, 503.0, 8000.0),
+            "RPM Filter (1) @ median eRPM: 100% @ 90Hz"
+        );
+    }
+
+    #[test]
+    fn test_rpm_motor_frequency_lines() {
+        let cfg = test_rpm_config(2, vec![1.0, 1.0]);
+        let f = RpmMotorFrequencies {
+            pooled: RpmFundamentalHz {
+                low: 167.0,
+                median: 229.0,
+                high: 290.0,
+            },
+            per_motor: vec![
+                Some(RpmFundamentalHz {
+                    low: 160.0,
+                    median: 220.0,
+                    high: 280.0,
+                }),
+                None,
+            ],
+        };
+        let lines = rpm_motor_frequency_lines(&cfg, Some(&f));
+        assert_eq!(lines[0].0, "motor frequency");
+        assert_eq!(
+            lines[0].1,
+            "167–290 Hz (median 229) (all motors, 10th–90th percentile, from eRPM)"
+        );
+        assert_eq!(
+            lines[1].1,
+            "H1 167–290 Hz (median 229), H2 334–580 Hz (median 458)"
+        );
+        assert_eq!(lines[2].1, "M0 160–280 Hz (median 220), M1 no eRPM");
+        let none = rpm_motor_frequency_lines(&cfg, None);
+        assert_eq!(none.len(), 1);
+        assert!(none[0].1.contains("unavailable"));
+    }
+
+    /// Betaflight `rpmNotchUpdate` / `rpmNotchApply` difference equations, run on a sine.
+    fn simulate_bf_rpm_notch_gain(f0: f64, f: f64, q: f64, weight: f64, fs: f64) -> f64 {
+        let dt = 1.0 / fs;
+        let ff = (std::f64::consts::PI * f0 * dt).tan();
+        let qq = 1.0 / q;
+        let a1 = 1.0 / (1.0 + ff * (ff + qq));
+        let a2 = ff * a1;
+        let wq = qq * weight;
+        let (mut ic1, mut ic2) = (0.0f64, 0.0f64);
+        let n = (fs * 3.0) as usize;
+        let mut peak = 0.0f64;
+        for i in 0..n {
+            let input = (2.0 * std::f64::consts::PI * f * i as f64 * dt).sin();
+            let v3 = input - ic2;
+            let v1 = a1 * ic1 + a2 * v3;
+            let v2 = ic2 + ff * v1;
+            ic1 = 2.0 * v1 - ic1;
+            ic2 = 2.0 * v2 - ic2;
+            let out = input - wq * v1;
+            if i > n / 2 {
+                peak = peak.max(out.abs());
+            }
+        }
+        peak
+    }
+
+    #[test]
+    fn test_rpm_notch_response_matches_betaflight_filter() {
+        let fs = 8000.0;
+        for &(f0, q, w) in &[(229.0, 5.0, 1.0), (458.0, 5.0, 0.6), (150.0, 3.0, 1.0)] {
+            for &f in &[
+                0.5 * f0,
+                0.9 * f0,
+                0.97 * f0,
+                f0,
+                1.03 * f0,
+                1.1 * f0,
+                1.5 * f0,
+            ] {
+                let model = rpm_notch_response(f, f0, q, w, fs);
+                let simulated = simulate_bf_rpm_notch_gain(f0, f, q, w, fs);
+                assert!(
+                    (model - simulated).abs() < 0.02,
+                    "f0 {f0} f {f} q {q} w {w}: model {model} simulated {simulated}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_rpm_notch_response_shape() {
+        let fs = 8000.0;
+        // Center depth is 1 - weight; weight 0 is flat
+        assert!((rpm_notch_response(229.0, 229.0, 5.0, 1.0, fs)).abs() < 1e-9);
+        assert!((rpm_notch_response(229.0, 229.0, 5.0, 0.4, fs) - 0.6).abs() < 1e-9);
+        assert!((rpm_notch_response(229.0, 229.0, 5.0, 0.0, fs) - 1.0).abs() < 1e-9);
+        // Full-depth -3 dB half-width is about f0 / (2 Q): 22.9 Hz for 229 Hz at Q 5
+        let edge = rpm_notch_response(229.0 + 229.0 / 10.0, 229.0, 5.0, 1.0, fs);
+        assert!(
+            (edge - std::f64::consts::FRAC_1_SQRT_2).abs() < 0.03,
+            "edge {edge}"
+        );
+        // Invalid input is flat
+        assert_eq!(rpm_notch_response(100.0, 229.0, 0.0, 1.0, fs), 1.0);
+        assert_eq!(rpm_notch_response(100.0, 229.0, 5.0, 1.0, 0.0), 1.0);
+        assert_eq!(rpm_notch_response(5000.0, 229.0, 5.0, 1.0, fs), 1.0);
+    }
+
+    #[test]
+    fn test_generate_rpm_filter_curves_fade_and_clamp() {
+        let cfg = test_rpm_config(2, vec![1.0, 1.0]); // min 100, fade 50, Q 5
+        let fs = 8000.0;
+        let depth_at = |curves: &[RpmFilterCurveData], harmonic: u32, center: f64| -> f64 {
+            let c = curves.iter().find(|c| c.0 == harmonic).expect("curve");
+            c.2.iter()
+                .min_by(|a, b| (a.0 - center).abs().total_cmp(&(b.0 - center).abs()))
+                .map(|p| 1.0 - p.1)
+                .unwrap()
+        };
+        // Center 125 Hz is 25 Hz above min_hz: half of the 50 Hz fade range, so half depth
+        let curves = generate_rpm_filter_curves(&cfg, 125.0, 500.0, 4000, fs);
+        assert!((depth_at(&curves, 1, 125.0) - 0.5).abs() < 0.02);
+        // Center 250 Hz is past the fade range: full depth
+        assert!(depth_at(&curves, 2, 250.0) > 0.98);
+        // Fundamental exactly at min_hz: weight fades to 0, nothing attenuates, no curve
+        let at_min = generate_rpm_filter_curves(&cfg, 100.0, 500.0, 4000, fs);
+        assert!(at_min.iter().all(|c| c.0 != 1));
+        // Below min_hz with a positive fade range: the weight fades to 0, no curve
+        assert!(generate_rpm_filter_curves(&cfg, 90.0, 500.0, 4000, fs)
+            .iter()
+            .all(|c| c.0 != 1));
+        // Below min_hz with fade 0: Betaflight clamps the center to min_hz at full weight
+        let mut no_fade = test_rpm_config(1, vec![1.0]);
+        no_fade.fade_range_hz = 0.0;
+        let curves = generate_rpm_filter_curves(&no_fade, 90.0, 500.0, 4000, fs);
+        assert_eq!(curves[0].3, 100.0);
+        assert!(depth_at(&curves, 1, 100.0) > 0.98);
+    }
+
+    #[test]
+    fn test_generate_rpm_filter_curves_trimmed_to_attenuated_span() {
+        let cfg = test_rpm_config(1, vec![1.0]); // Q 5
+        let curves = generate_rpm_filter_curves(&cfg, 229.0, 503.0, 4000, 8000.0);
+        let points = &curves[0].2;
+        let (first, last) = (points.first().unwrap(), points.last().unwrap());
+        // |H| = 0.95 at x = f / f0 where (1 - x^2) = 0.6086 x (Q 5): x = 0.741, and 1 / 0.741
+        // on the high side (the response is symmetric in log frequency)
+        assert!((first.0 - 229.0 * 0.741).abs() < 6.0, "start {}", first.0);
+        assert!((last.0 - 229.0 / 0.741).abs() < 6.0, "end {}", last.0);
+        // Every interior point attenuates; the two ends sit just above the threshold
+        let threshold = 1.0 - RPM_FILTER_CURVE_MIN_ATTENUATION;
+        assert!(points[1..points.len() - 1].iter().all(|p| p.1 <= threshold));
+        // A harmonic weighted below the threshold attenuates less than 5%: no curve
+        let weak = test_rpm_config(1, vec![0.04]);
+        assert!(generate_rpm_filter_curves(&weak, 229.0, 503.0, 4000, 8000.0).is_empty());
+    }
+
+    #[test]
+    fn test_extract_rpm_filter_rate() {
+        let h = |pairs: &[(&str, &str)]| -> Vec<(String, String)> {
+            pairs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect()
+        };
+        // looptime 125 us = 8 kHz gyro, pid_process_denom 2: the filter runs at 4 kHz
+        let m = h(&[
+            ("looptime", "125"),
+            ("gyro_sync_denom", "1"),
+            ("pid_process_denom", "2"),
+        ]);
+        assert_eq!(extract_rpm_filter_rate(Some(&m)), 4000.0);
+        let m = h(&[("looptime", "125"), ("pid_process_denom", "1")]);
+        assert_eq!(extract_rpm_filter_rate(Some(&m)), 8000.0);
+        // Missing or invalid values fall back to the default rate and a denominator of 1
+        assert_eq!(
+            extract_rpm_filter_rate(None),
+            RPM_FILTER_DEFAULT_GYRO_RATE_HZ
+        );
+        let m = h(&[("looptime", "0"), ("pid_process_denom", "0")]);
+        assert_eq!(
+            extract_rpm_filter_rate(Some(&m)),
+            RPM_FILTER_DEFAULT_GYRO_RATE_HZ
+        );
+    }
+
+    #[test]
+    fn test_generate_rpm_filter_curves_keeps_clamped_center_in_range() {
+        // H3 raw 2100 Hz is above the 2000 Hz plot limit, but Betaflight clamps the center to
+        // 0.48 * 4000 = 1920 Hz, which is inside the plot
+        let cfg = test_rpm_config(3, vec![1.0, 1.0, 1.0]);
+        let curves = generate_rpm_filter_curves(&cfg, 700.0, 2000.0, 4000, 4000.0);
+        let h3 = curves.iter().find(|c| c.0 == 3).expect("H3 kept");
+        assert_eq!(h3.3, 1920.0);
+    }
 
     #[test]
     fn test_pt1_response() {

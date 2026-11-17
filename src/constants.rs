@@ -505,3 +505,22 @@ pub const HEADERS_CSV_SUFFIX: &str = ".headers.csv";
 
 /// Command-line options that consume the next argument as their value.
 pub const VALUE_TAKING_OPTIONS: [&str; 5] = ["--dps", "--output-dir", "-O", "--start", "--end"];
+
+// RPM filter overlay: motor fundamental frequency derived from logged eRPM, as Betaflight does
+// (dshot.c: erpmToHz = ERPM_PER_LSB / 60 / (motorPoleCount / 2)). The blackbox eRPM field is eRPM / 100.
+pub const RPM_FILTER_ERPM_PER_LSB: f64 = 100.0;
+pub const RPM_FILTER_SECONDS_PER_MINUTE: f64 = 60.0;
+pub const RPM_FILTER_POLES_PER_PAIR: f64 = 2.0;
+pub const RPM_FILTER_MIN_MOTOR_POLES: u32 = 2; // Fewer poles cannot form a pole pair
+pub const RPM_FILTER_BAND_LOW_PERCENTILE: f64 = 10.0; // Lower edge of the reported motor-frequency range
+pub const RPM_FILTER_BAND_HIGH_PERCENTILE: f64 = 90.0; // Upper edge of the reported motor-frequency range
+pub const RPM_FILTER_COLOR: (u8, u8, u8) = (70, 130, 180); // Steel blue: RPM filter curves and legend
+pub const RPM_FILTER_CURVE_AMPLITUDE_FRACTION: f64 = 0.3; // Motor-plot RPM curve height, fraction of the y-axis max (same look as the gyro plot's filter curves)
+pub const RPM_FILTER_CURVE_OFFSET_FRACTION: f64 = 0.05; // Motor-plot RPM curve baseline, fraction of the y-axis max
+pub const RPM_FILTER_CURVE_POINTS: usize = 1000; // Sample points per RPM filter curve on the motor plot
+pub const RPM_FILTER_DEFAULT_GYRO_RATE_HZ: f64 = 8000.0; // Gyro rate assumed for the RPM notch response when the header gives none (same default as the gyro plot)
+pub const RPM_FILTER_MAX_HZ_RATE_FRACTION: f64 = 0.48; // Betaflight keeps the RPM notch center below this fraction of the filter rate (rpm_filter.c maxHz)
+pub const RPM_FILTER_CURVE_START_FRACTION: f64 = 0.5; // RPM curves are drawn from this fraction of rpm_filter_min_hz (the notch is faded out below min_hz)
+pub const RPM_FILTER_CURVE_START_FLOOR_HZ: f64 = 1.0; // Lowest curve start, Hz (log-spaced sampling needs a positive start)
+pub const RPM_FILTER_CURVE_MIN_ATTENUATION: f64 = 0.05; // RPM curves are drawn only where the notch attenuates by at least this fraction (0.05 = 5%)
+pub const RPM_FILTER_MICROSECONDS_PER_SECOND: f64 = 1_000_000.0; // blackbox looptime header is in microseconds
