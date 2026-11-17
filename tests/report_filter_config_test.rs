@@ -186,8 +186,8 @@ fn report_lists_rpm_filter_without_gyro_lowpass_fields() {
 fn pid_tuning_table_shows_zero_ff_label() {
     let mut report = base_report(None);
     report.pid_labels = [
-        "P:57 I:66 D:58 FF:0".to_string(),
-        "P:59 I:69 D:72 FF:0".to_string(),
+        "P:57 I:66 D:58 D-Min:58 D-Max:80 FF:0".to_string(),
+        "P:59 I:69 D:72 D-Min:44 D-Max:90 FF:0".to_string(),
         String::new(),
     ];
     let dir = tempfile::tempdir().expect("create temp dir");
@@ -196,6 +196,6 @@ fn pid_tuning_table_shows_zero_ff_label() {
     let contents = fs::read_to_string(&out_path).expect("read report");
 
     assert!(contents.contains("| Axis | PID | P:D Ratio |"));
-    assert!(contents.contains("| Roll | P:57 I:66 D:58 FF:0 | N/A |"));
+    assert!(contents.contains("| Roll | P:57 I:66 D:58 D-Min:58 D-Max:80 FF:0 | N/A |"));
     assert!(contents.contains("| Yaw (informational) | N/A | N/A |"));
 }

@@ -171,6 +171,32 @@ impl AxisPid {
         }
     }
 
+    /// Format every known gain for the report: P, I, D, D-Min, D-Max, FF.
+    /// Each field prints only when the log header carries it. Unlike the plot title,
+    /// D-Min and D-Max print separately and do not depend on dynamic D being enabled.
+    /// EmuFlight labels feedforward "DF" and hides a zero value; other firmware prints FF:0.
+    pub fn format_for_report(&self, firmware_type: &FirmwareType) -> String {
+        let mut parts = Vec::new();
+        for (label, value) in [
+            ("P", self.p),
+            ("I", self.i),
+            ("D", self.d),
+            ("D-Min", self.d_min),
+            ("D-Max", self.d_max),
+        ] {
+            if let Some(v) = value {
+                parts.push(format!("{label}:{v}"));
+            }
+        }
+        match (firmware_type, self.ff) {
+            (FirmwareType::EmuFlight, Some(ff)) if ff > 0 => parts.push(format!("DF:{ff}")),
+            (FirmwareType::EmuFlight, _) => {}
+            (_, Some(ff)) => parts.push(format!("FF:{ff}")),
+            _ => {}
+        }
+        parts.join(" ")
+    }
+
     /// Format PID values for display with firmware-specific terminology
     /// dmax_enabled: Set to true only if D-Min/D-Max system is actively enabled
     pub fn format_for_title(&self, firmware_type: &FirmwareType, dmax_enabled: bool) -> String {
@@ -781,6 +807,43 @@ mod tests {
         ];
         let pid_data = parse_pid_metadata(&metadata);
         assert_eq!(pid_data.roll.ff, Some(0));
+    }
+
+    #[test]
+    fn test_format_for_report_lists_all_known_gains() {
+        let metadata = vec![
+            (
+                "Firmware revision".to_string(),
+                "Betaflight 4.6.0".to_string(),
+            ),
+            ("rollPID".to_string(), "57,66,58,80,0".to_string()),
+            ("pitchPID".to_string(), "59,69,72".to_string()),
+        ];
+        let pid_data = parse_pid_metadata(&metadata);
+        let fw = &pid_data.firmware_type;
+        assert_eq!(
+            pid_data.roll.format_for_report(fw),
+            "P:57 I:66 D:58 D-Min:58 D-Max:80 FF:0"
+        );
+        // Fields absent from the header are not printed.
+        assert_eq!(pid_data.pitch.format_for_report(fw), "P:59 I:69 D:72");
+        // EmuFlight: DF label, zero hidden.
+        let ef = AxisPid {
+            p: Some(52),
+            i: Some(57),
+            d: Some(38),
+            ff: Some(0),
+            ..Default::default()
+        };
+        assert_eq!(
+            ef.format_for_report(&FirmwareType::EmuFlight),
+            "P:52 I:57 D:38"
+        );
+        let ef = AxisPid { ff: Some(15), ..ef };
+        assert_eq!(
+            ef.format_for_report(&FirmwareType::EmuFlight),
+            "P:52 I:57 D:38 DF:15"
+        );
     }
 
     #[test]

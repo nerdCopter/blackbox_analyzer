@@ -1204,12 +1204,8 @@ fn process_file(
 
     let pid_labels_for_report: [String; AXIS_COUNT] = {
         let fw = pid_metadata.get_firmware_type();
-        let dmax = pid_metadata.is_dmax_enabled();
-        [&pid_metadata.roll, &pid_metadata.pitch, &pid_metadata.yaw].map(|a| {
-            a.format_for_title(fw, dmax)
-                .trim_start_matches(" - ")
-                .to_string()
-        })
+        [&pid_metadata.roll, &pid_metadata.pitch, &pid_metadata.yaw]
+            .map(|a| a.format_for_report(fw))
     };
 
     let mut has_nonzero_f_term_data = [false; 3];
