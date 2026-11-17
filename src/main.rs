@@ -238,7 +238,7 @@ use crate::data_input::bbl_reader::{
 };
 use crate::data_input::log_data::LogRowData;
 use crate::data_input::log_parser::{self, parse_log_file};
-use crate::data_input::pid_metadata::parse_pid_metadata;
+use crate::data_input::pid_metadata::{format_d_target, parse_pid_metadata};
 
 // PID context import
 use crate::pid_context::PidContext;
@@ -1594,57 +1594,30 @@ INFO: Skipping Step Response input data filtering for {input_file_str}: {reason}
                                         }
 
                                         // Show conservative recommendation
-                                        if dmax_enabled
-                                            && (recommended_d_min_conservative[axis_index]
-                                                .is_some()
-                                                || recommended_d_max_conservative[axis_index]
-                                                    .is_some())
-                                        {
-                                            // D-Min/D-Max enabled: show D-Min and D-Max, NOT base D
-                                            let d_min_str = recommended_d_min_conservative
-                                                [axis_index]
-                                                .map_or("N/A".to_string(), |v| v.to_string());
-                                            let d_max_str = recommended_d_max_conservative
-                                                [axis_index]
-                                                .map_or("N/A".to_string(), |v| v.to_string());
-                                            println!("  Recommendation (conservative): P:D={:.2} (D-Min≈{}, D-Max≈{})",
-                                                recommended_pd_conservative[axis_index].unwrap(),
-                                                d_min_str, d_max_str);
-                                        } else if let Some(recommended_d) =
-                                            recommended_d_conservative[axis_index]
-                                        {
-                                            // D-Min/D-Max disabled: show only base D
+                                        if let Some(d_text) = format_d_target(
+                                            recommended_d_conservative[axis_index],
+                                            recommended_d_min_conservative[axis_index],
+                                            recommended_d_max_conservative[axis_index],
+                                            dmax_enabled,
+                                        ) {
                                             println!(
-                                                "  Recommendation (conservative): P:D={:.2} (D≈{})",
+                                                "  Recommendation (conservative): P:D={:.2} ({})",
                                                 recommended_pd_conservative[axis_index].unwrap(),
-                                                recommended_d
+                                                d_text
                                             );
                                         }
 
                                         // Show secondary (moderate) recommendation
-                                        if dmax_enabled
-                                            && (recommended_d_min_aggressive[axis_index].is_some()
-                                                || recommended_d_max_aggressive[axis_index]
-                                                    .is_some())
-                                        {
-                                            // D-Min/D-Max enabled: show D-Min and D-Max, NOT base D
-                                            let d_min_str = recommended_d_min_aggressive
-                                                [axis_index]
-                                                .map_or("N/A".to_string(), |v| v.to_string());
-                                            let d_max_str = recommended_d_max_aggressive
-                                                [axis_index]
-                                                .map_or("N/A".to_string(), |v| v.to_string());
-                                            println!("  Recommendation (moderate): P:D={:.2} (D-Min≈{}, D-Max≈{})",
-                                                recommended_pd_aggressive[axis_index].unwrap(),
-                                                d_min_str, d_max_str);
-                                        } else if let Some(recommended_d_mod) =
-                                            recommended_d_aggressive[axis_index]
-                                        {
-                                            // D-Min/D-Max disabled: show only base D
+                                        if let Some(d_text) = format_d_target(
+                                            recommended_d_aggressive[axis_index],
+                                            recommended_d_min_aggressive[axis_index],
+                                            recommended_d_max_aggressive[axis_index],
+                                            dmax_enabled,
+                                        ) {
                                             println!(
-                                                "  Recommendation (moderate): P:D={:.2} (D≈{})",
+                                                "  Recommendation (moderate): P:D={:.2} ({})",
                                                 recommended_pd_aggressive[axis_index].unwrap(),
-                                                recommended_d_mod
+                                                d_text
                                             );
                                         }
 
@@ -1664,53 +1637,32 @@ INFO: Skipping Step Response input data filtering for {input_file_str}: {reason}
                                                         dmax_enabled,
                                                     )
                                                 };
-                                            if dmax_enabled
-                                                && (rec_d_min_agg.is_some()
-                                                    || rec_d_max_agg.is_some())
-                                            {
-                                                let d_min_str = rec_d_min_agg
-                                                    .map_or("N/A".to_string(), |v| v.to_string());
-                                                let d_max_str = rec_d_max_agg
-                                                    .map_or("N/A".to_string(), |v| v.to_string());
-                                                println!("  Recommendation (aggressive): P:D={:.2} (D-Min≈{}, D-Max≈{})",
-                                                    aggressive_pd, d_min_str, d_max_str);
-                                            } else if let Some(rec_d3) = rec_d_agg {
-                                                println!("  Recommendation (aggressive): P:D={:.2} (D≈{})",
-                                                    aggressive_pd, rec_d3);
+                                            if let Some(d_text) = format_d_target(
+                                                rec_d_agg,
+                                                rec_d_min_agg,
+                                                rec_d_max_agg,
+                                                dmax_enabled,
+                                            ) {
+                                                println!(
+                                                    "  Recommendation (aggressive): P:D={:.2} ({})",
+                                                    aggressive_pd, d_text
+                                                );
                                             }
                                         }
                                     } else if assessment == "Near optimal" {
                                         // Near optimal (1.00–1.02): D−1 hint only — no "none" line,
                                         // since "none" and a concrete suggestion are contradictory.
-                                        if dmax_enabled {
-                                            let d_min_str = axis_pid
-                                                .d_min
-                                                .map(|v| {
-                                                    v.saturating_sub(
-                                                        crate::constants::D_STEP_OPTIONAL,
-                                                    )
-                                                })
-                                                .map_or("N/A".to_string(), |v| v.to_string());
-                                            let d_max_str = axis_pid
+                                        let step = crate::constants::D_STEP_OPTIONAL;
+                                        if let Some(d_text) = format_d_target(
+                                            axis_pid.d.map(|v| v.saturating_sub(step)),
+                                            axis_pid.d_min.map(|v| v.saturating_sub(step)),
+                                            axis_pid
                                                 .d_max
                                                 .or(axis_pid.d)
-                                                .map(|v| {
-                                                    v.saturating_sub(
-                                                        crate::constants::D_STEP_OPTIONAL,
-                                                    )
-                                                })
-                                                .map_or("N/A".to_string(), |v| v.to_string());
-                                            println!(
-                                                "  Recommendation (conservative): D-Min≈{}, D-Max≈{} [optional D−1]",
-                                                d_min_str, d_max_str
-                                            );
-                                        } else if let Some(current_d) = axis_pid.d {
-                                            println!(
-                                                "  Recommendation (conservative): D≈{} [optional D−1]",
-                                                current_d.saturating_sub(
-                                                    crate::constants::D_STEP_OPTIONAL
-                                                )
-                                            );
+                                                .map(|v| v.saturating_sub(step)),
+                                            dmax_enabled,
+                                        ) {
+                                            println!("  Recommendation (conservative): {d_text} [optional D−1]");
                                         }
                                     } else {
                                         // Optimal zone (1.02–1.08): no adjustment needed

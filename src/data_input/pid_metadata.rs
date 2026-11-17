@@ -572,12 +572,26 @@ pub fn parse_pid_metadata(header_metadata: &[(String, String)]) -> PidMetadata {
     // A 5-value PID string or a log with both headers already carries both ends.
     let has_d_min_header = d_min_values.iter().any(Option::is_some);
     let has_d_max_header = d_max_values.iter().any(Option::is_some);
+    // The firmware ignores a stored end that lies on the wrong side of base D (`d_max <= D`
+    // on 2025.12+, `d_min >= D` on 4.0 to 4.5): D stays constant. Clamp that end to D so
+    // the pair never reads as an inverted range, for example after float rounding when
+    // simplified tuning computes both from the same default.
     for axis in [&mut pid_data.roll, &mut pid_data.pitch, &mut pid_data.yaw] {
-        if has_d_max_header && !has_d_min_header && axis.d_min.is_none() {
-            axis.d_min = axis.d;
+        if has_d_max_header && !has_d_min_header {
+            if axis.d_min.is_none() {
+                axis.d_min = axis.d;
+            }
+            if let (Some(d), Some(max)) = (axis.d, axis.d_max) {
+                axis.d_max = Some(max.max(d));
+            }
         }
-        if has_d_min_header && !has_d_max_header && axis.d_max.is_none() {
-            axis.d_max = axis.d;
+        if has_d_min_header && !has_d_max_header {
+            if axis.d_max.is_none() {
+                axis.d_max = axis.d;
+            }
+            if let (Some(d), Some(min)) = (axis.d, axis.d_min) {
+                axis.d_min = Some(min.min(d));
+            }
         }
     }
 
@@ -1611,6 +1625,82 @@ mod tests {
             Some("D≈0")
         );
         assert_eq!(format_d_target(None, None, None, true), None);
+    }
+
+    #[test]
+    fn test_dynamic_d_simplified_tuning_slider_off() {
+        // BF 4.5 simplified_tuning.c: with simplified_dmin_ratio 0, dminRatio is 1.0, so
+        // D and d_min come from the same expression and are equal. No range, single D.
+        let pid = parse_pid_metadata(&headers(
+            "Betaflight 4.5.0",
+            &[
+                ("rollPID", "47,76,40"),
+                ("pitchPID", "55,80,46"),
+                ("yawPID", "45,80,0"),
+                ("d_min", "40,46,0"),
+                ("d_max_gain", "37"),
+                ("d_max_advance", "20"),
+                ("simplified_pids_mode", "2"),
+                ("simplified_dmax_gain", "0"),
+            ],
+        ));
+        assert!(!pid.is_dmax_enabled());
+        let fw = &pid.firmware_type;
+        assert_eq!(
+            pid.roll.format_for_report(fw, pid.is_dmax_enabled()),
+            "P:47 I:76 D:40"
+        );
+        assert_eq!(
+            pid.roll.format_for_title(fw, pid.is_dmax_enabled()),
+            " - P:47 I:76 D:40"
+        );
+
+        // BF 2025.12 simplified_tuning.c: with simplified_d_max_gain 0, d_max equals D.
+        // Real log values (LIONBEE flight 15, simplified_pids_mode 2).
+        let pid = parse_pid_metadata(&headers(
+            "Betaflight 2026.12.0-alpha (29ae6a65e) AT32F435G",
+            &[
+                ("rollPID", "45,80,30"),
+                ("pitchPID", "47,84,34"),
+                ("yawPID", "45,80,0"),
+                ("d_max", "30,34,0"),
+                ("d_max_gain", "0"),
+                ("d_max_advance", "35"),
+                ("simplified_pids_mode", "2"),
+                ("simplified_d_max_gain", "0"),
+            ],
+        ));
+        assert!(!pid.is_dmax_enabled());
+        let fw = &pid.firmware_type;
+        assert_eq!(pid.roll.format_for_report(fw, false), "P:45 I:80 D:30");
+        assert_eq!(pid.pitch.format_for_report(fw, false), "P:47 I:84 D:34");
+        assert_eq!(pid.yaw.format_for_report(fw, false), "P:45 I:80 D:0");
+    }
+
+    #[test]
+    fn test_dynamic_d_end_on_wrong_side_of_base_d_is_clamped() {
+        // 2025.12+: d_max below D (float rounding) means no boost; the pair must not invert.
+        let pid = parse_pid_metadata(&headers(
+            "Betaflight 2025.12.0",
+            &[
+                ("rollPID", "47,76,80"),
+                ("pitchPID", "67,96,106"),
+                ("d_max", "90,105,0"),
+            ],
+        ));
+        assert_eq!((pid.pitch.d_min, pid.pitch.d_max), (Some(106), Some(106)));
+        assert!(pid.is_dmax_enabled()); // roll 80 to 90
+        assert_eq!(
+            pid.pitch.format_for_report(&pid.firmware_type, true),
+            "P:67 I:96 D-Min:106 D-Max:106"
+        );
+        // 4.0 to 4.5: d_min above D means the firmware does not use dynamic D on that axis.
+        let pid = parse_pid_metadata(&headers(
+            "Betaflight 4.4.0",
+            &[("rollPID", "51,55,47"), ("d_min", "50,0,0")],
+        ));
+        assert_eq!((pid.roll.d_min, pid.roll.d_max), (Some(47), Some(47)));
+        assert!(!pid.is_dmax_enabled());
     }
 
     #[test]
