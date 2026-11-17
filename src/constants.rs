@@ -524,3 +524,5 @@ pub const RPM_FILTER_CURVE_START_FRACTION: f64 = 0.5; // RPM curves are drawn fr
 pub const RPM_FILTER_CURVE_START_FLOOR_HZ: f64 = 1.0; // Lowest curve start, Hz (log-spaced sampling needs a positive start)
 pub const RPM_FILTER_CURVE_MIN_ATTENUATION: f64 = 0.05; // RPM curves are drawn only where the notch attenuates by at least this fraction (0.05 = 5%)
 pub const RPM_FILTER_MICROSECONDS_PER_SECOND: f64 = 1_000_000.0; // blackbox looptime header is in microseconds
+pub const RPM_HEATMAP_MIN_BIN_SAMPLES: usize = 20; // Throttle bins with fewer eRPM samples get no RPM harmonic point on the heatmap
+pub const RPM_HEATMAP_LINE_WIDTH: u32 = 2; // Stroke width of the RPM harmonic lines on the throttle-frequency heatmap

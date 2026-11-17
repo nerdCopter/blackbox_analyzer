@@ -1580,6 +1580,46 @@ pub fn rpm_motor_frequencies(
     Some(RpmMotorFrequencies { pooled, per_motor })
 }
 
+/// Median motor fundamental (Hz) per throttle bin, pooling all motors. A sample lands in the
+/// bin of its row's `setpoint[3]` (same binning as the throttle-frequency heatmap). A bin with
+/// fewer than `min_samples` usable eRPM samples is `None`.
+pub fn rpm_fundamental_hz_by_throttle_bin(
+    log_data: &[LogRowData],
+    motor_poles: u32,
+    bin_count: usize,
+    throttle_min: f64,
+    throttle_max: f64,
+    min_samples: usize,
+) -> Vec<Option<f64>> {
+    let bin_size = (throttle_max - throttle_min) / bin_count.max(1) as f64;
+    if bin_count == 0 || bin_size <= 0.0 {
+        return Vec::new();
+    }
+    let mut per_bin: Vec<Vec<f64>> = vec![Vec::new(); bin_count];
+    for row in log_data {
+        let Some(throttle) = row.setpoint[3] else {
+            continue;
+        };
+        let idx = (((throttle - throttle_min) / bin_size).floor() as usize).min(bin_count - 1);
+        per_bin[idx].extend(
+            row.erpms
+                .iter()
+                .flatten()
+                .copied()
+                .filter(|v| v.is_finite() && *v > 0.0),
+        );
+    }
+    per_bin
+        .into_iter()
+        .map(|samples| {
+            if samples.len() < min_samples {
+                return None;
+            }
+            rpm_fundamental_hz_from_erpm(samples.into_iter(), motor_poles).map(|f| f.median)
+        })
+        .collect()
+}
+
 /// Console and report lines for the RPM filter motor frequencies as `(label, text)`.
 /// Console prints `RPM Filter {label}: {text}`; the report prints `- **RPM Filter {label}:** {text}`.
 pub fn rpm_motor_frequency_lines(
@@ -1777,6 +1817,37 @@ pub fn generate_rpm_filter_curves(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_rpm_fundamental_hz_by_throttle_bin() {
+        // Throttle 0..1000 in 10 bins of 100: setpoint 50 -> bin 0, 950 -> bin 9, 1000 clamps to bin 9
+        let row = |throttle: f64, erpms: Vec<Option<f64>>| LogRowData {
+            setpoint: [None, None, None, Some(throttle)],
+            erpms,
+            ..Default::default()
+        };
+        let log = vec![
+            row(50.0, vec![Some(840.0), Some(840.0)]),
+            row(60.0, vec![Some(840.0), None]),
+            row(950.0, vec![Some(1680.0), Some(1680.0)]),
+            row(1000.0, vec![Some(1680.0), Some(0.0)]),
+            row(450.0, vec![Some(500.0)]), // below min_samples: bin 4 stays None
+        ];
+        let bins = rpm_fundamental_hz_by_throttle_bin(&log, 12, 10, 0.0, 1000.0, 3);
+        assert_eq!(bins.len(), 10);
+        // Spec: 12 poles, 840 LSB = 233.333 Hz; 1680 LSB = 466.667 Hz
+        assert!((bins[0].unwrap() - 233.333).abs() < 0.01);
+        assert!((bins[9].unwrap() - 466.667).abs() < 0.01);
+        assert!(bins[4].is_none() && bins[1].is_none());
+        assert!(rpm_fundamental_hz_by_throttle_bin(&log, 12, 0, 0.0, 1000.0, 1).is_empty());
+
+        // One usable sample plus zeros does not meet the minimum; the same count of usable samples does.
+        let mut zeros = vec![row(550.0, vec![Some(840.0)])];
+        zeros.extend((0..19).map(|_| row(550.0, vec![Some(0.0)])));
+        assert!(rpm_fundamental_hz_by_throttle_bin(&zeros, 12, 10, 0.0, 1000.0, 20)[5].is_none());
+        let valid: Vec<_> = (0..20).map(|_| row(550.0, vec![Some(840.0)])).collect();
+        assert!(rpm_fundamental_hz_by_throttle_bin(&valid, 12, 10, 0.0, 1000.0, 20)[5].is_some());
+    }
 
     #[test]
     fn test_rpm_fundamental_hz_from_erpm() {

@@ -396,6 +396,7 @@ pub fn plot_d_term_heatmap(
                 x_label: "Frequency (Hz)".to_string(),
                 y_label: "Throttle %".to_string(),
                 max_db: common_max_db,
+                overlay_lines: Vec::new(),
             })
         } else {
             println!("  No valid unfiltered D-term data for {axis_name} axis.");
@@ -417,6 +418,7 @@ pub fn plot_d_term_heatmap(
                 x_label: "Frequency (Hz)".to_string(),
                 y_label: "Throttle %".to_string(),
                 max_db: common_max_db,
+                overlay_lines: Vec::new(),
             })
         } else {
             println!("  No valid filtered D-term data for {axis_name} axis.");

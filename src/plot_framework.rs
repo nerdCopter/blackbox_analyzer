@@ -19,7 +19,7 @@ use crate::constants::{
     AVG_CHAR_WIDTH_RATIO, FILTERED_D_TERM_MIN_THRESHOLD, FONT_SIZE_MESSAGE, FONT_SIZE_PEAK_LABEL,
     HEATMAP_MIN_PSD_DB, LINE_WIDTH_LEGEND, MAX_PEAKS_TO_LABEL, PEAK_LABEL_BOTTOM_MARGIN_PX,
     PEAK_LABEL_MIN_AMPLITUDE, PLOT_HEIGHT, PLOT_WIDTH, PSD_PEAK_LABEL_MIN_VALUE_DB,
-    RIGHT_ALIGN_THRESHOLD, TRIANGLE_WIDTH_RATIO,
+    RIGHT_ALIGN_THRESHOLD, RPM_FILTER_COLOR, RPM_HEATMAP_LINE_WIDTH, TRIANGLE_WIDTH_RATIO,
 };
 use crate::font_config::{
     BUNDLED_FONT_BYTES, FONT_TUPLE_AXIS_LABEL, FONT_TUPLE_CHART_TITLE, FONT_TUPLE_LEGEND,
@@ -217,7 +217,8 @@ pub struct HeatmapPlotConfig {
     pub heatmap_data: HeatmapData,
     pub x_label: String,
     pub y_label: String,
-    pub max_db: f64, // Maximum dB value for color scaling
+    pub max_db: f64,                         // Maximum dB value for color scaling
+    pub overlay_lines: Vec<Vec<(f64, f64)>>, // Polylines of (x, y) drawn over the cells; empty for none
 }
 
 #[derive(Clone)]
@@ -925,6 +926,7 @@ fn draw_single_heatmap_chart(
     y_label: &str,
     heatmap_data: &HeatmapData,
     max_db: f64, // Use dynamic max_db instead of hardcoded value
+    overlay_lines: &[Vec<(f64, f64)>],
 ) -> Result<(), Box<dyn Error>> {
     let mut chart = ChartBuilder::on(area)
         .caption(chart_title, FONT_TUPLE_CHART_TITLE)
@@ -987,6 +989,14 @@ fn draw_single_heatmap_chart(
                 }
             }
         }
+    }
+
+    let overlay_color = RGBColor(RPM_FILTER_COLOR.0, RPM_FILTER_COLOR.1, RPM_FILTER_COLOR.2);
+    for line in overlay_lines {
+        chart.draw_series(LineSeries::new(
+            line.iter().copied(),
+            overlay_color.stroke_width(RPM_HEATMAP_LINE_WIDTH),
+        ))?;
     }
     Ok(())
 }
@@ -1071,6 +1081,7 @@ where
                         &plot_config.y_label,
                         &plot_config.heatmap_data,
                         axis_max_db,
+                        &plot_config.overlay_lines,
                     )?;
                 }
             } else {
