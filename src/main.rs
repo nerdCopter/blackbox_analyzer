@@ -1658,11 +1658,10 @@ INFO: Skipping Step Response input data filtering for {input_file_str}: {reason}
                                     } else if assessment == "Near optimal" {
                                         // Near optimal (1.00–1.02): D−1 hint only — no "none" line,
                                         // since "none" and a concrete suggestion are contradictory.
-                                        if let Some(d_text) =
-                                            axis_pid.near_optimal_d_hint(dmax_enabled)
-                                        {
-                                            println!("  Recommendation (conservative): {d_text}");
-                                        }
+                                        println!(
+                                            "  {}",
+                                            axis_pid.near_optimal_recommendation_line(dmax_enabled)
+                                        );
                                     } else {
                                         // Optimal zone (1.02–1.08): no adjustment needed
                                         println!(

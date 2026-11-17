@@ -327,10 +327,21 @@ fn near_optimal_hint_report_text_matches_the_shared_helper_for_roll_and_pitch() 
     let path = dir.path().join("two_axis_report.md");
     generate_markdown_report(&report, &path).expect("generate report");
     let contents = fs::read_to_string(&path).expect("read report");
-    assert!(contents.contains(&format!("- **Recommendation (conservative):** {roll_hint}")));
-    assert!(contents.contains(&format!(
+    // Each hint sits in its own axis section, not just anywhere in the report.
+    let section = |axis: &str| -> String {
+        let head = format!("### {axis}\n");
+        let start = contents.find(&head).expect("axis section");
+        let rest = &contents[start + head.len()..];
+        rest.split("\n### ").next().unwrap_or(rest).to_string()
+    };
+    let roll_section = section("Roll");
+    let pitch_section = section("Pitch");
+    assert!(roll_section.contains(&format!("- **Recommendation (conservative):** {roll_hint}")));
+    assert!(!roll_section.contains(&pitch_hint));
+    assert!(pitch_section.contains(&format!(
         "- **Recommendation (conservative):** {pitch_hint}"
     )));
+    assert!(!pitch_section.contains(&roll_hint));
 }
 
 #[test]

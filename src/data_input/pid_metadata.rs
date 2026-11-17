@@ -108,7 +108,8 @@ impl AxisPid {
         // Calculate recommended D-Min if present
         let rec_d_min = self.d_min.map(|current_min| {
             if current_min > 0 {
-                ((current_min as f64) * scale_factor).round() as u32
+                // A recommended D-Min of 0 would switch dynamic D off.
+                (((current_min as f64) * scale_factor).round() as u32).max(1)
             } else {
                 0
             }
@@ -149,22 +150,34 @@ impl AxisPid {
     /// Optional D-1 hint for an axis in the near-optimal peak zone. Single source for the
     /// plot legend, console and report: base D, or D-Min and D-Max when this axis has a
     /// valid range (`d_range_for_display`), each lowered by `D_STEP_OPTIONAL`. `None` when
-    /// no D is known.
+    /// no D is known or when applying the hint would switch dynamic D off: a lowered end of
+    /// 0, or a lowered base D that reaches the other end of an active range.
     pub fn near_optimal_d_hint(&self, dmax_enabled: bool) -> Option<String> {
         let step = crate::constants::D_STEP_OPTIONAL;
-        // A lowered D (or D-Min) of 0 would switch dynamic D off, so it is no hint.
         let lowered_d = self.d.map(|v| v.saturating_sub(step)).filter(|&v| v > 0)?;
-        let range = self
-            .d_range_for_display(dmax_enabled)
-            .map(|(min, max)| (min.saturating_sub(step), max.saturating_sub(step)))
-            .filter(|&(min, _)| min > 0);
-        format_d_target(
-            Some(lowered_d),
-            range.map(|(min, _)| min),
-            range.map(|(_, max)| max),
-            range.is_some(),
-        )
-        .map(|text| format!("{text} [optional D−1]"))
+        let Some((min, max)) = self.d_range_for_display(dmax_enabled) else {
+            return format_d_target(Some(lowered_d), None, None, false)
+                .map(|text| format!("{text} [optional D−1]"));
+        };
+        let (low_min, low_max) = (min.saturating_sub(step), max.saturating_sub(step));
+        let text = if low_min > 0 {
+            format_d_target(Some(lowered_d), Some(low_min), Some(low_max), true)
+        } else if self.d == Some(max) && min < max && lowered_d <= min {
+            // Lowering only the upper end would collapse the range (D reaches D-Min).
+            return None;
+        } else {
+            format_d_target(Some(lowered_d), None, None, false)
+        };
+        text.map(|t| format!("{t} [optional D−1]"))
+    }
+
+    /// Legend and console line for a near-optimal axis: the D-1 hint as a conservative
+    /// recommendation, or the "none" line when no hint applies.
+    pub fn near_optimal_recommendation_line(&self, dmax_enabled: bool) -> String {
+        match self.near_optimal_d_hint(dmax_enabled) {
+            Some(hint) => format!("Recommendation (conservative): {hint}"),
+            None => "Recommendation (none): No obvious tuning adjustments needed".to_string(),
+        }
     }
 
     /// D-Min and D-Max for display and recommendation text: both known, `0 < D-Min <= D-Max`,
@@ -1854,6 +1867,43 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(one.near_optimal_d_hint(false), None);
+    }
+
+    #[test]
+    fn test_near_optimal_hint_never_collapses_an_active_range() {
+        // BF 4.5, D 2 is the upper end and d_min 1 the lower: lowering D to 1 would make the
+        // ends equal (d_min < D fails), so there is no hint, and the console and legend
+        // print the "none" line.
+        let pid = parse_pid_metadata(&headers(
+            "Betaflight 4.5.0",
+            &[("rollPID", "40,50,2"), ("d_min", "1,0,0")],
+        ));
+        assert!(pid.is_dmax_enabled());
+        assert_eq!(pid.roll.near_optimal_d_hint(true), None);
+        assert_eq!(
+            pid.roll.near_optimal_recommendation_line(true),
+            "Recommendation (none): No obvious tuning adjustments needed"
+        );
+        // BF 2025.12: D 2 is the lower end and d_max 3 the upper: both ends can drop by 1.
+        let pid = parse_pid_metadata(&headers(
+            "Betaflight 2025.12.0",
+            &[("rollPID", "40,50,2"), ("d_max", "3,0,0")],
+        ));
+        assert_eq!(
+            pid.roll.near_optimal_recommendation_line(true),
+            "Recommendation (conservative): D-Min≈1, D-Max≈2 [optional D−1]"
+        );
+    }
+
+    #[test]
+    fn test_recommended_d_min_never_rounds_to_zero() {
+        // P 40, D 20, d_min 1: a target D of 4 scales D-Min to 0.2, which must stay at 1.
+        let pid = parse_pid_metadata(&headers(
+            "Betaflight 4.5.0",
+            &[("rollPID", "40,50,20"), ("d_min", "1,0,0")],
+        ));
+        let (d, d_min, d_max) = pid.roll.calculate_goal_d_with_range(10.0, true);
+        assert_eq!((d, d_min, d_max), (Some(4), Some(1), Some(4)));
     }
 
     #[test]

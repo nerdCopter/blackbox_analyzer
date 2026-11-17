@@ -566,7 +566,8 @@ impl OptimalPAnalysis {
         // target D follows the recommended P, so the ends are scaled directly.
         if let Some((min, max)) = d_range {
             let scale = rec_d as f64 / current_d as f64;
-            let rec_min = (min as f64 * scale).round() as u32;
+            // A recommended D-Min of 0 would switch dynamic D off.
+            let rec_min = ((min as f64 * scale).round() as u32).max(1);
             let rec_max = (max as f64 * scale).round() as u32;
             return format!(
                 ", D-Min≈{} ({:+}), D-Max≈{} ({:+})",
@@ -707,6 +708,33 @@ mod d_target_tests {
                 .collect(),
         );
         assert_eq!(spread.reliability_label(), "Unreliable");
+    }
+
+    #[test]
+    fn d_target_suffix_keeps_d_min_above_zero() {
+        // P 40, D 20, P:D 2.0; recommended P 4 needs D 2, so D-Min 1 would scale to 0.1.
+        let a = analysis(Some(20), Some(2.0));
+        assert_eq!(
+            a.d_target_suffix(4, Some((1, 20))),
+            ", D-Min≈1 (+0), D-Max≈2 (-18)"
+        );
+    }
+
+    #[test]
+    fn source_summary_names_single_and_group_files() {
+        let mut a = analysis(Some(20), Some(2.0));
+        a.source_files = 1;
+        a.source_events = 5;
+        assert_eq!(
+            a.source_summary(),
+            "Single File — 1 flights, 5 throttle-punches"
+        );
+        a.source_files = 11;
+        a.source_events = 94;
+        assert_eq!(
+            a.source_summary(),
+            "File Group — 11 flights, 94 throttle-punches"
+        );
     }
 
     #[test]
