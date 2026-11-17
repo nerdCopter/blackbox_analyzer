@@ -5,8 +5,8 @@ use std::collections::HashMap;
 use crate::axis_names::AXIS_NAMES;
 use crate::constants::{
     PARITY_DIVISOR, RATIO_TO_PERCENT, RPM_FILTER_BAND_HIGH_PERCENTILE,
-    RPM_FILTER_BAND_LOW_PERCENTILE, RPM_FILTER_ERPM_PER_LSB, RPM_FILTER_MIN_MOTOR_POLES,
-    RPM_FILTER_POLES_PER_PAIR, RPM_FILTER_SECONDS_PER_MINUTE,
+    RPM_FILTER_BAND_LOW_PERCENTILE, RPM_FILTER_ERPM_PER_LSB, RPM_FILTER_MAX_HZ_RATE_FRACTION,
+    RPM_FILTER_MIN_MOTOR_POLES, RPM_FILTER_POLES_PER_PAIR, RPM_FILTER_SECONDS_PER_MINUTE,
 };
 use crate::data_input::log_data::LogRowData;
 
@@ -1353,8 +1353,7 @@ pub struct RpmFilterConfig {
     pub q_factor: f64,            // Q factor for notch width
     pub weights: Vec<f64>,        // Weight for each harmonic (0.0-1.0)
     pub motor_poles: Option<u32>, // Header motor_poles; needed to convert eRPM to Hz
-    #[allow(dead_code)] // Reserved for future use
-    pub fade_range_hz: f64, // Fade-in range
+    pub fade_range_hz: f64,       // Notch fades in over this range above min_hz
     #[allow(dead_code)] // Reserved for future use
     pub lpf_hz: f64, // RPM signal LPF
 }
@@ -1680,12 +1679,14 @@ pub fn generate_rpm_filter_curves(
 
     // Generate curve for each harmonic
     for harmonic_num in 1..=config.harmonics {
-        let harmonic_freq = motor_base_hz * harmonic_num as f64;
+        let raw_freq = motor_base_hz * harmonic_num as f64;
 
         // Skip if below minimum or above display range
-        if harmonic_freq < config.min_hz || harmonic_freq > max_frequency_hz {
+        if raw_freq < config.min_hz || raw_freq > max_frequency_hz {
             continue;
         }
+        // Betaflight clamps the notch center to [min_hz, 0.48 * rate] (rpm_filter.c)
+        let harmonic_freq = raw_freq.min(RPM_FILTER_MAX_HZ_RATE_FRACTION * sample_rate_hz);
 
         // Get weight for this harmonic (default to 1.0 if not specified)
         let weight = config
@@ -1698,6 +1699,13 @@ pub fn generate_rpm_filter_curves(
         if weight <= 0.0 {
             continue;
         }
+        // Betaflight fades a notch out as its center approaches min_hz (rpm_filter.c)
+        let margin_hz = harmonic_freq - config.min_hz;
+        let weight = if config.fade_range_hz > 0.0 && margin_hz < config.fade_range_hz {
+            weight * (margin_hz / config.fade_range_hz)
+        } else {
+            weight
+        };
 
         // Generate curve points
         let mut curve_points = Vec::with_capacity(num_points);
@@ -1894,6 +1902,31 @@ mod tests {
         assert_eq!(rpm_notch_response(100.0, 229.0, 0.0, 1.0, fs), 1.0);
         assert_eq!(rpm_notch_response(100.0, 229.0, 5.0, 1.0, 0.0), 1.0);
         assert_eq!(rpm_notch_response(5000.0, 229.0, 5.0, 1.0, fs), 1.0);
+    }
+
+    #[test]
+    fn test_generate_rpm_filter_curves_fade_and_clamp() {
+        let cfg = test_rpm_config(2, vec![1.0, 1.0]); // min 100, fade 50, Q 5
+        let fs = 8000.0;
+        let depth_at = |curves: &[RpmFilterCurveData], harmonic: u32, center: f64| -> f64 {
+            let c = curves.iter().find(|c| c.0 == harmonic).expect("curve");
+            c.2.iter()
+                .min_by(|a, b| (a.0 - center).abs().total_cmp(&(b.0 - center).abs()))
+                .map(|p| 1.0 - p.1)
+                .unwrap()
+        };
+        // Center 125 Hz is 25 Hz above min_hz: half of the 50 Hz fade range, so half depth
+        let curves = generate_rpm_filter_curves(&cfg, 125.0, 500.0, 4000, fs);
+        assert!((depth_at(&curves, 1, 125.0) - 0.5).abs() < 0.02);
+        // Center 250 Hz is past the fade range: full depth
+        assert!(depth_at(&curves, 2, 250.0) > 0.98);
+        // Fundamental exactly at min_hz: weight fades to 0, curve is flat
+        let at_min = generate_rpm_filter_curves(&cfg, 100.0, 500.0, 4000, fs);
+        assert!(depth_at(&at_min, 1, 100.0) < 0.02);
+        // Below min_hz: no curve
+        assert!(generate_rpm_filter_curves(&cfg, 90.0, 500.0, 4000, fs)
+            .iter()
+            .all(|c| c.0 != 1));
     }
 
     #[test]
