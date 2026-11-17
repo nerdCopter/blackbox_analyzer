@@ -23,6 +23,15 @@ pub enum FirmwareType {
     Unknown,
 }
 
+/// Aggressive P:D target with its D values, from `AxisPid::aggressive_recommendation`
+#[derive(Debug, Clone, Copy)]
+pub struct AggressiveRecommendation {
+    pub pd_ratio: f64,
+    pub d: Option<u32>,
+    pub d_min: Option<u32>,
+    pub d_max: Option<u32>,
+}
+
 /// PID values for a single axis
 #[derive(Debug, Clone, Default)]
 pub struct AxisPid {
@@ -145,6 +154,24 @@ impl AxisPid {
     /// check covers both layouts.
     pub fn has_dynamic_d_range(&self) -> bool {
         matches!((self.d_min, self.d_max), (Some(min), Some(max)) if min > 0 && min < max)
+    }
+
+    /// Aggressive P:D recommendation for the significant-overshoot zone: the ratio is the
+    /// current P:D times `PD_RATIO_AGGRESSIVE_MULTIPLIER`, with the matching D (and D-Min/D-Max
+    /// on an axis with a valid range). Single source for the plot legend, console and report.
+    pub fn aggressive_recommendation(
+        &self,
+        current_pd_ratio: f64,
+        dmax_enabled: bool,
+    ) -> AggressiveRecommendation {
+        let pd_ratio = current_pd_ratio * crate::constants::PD_RATIO_AGGRESSIVE_MULTIPLIER;
+        let (d, d_min, d_max) = self.calculate_goal_d_with_range(pd_ratio, dmax_enabled);
+        AggressiveRecommendation {
+            pd_ratio,
+            d,
+            d_min,
+            d_max,
+        }
     }
 
     /// Optional D-1 hint for an axis in the near-optimal peak zone. Single source for the
@@ -1821,6 +1848,34 @@ mod tests {
         assert_eq!(
             (pid.roll.p, pid.roll.i, pid.roll.d),
             (Some(57), None, Some(58))
+        );
+    }
+
+    #[test]
+    fn test_aggressive_recommendation_is_the_one_shared_source() {
+        // BF 4.5: roll has a range (20 to 30), pitch has d_min 0 and shows a single D.
+        let pid = parse_pid_metadata(&headers(
+            "Betaflight 4.5.0",
+            &[
+                ("rollPID", "40,50,30"),
+                ("pitchPID", "42,52,40"),
+                ("d_min", "20,0,0"),
+            ],
+        ));
+        let on = pid.is_dmax_enabled();
+        // Current P:D 1.0 times PD_RATIO_AGGRESSIVE_MULTIPLIER (0.65): P 40 needs D 40 / 0.65 = 62.
+        let roll = pid.roll.aggressive_recommendation(1.0, on);
+        assert!((roll.pd_ratio - 0.65).abs() < 1e-12);
+        assert_eq!(roll.d, Some(62));
+        assert_eq!((roll.d_min, roll.d_max), (Some(41), Some(62)));
+        // Same call on pitch (P 42): single D, no D-Min or D-Max.
+        let pitch = pid.pitch.aggressive_recommendation(1.0, on);
+        assert_eq!(pitch.d, Some(65));
+        assert_eq!((pitch.d_min, pitch.d_max), (None, None));
+        // It matches calculate_goal_d_with_range at the same ratio.
+        assert_eq!(
+            (roll.d, roll.d_min, roll.d_max),
+            pid.roll.calculate_goal_d_with_range(0.65, on)
         );
     }
 

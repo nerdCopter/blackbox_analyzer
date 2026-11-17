@@ -1629,29 +1629,19 @@ INFO: Skipping Step Response input data filtering for {input_file_str}: {reason}
 
                                         // Show tertiary (aggressive) recommendation for significant overshoot only
                                         if assessment == "Significant overshoot" {
-                                            let aggressive_pd = current_pd_ratio
-                                                * crate::constants::PD_RATIO_AGGRESSIVE_MULTIPLIER;
-                                            let (rec_d_agg, rec_d_min_agg, rec_d_max_agg) =
-                                                if axis_index == 0 {
-                                                    pid_metadata.roll.calculate_goal_d_with_range(
-                                                        aggressive_pd,
-                                                        dmax_enabled,
-                                                    )
-                                                } else {
-                                                    pid_metadata.pitch.calculate_goal_d_with_range(
-                                                        aggressive_pd,
-                                                        dmax_enabled,
-                                                    )
-                                                };
+                                            let agg = axis_pid.aggressive_recommendation(
+                                                current_pd_ratio,
+                                                dmax_enabled,
+                                            );
                                             if let Some(d_text) = format_d_target(
-                                                rec_d_agg,
-                                                rec_d_min_agg,
-                                                rec_d_max_agg,
+                                                agg.d,
+                                                agg.d_min,
+                                                agg.d_max,
                                                 dmax_enabled,
                                             ) {
                                                 println!(
                                                     "  Recommendation (aggressive): P:D={:.2} ({})",
-                                                    aggressive_pd, d_text
+                                                    agg.pd_ratio, d_text
                                                 );
                                             }
                                         }
@@ -1706,22 +1696,14 @@ INFO: Skipping Step Response input data filtering for {input_file_str}: {reason}
                     d_max: recommended_d_max_aggressive[axis_index],
                 });
                 let aggressive = if assessment == "Significant overshoot" {
-                    let aggressive_pd =
-                        current_pd_ratio * crate::constants::PD_RATIO_AGGRESSIVE_MULTIPLIER;
-                    let (rec_d, rec_d_min, rec_d_max) = if axis_index == 0 {
-                        pid_metadata
-                            .roll
-                            .calculate_goal_d_with_range(aggressive_pd, dmax_enabled)
-                    } else {
-                        pid_metadata
-                            .pitch
-                            .calculate_goal_d_with_range(aggressive_pd, dmax_enabled)
-                    };
-                    Some(report::DTermRec {
-                        pd_ratio: aggressive_pd,
-                        d: rec_d,
-                        d_min: rec_d_min,
-                        d_max: rec_d_max,
+                    pid_metadata.get_axis(axis_index).map(|axis| {
+                        let agg = axis.aggressive_recommendation(current_pd_ratio, dmax_enabled);
+                        report::DTermRec {
+                            pd_ratio: agg.pd_ratio,
+                            d: agg.d,
+                            d_min: agg.d_min,
+                            d_max: agg.d_max,
+                        }
                     })
                 } else {
                     None

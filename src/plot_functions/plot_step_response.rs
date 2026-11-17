@@ -529,15 +529,14 @@ pub fn plot_step_response(
                     // Aggressive (third) recommendation for significant overshoot only
                     if current.assessments[axis_index] == Some("Significant overshoot") {
                         if let Some(current_pd) = current.pd_ratios[axis_index] {
-                            let aggressive_pd =
-                                current_pd * crate::constants::PD_RATIO_AGGRESSIVE_MULTIPLIER;
                             if let Some(axis_pid_data) = pid_metadata.get_axis(axis_index) {
-                                let (rec_d_agg, rec_d_min_agg, rec_d_max_agg) = axis_pid_data
-                                    .calculate_goal_d_with_range(aggressive_pd, dmax_enabled);
+                                let agg = axis_pid_data
+                                    .aggressive_recommendation(current_pd, dmax_enabled);
+                                let aggressive_pd = agg.pd_ratio;
                                 let agg_label = match format_d_target(
-                                    rec_d_agg,
-                                    rec_d_min_agg,
-                                    rec_d_max_agg,
+                                    agg.d,
+                                    agg.d_min,
+                                    agg.d_max,
                                     dmax_enabled,
                                 ) {
                                     Some(d_text) => format!(
