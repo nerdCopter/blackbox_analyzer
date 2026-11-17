@@ -135,6 +135,7 @@ pub fn generate_markdown_report(
     writeln!(md)?;
 
     // --- Gyro Filter Configuration ---
+    let mut filter_section_written = false;
     if let Some(ref fc) = report.filter_config {
         let axis_labels = ["Roll", "Pitch", "Yaw"];
         // Only emit section if at least one axis has any filter configured
@@ -148,6 +149,7 @@ pub fn generate_markdown_report(
         // when at least one axis actually has it configured (i.e. EmuFlight logs).
         let has_imuf = (0..3).any(|i| fc.gyro[i].imuf.is_some());
         if has_any {
+            filter_section_written = true;
             writeln!(md, "## Gyro Filter Configuration")?;
             writeln!(md)?;
             if has_imuf {
@@ -185,25 +187,21 @@ pub fn generate_markdown_report(
                 )?;
             }
             if let Some(ref rpm) = report.rpm_filter {
-                let weights_str = rpm.weights_percent_display();
-                writeln!(
-                    md,
-                    "- **RPM Filter:** {} harmonic{}, Q={:.0}, min {:.0} Hz, weights: [{}]",
-                    rpm.harmonics,
-                    if rpm.harmonics == 1 { "" } else { "s" },
-                    rpm.q_factor,
-                    rpm.min_hz,
-                    weights_str
-                )?;
-                for (label, text) in
-                    rpm_motor_frequency_lines(rpm, report.rpm_motor_frequencies.as_ref())
-                {
-                    writeln!(md, "- **RPM Filter {label}:** {text}")?;
-                }
+                write_rpm_filter_lines(&mut md, rpm, report.rpm_motor_frequencies.as_ref())?;
             }
             if report.dynamic_notch.is_some() || report.rpm_filter.is_some() {
                 writeln!(md)?;
             }
+        }
+    }
+
+    // An RPM filter is reported even when no gyro lowpass or IMUF stage is configured.
+    if !filter_section_written {
+        if let Some(ref rpm) = report.rpm_filter {
+            writeln!(md, "## Gyro Filter Configuration")?;
+            writeln!(md)?;
+            write_rpm_filter_lines(&mut md, rpm, report.rpm_motor_frequencies.as_ref())?;
+            writeln!(md)?;
         }
     }
 
@@ -802,6 +800,26 @@ pub fn generate_markdown_report(
 /// doesn't round away to "0%" under whole-number formatting.
 fn fmt_zone_pct(pct: f64) -> String {
     format!("{:.1}%", pct)
+}
+
+fn write_rpm_filter_lines(
+    md: &mut String,
+    rpm: &RpmFilterConfig,
+    frequencies: Option<&RpmMotorFrequencies>,
+) -> Result<(), Box<dyn Error>> {
+    writeln!(
+        md,
+        "- **RPM Filter:** {} harmonic{}, Q={:.0}, min {:.0} Hz, weights: [{}]",
+        rpm.harmonics,
+        if rpm.harmonics == 1 { "" } else { "s" },
+        rpm.q_factor,
+        rpm.min_hz,
+        rpm.weights_percent_display()
+    )?;
+    for (label, text) in rpm_motor_frequency_lines(rpm, frequencies) {
+        writeln!(md, "- **RPM Filter {label}:** {text}")?;
+    }
+    Ok(())
 }
 
 fn fmt_static_filter(f: &crate::data_analysis::filter_response::FilterConfig) -> String {

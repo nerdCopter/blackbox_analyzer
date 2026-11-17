@@ -157,3 +157,26 @@ fn report_says_rpm_motor_frequency_unavailable_without_erpm() {
     ));
     assert!(!contents.contains("harmonic ranges"));
 }
+
+#[test]
+fn report_lists_rpm_filter_without_gyro_lowpass_fields() {
+    // No axis has a gyro filter stage; the RPM filter must still be reported.
+    let mut report = base_report(Some(AllFilterConfigs::default()));
+    report.rpm_filter = Some(RpmFilterConfig {
+        harmonics: 3,
+        min_hz: 100.0,
+        q_factor: 5.0,
+        weights: vec![1.0, 1.0, 1.0],
+        motor_poles: None,
+        fade_range_hz: 50.0,
+        lpf_hz: 150.0,
+    });
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let out_path = dir.path().join("rpm_only_report.md");
+    generate_markdown_report(&report, &out_path).expect("generate report");
+    let contents = fs::read_to_string(&out_path).expect("read report");
+    assert!(contents.contains("## Gyro Filter Configuration"));
+    assert!(!contents.contains("| Axis | LPF1 | LPF2 |"));
+    assert!(contents.contains("- **RPM Filter:** 3 harmonics, Q=5, min 100 Hz"));
+    assert!(contents.contains("- **RPM Filter motor frequency:** unavailable"));
+}
