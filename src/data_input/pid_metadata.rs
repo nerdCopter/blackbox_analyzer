@@ -208,13 +208,16 @@ impl AxisPid {
         }
 
         // Add FF before P:D ratio
+        // EmuFlight (DF) hides a zero value; other firmware shows an explicit FF:0
+        // when the log header carries an FF value of 0.
         if let Some(ff) = self.ff {
-            if ff > 0 {
-                let ff_label = match firmware_type {
-                    FirmwareType::EmuFlight => "DF",
-                    _ => "FF",
-                };
-                parts.push(format!("{ff_label}:{ff}"));
+            match firmware_type {
+                FirmwareType::EmuFlight => {
+                    if ff > 0 {
+                        parts.push(format!("DF:{ff}"));
+                    }
+                }
+                _ => parts.push(format!("FF:{ff}")),
             }
         }
 
@@ -415,9 +418,7 @@ fn parse_ff_values(
         let values = parse_comma_separated_values(ff_weight_str);
         if values.len() >= AXIS_COUNT {
             for (i, &value) in values.iter().enumerate().take(AXIS_COUNT) {
-                if value > 0 {
-                    ff_values[i] = Some(value);
-                }
+                ff_values[i] = Some(value);
             }
         }
     }
@@ -579,19 +580,16 @@ fn parse_axis_pid(pid_str: &str) -> AxisPid {
 
     // Handle different formats based on value count
     match values.len() {
-        4 if values[3] > 0 => {
+        4 => {
             // INAV style: P,I,D,FF
             axis_pid.ff = Some(values[3]);
         }
-        4 => {}
         5 => {
             // Betaflight 4.6+ style: P,I,D(base=D-Min),D-Max,FF
             // In BF 4.6+, base D IS the minimum (floor), not the maximum
             axis_pid.d_min = Some(values[2]); // Base D is D-Min in BF 4.6+
             axis_pid.d_max = Some(values[3]);
-            if values[4] > 0 {
-                axis_pid.ff = Some(values[4]);
-            }
+            axis_pid.ff = Some(values[4]);
         }
         _ => {
             // 3 or fewer values: basic P,I,D format (no FF or D-Max)
@@ -665,6 +663,81 @@ mod tests {
         assert_eq!(pid_data.yaw.i, Some(90));
         assert_eq!(pid_data.yaw.d, Some(7));
         assert_eq!(pid_data.yaw.ff, Some(15));
+    }
+
+    #[test]
+    fn test_zero_ff_parsed_and_displayed() {
+        // BF 4.6+ 5-value PID string with FF=0, no ff_weight header
+        let metadata = vec![
+            (
+                "Firmware revision".to_string(),
+                "Betaflight 4.6.0".to_string(),
+            ),
+            ("rollPID".to_string(), "57,66,58,58,0".to_string()),
+            ("pitchPID".to_string(), "59,69,72,72,0".to_string()),
+            ("yawPID".to_string(), "57,66,0,0,0".to_string()),
+        ];
+        let pid_data = parse_pid_metadata(&metadata);
+        assert_eq!(pid_data.roll.ff, Some(0));
+        assert!(pid_data
+            .roll
+            .format_for_title(&pid_data.firmware_type, false)
+            .ends_with("FF:0"));
+
+        // ff_weight header with zeros (BF <4.6 style), mixed with a non-zero axis
+        let metadata = vec![
+            (
+                "Firmware revision".to_string(),
+                "Betaflight 4.3.0".to_string(),
+            ),
+            ("rollPID".to_string(), "40,50,30".to_string()),
+            ("pitchPID".to_string(), "40,50,30".to_string()),
+            ("yawPID".to_string(), "40,50,0".to_string()),
+            ("ff_weight".to_string(), "0,0,80".to_string()),
+        ];
+        let pid_data = parse_pid_metadata(&metadata);
+        assert_eq!(pid_data.roll.ff, Some(0));
+        assert_eq!(pid_data.yaw.ff, Some(80));
+        assert_eq!(
+            pid_data
+                .roll
+                .format_for_title(&pid_data.firmware_type, false),
+            " - P:40 I:50 D:30 FF:0"
+        );
+
+        // No FF info at all: nothing printed
+        let metadata = vec![
+            (
+                "Firmware revision".to_string(),
+                "Betaflight 4.3.0".to_string(),
+            ),
+            ("rollPID".to_string(), "40,50,30".to_string()),
+        ];
+        let pid_data = parse_pid_metadata(&metadata);
+        assert_eq!(pid_data.roll.ff, None);
+        assert_eq!(
+            pid_data
+                .roll
+                .format_for_title(&pid_data.firmware_type, false),
+            " - P:40 I:50 D:30"
+        );
+
+        // EmuFlight: zero df_yaw stays hidden
+        let metadata = vec![
+            (
+                "Firmware revision".to_string(),
+                "EmuFlight 0.4.0".to_string(),
+            ),
+            ("yawPID".to_string(), "90,90,7".to_string()),
+            ("df_yaw".to_string(), "0".to_string()),
+        ];
+        let pid_data = parse_pid_metadata(&metadata);
+        assert_eq!(
+            pid_data
+                .yaw
+                .format_for_title(&pid_data.firmware_type, false),
+            " - P:90 I:90 D:7"
+        );
     }
 
     #[test]
@@ -788,7 +861,7 @@ mod tests {
             " - P:31 I:56 D:21 DF:84"
         );
 
-        // Test with zero FF (should be omitted)
+        // Zero FF: shown as FF:0 for non-EmuFlight, omitted for EmuFlight (DF)
         let axis_pid_zero_ff = AxisPid {
             p: Some(31),
             i: Some(56),
@@ -798,6 +871,10 @@ mod tests {
         };
         assert_eq!(
             axis_pid_zero_ff.format_for_title(&FirmwareType::Betaflight, false),
+            " - P:31 I:56 D:21 FF:0"
+        );
+        assert_eq!(
+            axis_pid_zero_ff.format_for_title(&FirmwareType::EmuFlight, false),
             " - P:31 I:56 D:21"
         );
 
