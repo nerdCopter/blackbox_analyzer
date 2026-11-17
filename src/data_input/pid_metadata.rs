@@ -136,9 +136,8 @@ impl AxisPid {
     /// Format D term with dynamic range support (D-Min/D-Max)
     ///
     /// Decision tree when D-Max system is enabled:
-    /// 1. If D-Min != D-Max and both non-zero → show "D:min/max" range
+    /// 1. If both ends are non-zero → show "D:min/max" (also when they are equal)
     /// 2. If only D-Min or D-Max is non-zero → show that single value
-    /// 3. If D-Min == D-Max and both non-zero → show base D value (or D-Min if D is missing)
     /// 4. Fallback to base D value if available
     fn format_d_term(d: Option<u32>, d_min: Option<u32>, d_max: Option<u32>) -> Option<String> {
         match (d_min, d_max) {
@@ -150,10 +149,9 @@ impl AxisPid {
             (Some(min), Some(0)) if min > 0 => Some(format!("D:{min}")),
             // D-Max non-zero but D-Min is zero - show only D-Max
             (Some(0), Some(max)) if max > 0 => Some(format!("D:{max}")),
-            // D-Min and D-Max are equal and non-zero - prefer base D, fallback to D-Min
-            (Some(min), Some(max)) if min == max && min > 0 => {
-                Some(format!("D:{}", d.unwrap_or(min)))
-            }
+            // D-Min and D-Max are equal and non-zero - still show both ends. Dynamic D is
+            // active on another axis, so every axis prints the same "min/max" form.
+            (Some(min), Some(max)) if min == max && min > 0 => Some(format!("D:{min}/{max}")),
             // Only D-Min present (no D-Max)
             // If base D exists and differs, show min/base (min first to maintain min/max ordering)
             (Some(min), None) if min > 0 => match d {
@@ -184,12 +182,13 @@ impl AxisPid {
     }
 
     /// Format every known gain for the report: P, I, D, D-Min, D-Max, FF.
-    /// An axis with a dynamic D range prints `D-Min:a D-Max:b` in place of the base D,
-    /// because the base D equals one end of the range and its meaning changed between
-    /// Betaflight versions. Otherwise it prints `D:x`. Each field prints only when the
-    /// log header carries it. EmuFlight labels feedforward "DF" and hides a zero value;
+    /// When dynamic D is configured on the log (`dmax_enabled`), every axis whose D-Min
+    /// and D-Max are both known and non-zero prints `D-Min:a D-Max:b` in place of the base
+    /// D, even when the two are equal, because the base D equals one end of the range and
+    /// its meaning changed between Betaflight versions. Otherwise it prints `D:x`. Each
+    /// field prints only when the log header carries it. EmuFlight labels feedforward "DF" and hides a zero value;
     /// other firmware prints FF:0.
-    pub fn format_for_report(&self, firmware_type: &FirmwareType) -> String {
+    pub fn format_for_report(&self, firmware_type: &FirmwareType, dmax_enabled: bool) -> String {
         let mut parts = Vec::new();
         if let Some(p) = self.p {
             parts.push(format!("P:{p}"));
@@ -197,8 +196,8 @@ impl AxisPid {
         if let Some(i) = self.i {
             parts.push(format!("I:{i}"));
         }
-        match (self.has_dynamic_d_range(), self.d_min, self.d_max) {
-            (true, Some(min), Some(max)) => {
+        match (dmax_enabled, self.d_min, self.d_max) {
+            (true, Some(min), Some(max)) if min > 0 && max > 0 => {
                 parts.push(format!("D-Min:{min}"));
                 parts.push(format!("D-Max:{max}"));
             }
@@ -822,11 +821,18 @@ mod tests {
         let pid_data = parse_pid_metadata(&metadata);
         let fw = &pid_data.firmware_type;
         assert_eq!(
-            pid_data.roll.format_for_report(fw),
+            pid_data
+                .roll
+                .format_for_report(fw, pid_data.is_dmax_enabled()),
             "P:57 I:66 D-Min:58 D-Max:80 FF:0"
         );
         // Fields absent from the header are not printed.
-        assert_eq!(pid_data.pitch.format_for_report(fw), "P:59 I:69 D:72");
+        assert_eq!(
+            pid_data
+                .pitch
+                .format_for_report(fw, pid_data.is_dmax_enabled()),
+            "P:59 I:69 D:72"
+        );
         // EmuFlight: DF label, zero hidden.
         let ef = AxisPid {
             p: Some(52),
@@ -836,12 +842,12 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            ef.format_for_report(&FirmwareType::EmuFlight),
+            ef.format_for_report(&FirmwareType::EmuFlight, false),
             "P:52 I:57 D:38"
         );
         let ef = AxisPid { ff: Some(15), ..ef };
         assert_eq!(
-            ef.format_for_report(&FirmwareType::EmuFlight),
+            ef.format_for_report(&FirmwareType::EmuFlight, false),
             "P:52 I:57 D:38 DF:15"
         );
     }
@@ -1458,16 +1464,19 @@ mod tests {
             assert_eq!(pid.d_max_advance, Some(20), "{rev}");
             // D (21) is the maximum; D-Min comes from the d_min header.
             assert_eq!(
-                pid.roll.format_for_report(&pid.firmware_type),
+                pid.roll
+                    .format_for_report(&pid.firmware_type, pid.is_dmax_enabled()),
                 "P:31 I:65 D-Min:20 D-Max:21"
             );
             assert_eq!(
-                pid.pitch.format_for_report(&pid.firmware_type),
+                pid.pitch
+                    .format_for_report(&pid.firmware_type, pid.is_dmax_enabled()),
                 "P:37 I:75 D-Min:22 D-Max:23"
             );
             // Yaw: d_min 0 means no dynamic D.
             assert_eq!(
-                pid.yaw.format_for_report(&pid.firmware_type),
+                pid.yaw
+                    .format_for_report(&pid.firmware_type, pid.is_dmax_enabled()),
                 "P:45 I:120 D:0"
             );
             assert_eq!(
@@ -1500,15 +1509,18 @@ mod tests {
             ));
             assert!(pid.is_dmax_enabled());
             assert_eq!(
-                pid.roll.format_for_report(&pid.firmware_type),
+                pid.roll
+                    .format_for_report(&pid.firmware_type, pid.is_dmax_enabled()),
                 "P:38 I:81 D-Min:21 D-Max:35"
             );
             assert_eq!(
-                pid.pitch.format_for_report(&pid.firmware_type),
+                pid.pitch
+                    .format_for_report(&pid.firmware_type, pid.is_dmax_enabled()),
                 "P:40 I:83 D-Min:23 D-Max:38"
             );
             assert_eq!(
-                pid.yaw.format_for_report(&pid.firmware_type),
+                pid.yaw
+                    .format_for_report(&pid.firmware_type, pid.is_dmax_enabled()),
                 "P:30 I:80 D:0"
             );
             assert_eq!(
@@ -1526,6 +1538,41 @@ mod tests {
     }
 
     #[test]
+    fn test_dynamic_d_every_axis_prints_both_ends_when_enabled() {
+        // Real BF 2026.12.0 log (LIONBEE): roll has a range (80 to 82), pitch has
+        // d_max equal to D (106), yaw has D 0 and d_max 0. Dynamic D is enabled by roll,
+        // so every axis with both ends known prints them in the same form.
+        let pid = parse_pid_metadata(&headers(
+            "Betaflight 2026.12.0 (11b0f998f) AT32F435G",
+            &[
+                ("rollPID", "47,76,80"),
+                ("pitchPID", "67,96,106"),
+                ("yawPID", "35,65,0"),
+                ("d_max", "82,106,0"),
+                ("d_max_gain", "0"),
+                ("d_max_advance", "35"),
+            ],
+        ));
+        assert!(pid.is_dmax_enabled());
+        let fw = &pid.firmware_type;
+        assert_eq!(
+            pid.roll.format_for_report(fw, true),
+            "P:47 I:76 D-Min:80 D-Max:82"
+        );
+        assert_eq!(
+            pid.pitch.format_for_report(fw, true),
+            "P:67 I:96 D-Min:106 D-Max:106"
+        );
+        assert_eq!(pid.yaw.format_for_report(fw, true), "P:35 I:65 D:0");
+        assert_eq!(pid.roll.format_for_title(fw, true), " - P:47 I:76 D:80/82");
+        assert_eq!(
+            pid.pitch.format_for_title(fw, true),
+            " - P:67 I:96 D:106/106"
+        );
+        assert_eq!(pid.yaw.format_for_title(fw, true), " - P:35 I:65 D:0");
+    }
+
+    #[test]
     fn test_dynamic_d_not_active_without_range() {
         // BF 4.2.5 real log: d_min all zero means the firmware does not use dynamic D.
         let pid = parse_pid_metadata(&headers(
@@ -1539,7 +1586,8 @@ mod tests {
         ));
         assert!(!pid.is_dmax_enabled());
         assert_eq!(
-            pid.roll.format_for_report(&pid.firmware_type),
+            pid.roll
+                .format_for_report(&pid.firmware_type, pid.is_dmax_enabled()),
             "P:69 I:94 D:50"
         );
         // 2025.12+: d_max equal to D means no boost range.
@@ -1552,7 +1600,8 @@ mod tests {
         let pid = parse_pid_metadata(&headers("Betaflight 4.4.0", &[("rollPID", "51,55,47")]));
         assert!(!pid.is_dmax_enabled());
         assert_eq!(
-            pid.roll.format_for_report(&pid.firmware_type),
+            pid.roll
+                .format_for_report(&pid.firmware_type, pid.is_dmax_enabled()),
             "P:51 I:55 D:47"
         );
     }
