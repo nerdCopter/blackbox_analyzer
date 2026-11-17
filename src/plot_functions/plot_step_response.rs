@@ -17,7 +17,7 @@ use crate::constants::{
 use crate::data_analysis::calc_step_response; // For average_responses and moving_average_smooth_f64
 use crate::data_analysis::calc_step_response::{compute_setpoint_authority, SetpointAuthority};
 use crate::data_analysis::optimal_p_estimation::{OptimalPAnalysis, PRecommendation};
-use crate::data_input::pid_metadata::PidMetadata;
+use crate::data_input::pid_metadata::{format_d_target, PidMetadata};
 use crate::plot_framework::{draw_stacked_plot, PlotSeries};
 use crate::types::{AllStepResponsePlotData, StepResponseResults};
 
@@ -458,24 +458,19 @@ pub fn plot_step_response(
 
                 // Conservative recommendation (uses dmax_enabled computed at function start)
                 if let Some(rec_pd) = conservative.0.pd_ratios[axis_index] {
-                    let recommendation_label = if dmax_enabled {
-                        // D-Min/D-Max enabled: show D-Min and D-Max, NOT base D
-                        let d_min_str = conservative.0.d_min_values[axis_index]
-                            .map_or("N/A".to_string(), |v| v.to_string());
-                        let d_max_str = conservative.0.d_max_values[axis_index]
-                            .map_or("N/A".to_string(), |v| v.to_string());
-                        format!(
-                            "  Recommendation (conservative): P:D={:.2} (D-Min≈{}, D-Max≈{})",
-                            rec_pd, d_min_str, d_max_str
-                        )
-                    } else if let Some(rec_d) = conservative.0.d_values[axis_index] {
-                        // D-Min/D-Max disabled: show only base D
-                        format!(
-                            "  Recommendation (conservative): P:D={:.2} (D≈{})",
-                            rec_pd, rec_d
-                        )
-                    } else {
-                        format!("  Recommendation (conservative): P:D={:.2}", rec_pd)
+                    let recommendation_label = match format_d_target(
+                        conservative.0.d_values[axis_index],
+                        conservative.0.d_min_values[axis_index],
+                        conservative.0.d_max_values[axis_index],
+                        dmax_enabled,
+                    ) {
+                        Some(d_text) => {
+                            format!(
+                                "  Recommendation (conservative): P:D={:.2} ({})",
+                                rec_pd, d_text
+                            )
+                        }
+                        None => format!("  Recommendation (conservative): P:D={:.2}", rec_pd),
                     };
                     series.push(PlotSeries {
                         data: vec![],
@@ -487,28 +482,21 @@ pub fn plot_step_response(
                     // Near optimal (1.00–1.02): D−1 hint replaces the "none" label —
                     // showing "none" and a concrete suggestion together is contradictory.
                     if let Some(axis_pid_data) = pid_metadata.get_axis(axis_index) {
-                        let d1_label = if dmax_enabled {
-                            let d_min_str = axis_pid_data
-                                .d_min
-                                .map(|v| v.saturating_sub(crate::constants::D_STEP_OPTIONAL))
-                                .map_or("N/A".to_string(), |v| v.to_string());
-                            let d_max_str = axis_pid_data
+                        let step = crate::constants::D_STEP_OPTIONAL;
+                        let d1_label = match format_d_target(
+                            axis_pid_data.d.map(|v| v.saturating_sub(step)),
+                            axis_pid_data.d_min.map(|v| v.saturating_sub(step)),
+                            axis_pid_data
                                 .d_max
                                 .or(axis_pid_data.d)
-                                .map(|v| v.saturating_sub(crate::constants::D_STEP_OPTIONAL))
-                                .map_or("N/A".to_string(), |v| v.to_string());
-                            format!(
-                                "  Recommendation (conservative): D-Min≈{}, D-Max≈{} [optional D−1]",
-                                d_min_str, d_max_str
-                            )
-                        } else if let Some(current_d) = axis_pid_data.d {
-                            format!(
-                                "  Recommendation (conservative): D≈{} [optional D−1]",
-                                current_d.saturating_sub(crate::constants::D_STEP_OPTIONAL)
-                            )
-                        } else {
-                            "  Recommendation (none): No obvious tuning adjustments needed"
-                                .to_string()
+                                .map(|v| v.saturating_sub(step)),
+                            dmax_enabled,
+                        ) {
+                            Some(d_text) => {
+                                format!("  Recommendation (conservative): {d_text} [optional D−1]")
+                            }
+                            None => "  Recommendation (none): No obvious tuning adjustments needed"
+                                .to_string(),
                         };
                         series.push(PlotSeries {
                             data: vec![],
@@ -530,24 +518,19 @@ pub fn plot_step_response(
 
                 // Moderate recommendation
                 if let Some(rec_pd) = moderate.0.pd_ratios[axis_index] {
-                    let recommendation_label = if dmax_enabled {
-                        // D-Min/D-Max enabled: show D-Min and D-Max, NOT base D
-                        let d_min_str = moderate.0.d_min_values[axis_index]
-                            .map_or("N/A".to_string(), |v| v.to_string());
-                        let d_max_str = moderate.0.d_max_values[axis_index]
-                            .map_or("N/A".to_string(), |v| v.to_string());
-                        format!(
-                            "  Recommendation (moderate): P:D={:.2} (D-Min≈{}, D-Max≈{})",
-                            rec_pd, d_min_str, d_max_str
-                        )
-                    } else if let Some(rec_d) = moderate.0.d_values[axis_index] {
-                        // D-Min/D-Max disabled: show only base D
-                        format!(
-                            "  Recommendation (moderate): P:D={:.2} (D≈{})",
-                            rec_pd, rec_d
-                        )
-                    } else {
-                        format!("  Recommendation (moderate): P:D={:.2}", rec_pd)
+                    let recommendation_label = match format_d_target(
+                        moderate.0.d_values[axis_index],
+                        moderate.0.d_min_values[axis_index],
+                        moderate.0.d_max_values[axis_index],
+                        dmax_enabled,
+                    ) {
+                        Some(d_text) => {
+                            format!(
+                                "  Recommendation (moderate): P:D={:.2} ({})",
+                                rec_pd, d_text
+                            )
+                        }
+                        None => format!("  Recommendation (moderate): P:D={:.2}", rec_pd),
                     };
                     series.push(PlotSeries {
                         data: vec![],
@@ -564,27 +547,20 @@ pub fn plot_step_response(
                             if let Some(axis_pid_data) = pid_metadata.get_axis(axis_index) {
                                 let (rec_d_agg, rec_d_min_agg, rec_d_max_agg) = axis_pid_data
                                     .calculate_goal_d_with_range(aggressive_pd, dmax_enabled);
-                                let agg_label = if dmax_enabled
-                                    && (rec_d_min_agg.is_some() || rec_d_max_agg.is_some())
-                                {
-                                    let d_min_str =
-                                        rec_d_min_agg.map_or("N/A".to_string(), |v| v.to_string());
-                                    let d_max_str =
-                                        rec_d_max_agg.map_or("N/A".to_string(), |v| v.to_string());
-                                    format!(
-                                        "  Recommendation (aggressive): P:D={:.2} (D-Min≈{}, D-Max≈{})",
-                                        aggressive_pd, d_min_str, d_max_str
-                                    )
-                                } else if let Some(rec_d3) = rec_d_agg {
-                                    format!(
-                                        "  Recommendation (aggressive): P:D={:.2} (D≈{})",
-                                        aggressive_pd, rec_d3
-                                    )
-                                } else {
-                                    format!(
+                                let agg_label = match format_d_target(
+                                    rec_d_agg,
+                                    rec_d_min_agg,
+                                    rec_d_max_agg,
+                                    dmax_enabled,
+                                ) {
+                                    Some(d_text) => format!(
+                                        "  Recommendation (aggressive): P:D={:.2} ({})",
+                                        aggressive_pd, d_text
+                                    ),
+                                    None => format!(
                                         "  Recommendation (aggressive): P:D={:.2}",
                                         aggressive_pd
-                                    )
+                                    ),
                                 };
                                 series.push(PlotSeries {
                                     data: vec![],
@@ -687,17 +663,36 @@ pub fn plot_step_response(
                                 .filter(|&d| d > 0)
                                 .map(|d| analysis.current_p as f64 / d as f64)
                         });
+                        let axis_pid_for_d = pid_metadata.get_axis(axis_index);
                         let d_suffix = |recommended_p: u32| -> String {
-                            if let (Some(current_d), Some(rec_pd)) =
+                            let (Some(current_d), Some(rec_pd)) =
                                 (analysis.current_d, effective_pd)
-                            {
-                                if rec_pd > 0.0 && current_d > 0 {
-                                    let rec_d = ((recommended_p as f64) / rec_pd).round() as u32;
-                                    let d_delta = (rec_d as i64) - (current_d as i64);
-                                    return format!(", D≈{} ({:+})", rec_d, d_delta);
+                            else {
+                                return String::new();
+                            };
+                            if rec_pd <= 0.0 || current_d == 0 {
+                                return String::new();
+                            }
+                            let rec_d = ((recommended_p as f64) / rec_pd).round() as u32;
+                            // With dynamic D, scale both ends by the same factor as base D.
+                            if dmax_enabled {
+                                if let Some(ax) = axis_pid_for_d {
+                                    if let (Some(min), Some(max)) = (ax.d_min, ax.d_max) {
+                                        let scale = rec_d as f64 / current_d as f64;
+                                        let rec_min = (min as f64 * scale).round() as u32;
+                                        let rec_max = (max as f64 * scale).round() as u32;
+                                        return format!(
+                                            ", D-Min≈{} ({:+}), D-Max≈{} ({:+})",
+                                            rec_min,
+                                            rec_min as i64 - min as i64,
+                                            rec_max,
+                                            rec_max as i64 - max as i64
+                                        );
+                                    }
                                 }
                             }
-                            String::new()
+                            let d_delta = (rec_d as i64) - (current_d as i64);
+                            format!(", D≈{} ({:+})", rec_d, d_delta)
                         };
 
                         let rec_label = match &analysis.recommendation {

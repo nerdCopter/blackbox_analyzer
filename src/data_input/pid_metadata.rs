@@ -328,6 +328,24 @@ impl PidMetadata {
     }
 }
 
+/// Format a recommended D target for a legend or console line.
+/// With dynamic D enabled and at least one end known, prints `D-Min≈a, D-Max≈b` (a missing
+/// end prints `N/A`); otherwise prints the base D as `D≈x`. Returns `None` when no D is known.
+pub fn format_d_target(
+    d: Option<u32>,
+    d_min: Option<u32>,
+    d_max: Option<u32>,
+    dmax_enabled: bool,
+) -> Option<String> {
+    if dmax_enabled && (d_min.is_some() || d_max.is_some()) {
+        let min = d_min.map_or("N/A".to_string(), |v| v.to_string());
+        let max = d_max.map_or("N/A".to_string(), |v| v.to_string());
+        Some(format!("D-Min≈{min}, D-Max≈{max}"))
+    } else {
+        d.map(|v| format!("D≈{v}"))
+    }
+}
+
 /// Detect firmware type from header metadata map
 fn detect_firmware_type(header_map: &std::collections::HashMap<String, String>) -> FirmwareType {
     // Check for firmware revision field (primary detection method)
@@ -1570,6 +1588,29 @@ mod tests {
             " - P:67 I:96 D:106/106"
         );
         assert_eq!(pid.yaw.format_for_title(fw, true), " - P:35 I:65 D:0");
+    }
+
+    #[test]
+    fn test_format_d_target() {
+        // Dynamic D on: both ends, a missing end prints N/A.
+        assert_eq!(
+            format_d_target(Some(108), Some(108), Some(108), true).as_deref(),
+            Some("D-Min≈108, D-Max≈108")
+        );
+        assert_eq!(
+            format_d_target(Some(83), Some(83), None, true).as_deref(),
+            Some("D-Min≈83, D-Max≈N/A")
+        );
+        // Dynamic D off, or no ends known on this axis: base D.
+        assert_eq!(
+            format_d_target(Some(83), Some(80), Some(82), false).as_deref(),
+            Some("D≈83")
+        );
+        assert_eq!(
+            format_d_target(Some(0), None, None, true).as_deref(),
+            Some("D≈0")
+        );
+        assert_eq!(format_d_target(None, None, None, true), None);
     }
 
     #[test]
