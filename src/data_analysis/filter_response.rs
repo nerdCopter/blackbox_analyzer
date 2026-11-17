@@ -5,9 +5,10 @@ use std::collections::HashMap;
 use crate::axis_names::AXIS_NAMES;
 use crate::constants::{
     PARITY_DIVISOR, RATIO_TO_PERCENT, RPM_FILTER_BAND_HIGH_PERCENTILE,
-    RPM_FILTER_BAND_LOW_PERCENTILE, RPM_FILTER_CURVE_START_FLOOR_HZ,
-    RPM_FILTER_CURVE_START_FRACTION, RPM_FILTER_ERPM_PER_LSB, RPM_FILTER_MAX_HZ_RATE_FRACTION,
-    RPM_FILTER_MIN_MOTOR_POLES, RPM_FILTER_POLES_PER_PAIR, RPM_FILTER_SECONDS_PER_MINUTE,
+    RPM_FILTER_BAND_LOW_PERCENTILE, RPM_FILTER_CURVE_MIN_ATTENUATION,
+    RPM_FILTER_CURVE_START_FLOOR_HZ, RPM_FILTER_CURVE_START_FRACTION, RPM_FILTER_ERPM_PER_LSB,
+    RPM_FILTER_MAX_HZ_RATE_FRACTION, RPM_FILTER_MIN_MOTOR_POLES, RPM_FILTER_POLES_PER_PAIR,
+    RPM_FILTER_SECONDS_PER_MINUTE,
 };
 use crate::data_input::log_data::LogRowData;
 
@@ -1719,6 +1720,18 @@ pub fn generate_rpm_filter_curves(
             curve_points.push((freq, response));
         }
 
+        // Keep only the span where the notch attenuates by at least the threshold, plus one
+        // neighbor each side so the line joins the flat level. No such span: nothing to draw.
+        let threshold = 1.0 - RPM_FILTER_CURVE_MIN_ATTENUATION;
+        let (Some(first), Some(last)) = (
+            curve_points.iter().position(|p| p.1 <= threshold),
+            curve_points.iter().rposition(|p| p.1 <= threshold),
+        ) else {
+            continue;
+        };
+        let curve_points =
+            curve_points[first.saturating_sub(1)..=(last + 1).min(num_points - 1)].to_vec();
+
         // Create label
         let label = format!("RPM H{} @ {:.0}Hz", harmonic_num, harmonic_freq);
 
@@ -1922,13 +1935,31 @@ mod tests {
         assert!((depth_at(&curves, 1, 125.0) - 0.5).abs() < 0.02);
         // Center 250 Hz is past the fade range: full depth
         assert!(depth_at(&curves, 2, 250.0) > 0.98);
-        // Fundamental exactly at min_hz: weight fades to 0, curve is flat
+        // Fundamental exactly at min_hz: weight fades to 0, nothing attenuates, no curve
         let at_min = generate_rpm_filter_curves(&cfg, 100.0, 500.0, 4000, fs);
-        assert!(depth_at(&at_min, 1, 100.0) < 0.02);
+        assert!(at_min.iter().all(|c| c.0 != 1));
         // Below min_hz: no curve
         assert!(generate_rpm_filter_curves(&cfg, 90.0, 500.0, 4000, fs)
             .iter()
             .all(|c| c.0 != 1));
+    }
+
+    #[test]
+    fn test_generate_rpm_filter_curves_trimmed_to_attenuated_span() {
+        let cfg = test_rpm_config(1, vec![1.0]); // Q 5
+        let curves = generate_rpm_filter_curves(&cfg, 229.0, 503.0, 4000, 8000.0);
+        let points = &curves[0].2;
+        let (first, last) = (points.first().unwrap(), points.last().unwrap());
+        // |H| = 0.95 at x = f / f0 where (1 - x^2) = 0.6086 x (Q 5): x = 0.741, and 1 / 0.741
+        // on the high side (the response is symmetric in log frequency)
+        assert!((first.0 - 229.0 * 0.741).abs() < 6.0, "start {}", first.0);
+        assert!((last.0 - 229.0 / 0.741).abs() < 6.0, "end {}", last.0);
+        // Every interior point attenuates; the two ends sit just above the threshold
+        let threshold = 1.0 - RPM_FILTER_CURVE_MIN_ATTENUATION;
+        assert!(points[1..points.len() - 1].iter().all(|p| p.1 <= threshold));
+        // A harmonic weighted below the threshold attenuates less than 5%: no curve
+        let weak = test_rpm_config(1, vec![0.04]);
+        assert!(generate_rpm_filter_curves(&weak, 229.0, 503.0, 4000, 8000.0).is_empty());
     }
 
     #[test]

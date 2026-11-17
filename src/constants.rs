@@ -522,3 +522,4 @@ pub const RPM_FILTER_DEFAULT_GYRO_RATE_HZ: f64 = 8000.0; // Gyro rate assumed fo
 pub const RPM_FILTER_MAX_HZ_RATE_FRACTION: f64 = 0.48; // Betaflight keeps the RPM notch center below this fraction of the filter rate (rpm_filter.c maxHz)
 pub const RPM_FILTER_CURVE_START_FRACTION: f64 = 0.5; // RPM curves are drawn from this fraction of rpm_filter_min_hz (the notch is faded out below min_hz)
 pub const RPM_FILTER_CURVE_START_FLOOR_HZ: f64 = 1.0; // Lowest curve start, Hz (log-spaced sampling needs a positive start)
+pub const RPM_FILTER_CURVE_MIN_ATTENUATION: f64 = 0.05; // RPM curves are drawn only where the notch attenuates by at least this fraction (0.05 = 5%)
