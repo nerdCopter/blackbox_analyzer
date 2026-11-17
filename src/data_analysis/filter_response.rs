@@ -5,7 +5,8 @@ use std::collections::HashMap;
 use crate::axis_names::AXIS_NAMES;
 use crate::constants::{
     PARITY_DIVISOR, RATIO_TO_PERCENT, RPM_FILTER_BAND_HIGH_PERCENTILE,
-    RPM_FILTER_BAND_LOW_PERCENTILE, RPM_FILTER_ERPM_PER_LSB, RPM_FILTER_MAX_HZ_RATE_FRACTION,
+    RPM_FILTER_BAND_LOW_PERCENTILE, RPM_FILTER_CURVE_START_FLOOR_HZ,
+    RPM_FILTER_CURVE_START_FRACTION, RPM_FILTER_ERPM_PER_LSB, RPM_FILTER_MAX_HZ_RATE_FRACTION,
     RPM_FILTER_MIN_MOTOR_POLES, RPM_FILTER_POLES_PER_PAIR, RPM_FILTER_SECONDS_PER_MINUTE,
 };
 use crate::data_input::log_data::LogRowData;
@@ -1665,7 +1666,8 @@ pub fn generate_rpm_filter_curves(
     }
 
     let mut curves = Vec::new();
-    let min_plot_start = (config.min_hz * 0.5).max(1.0);
+    let min_plot_start =
+        (config.min_hz * RPM_FILTER_CURVE_START_FRACTION).max(RPM_FILTER_CURVE_START_FLOOR_HZ);
 
     // Early return if no valid frequency span
     if max_frequency_hz <= min_plot_start {

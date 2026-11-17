@@ -520,3 +520,5 @@ pub const RPM_FILTER_CURVE_OFFSET_FRACTION: f64 = 0.05; // Motor-plot RPM curve 
 pub const RPM_FILTER_CURVE_POINTS: usize = 1000; // Sample points per RPM filter curve on the motor plot
 pub const RPM_FILTER_DEFAULT_GYRO_RATE_HZ: f64 = 8000.0; // Gyro rate assumed for the RPM notch response when the header gives none (same default as the gyro plot)
 pub const RPM_FILTER_MAX_HZ_RATE_FRACTION: f64 = 0.48; // Betaflight keeps the RPM notch center below this fraction of the filter rate (rpm_filter.c maxHz)
+pub const RPM_FILTER_CURVE_START_FRACTION: f64 = 0.5; // RPM curves are drawn from this fraction of rpm_filter_min_hz (the notch is faded out below min_hz)
+pub const RPM_FILTER_CURVE_START_FLOOR_HZ: f64 = 1.0; // Lowest curve start, Hz (log-spaced sampling needs a positive start)
