@@ -89,13 +89,11 @@ All analysis parameters, thresholds, plot dimensions, and algorithmic constants 
                     * **Conservative** (PD_RATIO_CONSERVATIVE_MULTIPLIER = 0.85): Reduces P:D ratio by 15%, increasing D by ~18%. Safe for most pilots.
                     * **Moderate** (PD_RATIO_MODERATE_MULTIPLIER = 0.75): Reduces P:D ratio by 25%, increasing D by ~33%. For experienced pilots.
                     * **Aggressive** (PD_RATIO_AGGRESSIVE_MULTIPLIER = 0.65): Reduces P:D ratio by 35%, increasing D by ~54%. For tuning significant overshoot zones (>1.20).
-                * **D-Min/D-Max Support (`src/data_input/pid_metadata.rs`):**
-                    * Betaflight stores one end of the range in a header and the other end is the base D in `rollPID`/`pitchPID`/`yawPID`. The parser completes the pair from the headers: a `d_min` header means base D is the maximum (BF 4.0 to 4.5); a `d_max` header means base D is the minimum (BF 2025.12 and later). The boost headers are `d_min_gain`/`d_min_advance` (BF 4.0 to 4.2) and `d_max_gain`/`d_max_advance` (BF 4.3 and later).
-                    * Dynamic D is configured for a log when any axis has `0 < D-Min < D-Max`, the firmware's own activation rule. This is the configured range, not a guarantee of variation in flight (zero boost gain and advance leave D at one end). Boost gain, advance and simplified tuning do not decide it. With simplified tuning and the D-Max slider at 0, D-Min equals D-Max, so the log is treated as having no dynamic D.
-                    * An end stored on the wrong side of base D (the firmware ignores it) is clamped to base D.
-                    * When enabled: plot titles print `D:min/max` and the report PID column prints `D-Min:a D-Max:b` for every axis with `0 < D-Min <= D-Max`, including equal ends; any other axis shows base D, in titles, report and recommendations alike. Recommendations (step response and Optimal P legends, console) scale D-Min and D-Max with base D.
-                    * When disabled: titles, report and recommendations show only base D.
-                    * Feedforward prints as `FF:n` (`DF:n` for EmuFlight, which hides a zero). Betaflight, INAV and unknown firmware print `FF:0` when the header holds a zero.
+                * **D-Min/D-Max Support:**
+                    * Detects dynamic D per log from the `d_min` header (BF 4.0–4.5, base D = max) or the `d_max` header (BF 2025.12+, base D = min); active when `0 < D-Min < D-Max`
+                    * When enabled: plot titles, legends, console and report show D-Min/D-Max and recommend proportional D-Min and D-Max values
+                    * When disabled (no range, or the D-Max slider at 0): shows and recommends only base D
+                    * Feedforward is shown as `FF:n` (`DF:n` for EmuFlight, which hides a zero)
                 * **Safety Features:**
                     * Warnings for severe overshoot (Peak > 1.5) suggesting mechanical issues
                     * Warnings for unreasonable P:D ratios (< 0.3 or > 3.0)
