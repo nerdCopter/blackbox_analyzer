@@ -76,6 +76,9 @@ pub fn plot_gyro_spectrums(
     // Extract dynamic notch range for graphical visualization
     let dynamic_notch_range = filter_response::extract_dynamic_notch_range(header_metadata);
 
+    // The RPM notch runs at the PID loop rate (gyro rate / pid_process_denom)
+    let rpm_filter_rate_hz = filter_response::extract_rpm_filter_rate(header_metadata);
+
     // Extract RPM filter configuration for Betaflight
     let rpm_filter_config = filter_response::extract_rpm_filter_config(header_metadata);
 
@@ -408,7 +411,7 @@ pub fn plot_gyro_spectrums(
                         motor_base_hz.median,
                         max_freq_val,
                         1000, // Number of points for smooth curves
-                        gyro_rate_hz,
+                        rpm_filter_rate_hz,
                     );
 
                     // Use subtle blue color to distinguish from other filters

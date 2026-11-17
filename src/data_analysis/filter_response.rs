@@ -6,8 +6,9 @@ use crate::axis_names::AXIS_NAMES;
 use crate::constants::{
     PARITY_DIVISOR, RATIO_TO_PERCENT, RPM_FILTER_BAND_HIGH_PERCENTILE,
     RPM_FILTER_BAND_LOW_PERCENTILE, RPM_FILTER_CURVE_MIN_ATTENUATION,
-    RPM_FILTER_CURVE_START_FLOOR_HZ, RPM_FILTER_CURVE_START_FRACTION, RPM_FILTER_ERPM_PER_LSB,
-    RPM_FILTER_MAX_HZ_RATE_FRACTION, RPM_FILTER_MIN_MOTOR_POLES, RPM_FILTER_POLES_PER_PAIR,
+    RPM_FILTER_CURVE_START_FLOOR_HZ, RPM_FILTER_CURVE_START_FRACTION,
+    RPM_FILTER_DEFAULT_GYRO_RATE_HZ, RPM_FILTER_ERPM_PER_LSB, RPM_FILTER_MAX_HZ_RATE_FRACTION,
+    RPM_FILTER_MICROSECONDS_PER_SECOND, RPM_FILTER_MIN_MOTOR_POLES, RPM_FILTER_POLES_PER_PAIR,
     RPM_FILTER_SECONDS_PER_MINUTE,
 };
 use crate::data_input::log_data::LogRowData;
@@ -1653,6 +1654,28 @@ pub fn rpm_notch_response(
     (numerator / denominator).sqrt()
 }
 
+/// Rate (Hz) the Betaflight RPM filter runs at: the PID loop rate, which is the gyro rate
+/// divided by `pid_process_denom` (`gyro_init.c`: `targetLooptime = activePidLoopDenom * 1e6 /
+/// sampleRateHz`; `rpmFilterInit(.., gyro.targetLooptime)`). The blackbox `looptime` header is the
+/// gyro sample period in microseconds. Falls back to `RPM_FILTER_DEFAULT_GYRO_RATE_HZ` when
+/// `looptime` is absent or unusable, and to a denominator of 1 when `pid_process_denom` is.
+pub fn extract_rpm_filter_rate(header_metadata: Option<&[(String, String)]>) -> f64 {
+    let get = |key: &str| -> Option<f64> {
+        header_metadata?
+            .iter()
+            .find(|(k, _)| k == key)
+            .and_then(|(_, v)| v.trim().parse::<f64>().ok())
+    };
+    let gyro_rate = get("looptime")
+        .filter(|us| *us > 0.0)
+        .map(|us| RPM_FILTER_MICROSECONDS_PER_SECOND / us)
+        .unwrap_or(RPM_FILTER_DEFAULT_GYRO_RATE_HZ);
+    let denom = get("pid_process_denom")
+        .filter(|d| *d >= 1.0)
+        .unwrap_or(1.0);
+    gyro_rate / denom
+}
+
 /// Generate RPM filter notch curves for all harmonics
 /// Returns vector of (harmonic_num, label, curve_points, center_hz) for each harmonic
 pub fn generate_rpm_filter_curves(
@@ -1684,12 +1707,16 @@ pub fn generate_rpm_filter_curves(
     for harmonic_num in 1..=config.harmonics {
         let raw_freq = motor_base_hz * harmonic_num as f64;
 
-        // Skip if below minimum or above display range
-        if raw_freq < config.min_hz || raw_freq > max_frequency_hz {
+        // Skip if below minimum
+        if raw_freq < config.min_hz {
             continue;
         }
-        // Betaflight clamps the notch center to [min_hz, 0.48 * rate] (rpm_filter.c)
+        // Betaflight clamps the notch center to [min_hz, 0.48 * rate] (rpm_filter.c), so the
+        // display range check uses the clamped center
         let harmonic_freq = raw_freq.min(RPM_FILTER_MAX_HZ_RATE_FRACTION * sample_rate_hz);
+        if harmonic_freq > max_frequency_hz {
+            continue;
+        }
 
         // Get weight for this harmonic (default to 1.0 if not specified)
         let weight = config
@@ -1960,6 +1987,45 @@ mod tests {
         // A harmonic weighted below the threshold attenuates less than 5%: no curve
         let weak = test_rpm_config(1, vec![0.04]);
         assert!(generate_rpm_filter_curves(&weak, 229.0, 503.0, 4000, 8000.0).is_empty());
+    }
+
+    #[test]
+    fn test_extract_rpm_filter_rate() {
+        let h = |pairs: &[(&str, &str)]| -> Vec<(String, String)> {
+            pairs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect()
+        };
+        // looptime 125 us = 8 kHz gyro, pid_process_denom 2: the filter runs at 4 kHz
+        let m = h(&[
+            ("looptime", "125"),
+            ("gyro_sync_denom", "1"),
+            ("pid_process_denom", "2"),
+        ]);
+        assert_eq!(extract_rpm_filter_rate(Some(&m)), 4000.0);
+        let m = h(&[("looptime", "125"), ("pid_process_denom", "1")]);
+        assert_eq!(extract_rpm_filter_rate(Some(&m)), 8000.0);
+        // Missing or invalid values fall back to the default rate and a denominator of 1
+        assert_eq!(
+            extract_rpm_filter_rate(None),
+            RPM_FILTER_DEFAULT_GYRO_RATE_HZ
+        );
+        let m = h(&[("looptime", "0"), ("pid_process_denom", "0")]);
+        assert_eq!(
+            extract_rpm_filter_rate(Some(&m)),
+            RPM_FILTER_DEFAULT_GYRO_RATE_HZ
+        );
+    }
+
+    #[test]
+    fn test_generate_rpm_filter_curves_keeps_clamped_center_in_range() {
+        // H3 raw 2100 Hz is above the 2000 Hz plot limit, but Betaflight clamps the center to
+        // 0.48 * 4000 = 1920 Hz, which is inside the plot
+        let cfg = test_rpm_config(3, vec![1.0, 1.0, 1.0]);
+        let curves = generate_rpm_filter_curves(&cfg, 700.0, 2000.0, 4000, 4000.0);
+        let h3 = curves.iter().find(|c| c.0 == 3).expect("H3 kept");
+        assert_eq!(h3.3, 1920.0);
     }
 
     #[test]

@@ -523,3 +523,4 @@ pub const RPM_FILTER_MAX_HZ_RATE_FRACTION: f64 = 0.48; // Betaflight keeps the R
 pub const RPM_FILTER_CURVE_START_FRACTION: f64 = 0.5; // RPM curves are drawn from this fraction of rpm_filter_min_hz (the notch is faded out below min_hz)
 pub const RPM_FILTER_CURVE_START_FLOOR_HZ: f64 = 1.0; // Lowest curve start, Hz (log-spaced sampling needs a positive start)
 pub const RPM_FILTER_CURVE_MIN_ATTENUATION: f64 = 0.05; // RPM curves are drawn only where the notch attenuates by at least this fraction (0.05 = 5%)
+pub const RPM_FILTER_MICROSECONDS_PER_SECOND: f64 = 1_000_000.0; // blackbox looptime header is in microseconds
