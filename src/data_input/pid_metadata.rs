@@ -741,6 +741,49 @@ mod tests {
     }
 
     #[test]
+    fn test_inav_zero_ff_and_incomplete_field() {
+        // INAV blackbox.c writes rollPID/pitchPID/yawPID as "P,I,D,FF" (4 values).
+        let metadata = vec![
+            ("Firmware revision".to_string(), "INAV 8.0.0".to_string()),
+            ("rollPID".to_string(), "40,30,23,0".to_string()),
+            ("pitchPID".to_string(), "44,32,25,60".to_string()),
+            ("yawPID".to_string(), "45,35,0,0".to_string()),
+        ];
+        let pid_data = parse_pid_metadata(&metadata);
+        assert_eq!(pid_data.roll.ff, Some(0));
+        assert_eq!(pid_data.pitch.ff, Some(60));
+        assert_eq!(pid_data.yaw.ff, Some(0));
+        assert_eq!(
+            pid_data
+                .roll
+                .format_for_title(&pid_data.firmware_type, false),
+            " - P:40 I:30 D:23 FF:0"
+        );
+
+        // A trailing empty token is not a value: 3 parsed values, FF stays unknown.
+        let metadata = vec![
+            ("Firmware revision".to_string(), "INAV 8.0.0".to_string()),
+            ("rollPID".to_string(), "40,30,23,".to_string()),
+        ];
+        let pid_data = parse_pid_metadata(&metadata);
+        assert_eq!(pid_data.roll.ff, None);
+    }
+
+    #[test]
+    fn test_ff_weight_overrides_pid_string_including_zero() {
+        let metadata = vec![
+            (
+                "Firmware revision".to_string(),
+                "Betaflight 4.6.0".to_string(),
+            ),
+            ("rollPID".to_string(), "57,66,58,58,120".to_string()),
+            ("ff_weight".to_string(), "0,0,0".to_string()),
+        ];
+        let pid_data = parse_pid_metadata(&metadata);
+        assert_eq!(pid_data.roll.ff, Some(0));
+    }
+
+    #[test]
     fn test_inav_parsing() {
         let metadata = vec![
             ("rollPID".to_string(), "45,80,40,120".to_string()),

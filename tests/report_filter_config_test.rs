@@ -19,6 +19,7 @@ fn base_report(filter_config: Option<AllFilterConfigs>) -> FlightReport {
         trim_window: None,
         header_metadata: vec![],
         pd_ratios: [None, None, None],
+        pid_labels: Default::default(),
         step_reports: vec![],
         optimal_p: [None, None, None],
         gyro_analysis: None,
@@ -179,4 +180,22 @@ fn report_lists_rpm_filter_without_gyro_lowpass_fields() {
     assert!(!contents.contains("| Axis | LPF1 | LPF2 |"));
     assert!(contents.contains("- **RPM Filter:** 3 harmonics, Q=5, min 100 Hz"));
     assert!(contents.contains("- **RPM Filter motor frequency:** unavailable"));
+}
+
+#[test]
+fn pid_tuning_table_shows_zero_ff_label() {
+    let mut report = base_report(None);
+    report.pid_labels = [
+        "P:57 I:66 D:58 FF:0".to_string(),
+        "P:59 I:69 D:72 FF:0".to_string(),
+        String::new(),
+    ];
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let out_path = dir.path().join("pid_report.md");
+    generate_markdown_report(&report, &out_path).expect("generate report");
+    let contents = fs::read_to_string(&out_path).expect("read report");
+
+    assert!(contents.contains("| Axis | PID | P:D Ratio |"));
+    assert!(contents.contains("| Roll | P:57 I:66 D:58 FF:0 | N/A |"));
+    assert!(contents.contains("| Yaw (informational) | N/A | N/A |"));
 }

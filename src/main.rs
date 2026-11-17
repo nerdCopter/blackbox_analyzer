@@ -1202,6 +1202,16 @@ fn process_file(
         pid_metadata.yaw.calculate_pd_ratio(),
     ];
 
+    let pid_labels_for_report: [String; AXIS_COUNT] = {
+        let fw = pid_metadata.get_firmware_type();
+        let dmax = pid_metadata.is_dmax_enabled();
+        [&pid_metadata.roll, &pid_metadata.pitch, &pid_metadata.yaw].map(|a| {
+            a.format_for_title(fw, dmax)
+                .trim_start_matches(" - ")
+                .to_string()
+        })
+    };
+
     let mut has_nonzero_f_term_data = [false; 3];
     for axis in 0..crate::axis_names::AXIS_NAMES.len() {
         if f_term_header_found[axis]
@@ -2375,6 +2385,7 @@ INFO: Skipping Step Response input data filtering for {input_file_str}: {reason}
         trim_window,
         header_metadata,
         pd_ratios: pd_ratios_for_report,
+        pid_labels: pid_labels_for_report,
         step_reports,
         optimal_p: optimal_p_for_report,
         gyro_analysis,

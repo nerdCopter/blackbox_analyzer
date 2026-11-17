@@ -60,6 +60,8 @@ pub struct FlightReport {
     pub trim_window: Option<(f64, f64, usize)>,
     pub header_metadata: Vec<(String, String)>,
     pub pd_ratios: [Option<f64>; AXIS_COUNT],
+    /// Per-axis gain text (e.g. "P:57 I:66 D:58 FF:0"); empty when the header has no PID data.
+    pub pid_labels: [String; AXIS_COUNT],
     pub step_reports: Vec<StepAxisReport>,
     pub optimal_p: [Option<OptimalPAnalysis>; AXIS_COUNT],
     pub gyro_analysis: Option<GyroAnalysisResult>,
@@ -208,13 +210,18 @@ pub fn generate_markdown_report(
     // --- PID Tuning ---
     writeln!(md, "## PID Tuning")?;
     writeln!(md)?;
-    writeln!(md, "| Axis | P:D Ratio |")?;
-    writeln!(md, "|------|-----------|")?;
+    writeln!(md, "| Axis | PID | P:D Ratio |")?;
+    writeln!(md, "|------|-----|-----------|")?;
     let axis_labels = ["Roll", "Pitch", "Yaw (informational)"];
     for (i, label) in axis_labels.iter().enumerate() {
+        let pid = if report.pid_labels[i].is_empty() {
+            "N/A"
+        } else {
+            report.pid_labels[i].as_str()
+        };
         match report.pd_ratios[i] {
-            Some(r) => writeln!(md, "| {} | {:.2} |", label, r)?,
-            None => writeln!(md, "| {} | N/A |", label)?,
+            Some(r) => writeln!(md, "| {} | {} | {:.2} |", label, pid, r)?,
+            None => writeln!(md, "| {} | {} | N/A |", label, pid)?,
         }
     }
     writeln!(md)?;
