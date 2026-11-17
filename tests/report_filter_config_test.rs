@@ -20,6 +20,7 @@ fn base_report(filter_config: Option<AllFilterConfigs>) -> FlightReport {
         header_metadata: vec![],
         pd_ratios: [None, None, None],
         pid_labels: Default::default(),
+        d_ranges: Default::default(),
         step_reports: vec![],
         optimal_p: [None, None, None],
         gyro_analysis: None,
@@ -238,4 +239,46 @@ fn near_optimal_hint_replaces_the_none_line_in_the_report() {
     generate_markdown_report(&report, &without).expect("generate report");
     let contents = fs::read_to_string(&without).expect("read report");
     assert!(contents.contains("- **Recommendation:** No obvious tuning adjustments needed"));
+}
+
+#[test]
+fn optimal_p_section_shows_the_d_range_like_the_plot() {
+    use blackbox_analyzer::data_analysis::optimal_p_estimation::OptimalPAnalysis;
+
+    // P 40, D 20, P:D target 2.0; a Td far above the target gives an Increase P recommendation.
+    let samples: Vec<f64> = (0..40).map(|i| 60.0 + (i % 5) as f64).collect();
+    let analysis =
+        OptimalPAnalysis::analyze(&samples, 40, Some(20), None, Some(2.0), Some((25.0, 3.0)))
+            .expect("analysis from synthetic Td samples");
+    let dir = tempfile::tempdir().expect("create temp dir");
+
+    let mut report = base_report(None);
+    report.optimal_p[0] = Some(analysis.clone());
+    report.d_ranges[0] = Some((20, 30));
+    let ranged = dir.path().join("ranged_report.md");
+    generate_markdown_report(&report, &ranged).expect("generate report");
+    let contents = fs::read_to_string(&ranged).expect("read report");
+    assert!(
+        contents.contains("- **Current D:** D-Min 20, D-Max 30"),
+        "{contents}"
+    );
+    let rec = contents
+        .lines()
+        .find(|l| l.starts_with("- **Recommendation:** Increase P to"))
+        .expect("an Increase P recommendation line");
+    assert!(
+        rec.contains(", D-Min≈") && rec.contains(", D-Max≈"),
+        "{rec}"
+    );
+
+    report.d_ranges[0] = None;
+    let single = dir.path().join("single_report.md");
+    generate_markdown_report(&report, &single).expect("generate report");
+    let contents = fs::read_to_string(&single).expect("read report");
+    assert!(contents.contains("- **Current D:** 20"));
+    let rec = contents
+        .lines()
+        .find(|l| l.starts_with("- **Recommendation:** Increase P to"))
+        .expect("an Increase P recommendation line");
+    assert!(rec.contains(", D≈") && !rec.contains("D-Min"), "{rec}");
 }

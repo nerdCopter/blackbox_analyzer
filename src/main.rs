@@ -1202,6 +1202,12 @@ fn process_file(
         pid_metadata.yaw.calculate_pd_ratio(),
     ];
 
+    let d_ranges_for_report: [Option<(u32, u32)>; AXIS_COUNT] = {
+        let dmax = pid_metadata.is_dmax_enabled();
+        [&pid_metadata.roll, &pid_metadata.pitch, &pid_metadata.yaw]
+            .map(|axis| axis.d_range_for_display(dmax))
+    };
+
     let pid_labels_for_report: [String; AXIS_COUNT] = {
         let fw = pid_metadata.get_firmware_type();
         let dmax = pid_metadata.is_dmax_enabled();
@@ -2340,6 +2346,7 @@ INFO: Skipping Step Response input data filtering for {input_file_str}: {reason}
         header_metadata,
         pd_ratios: pd_ratios_for_report,
         pid_labels: pid_labels_for_report,
+        d_ranges: d_ranges_for_report,
         step_reports,
         optimal_p: optimal_p_for_report,
         gyro_analysis,

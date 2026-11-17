@@ -64,6 +64,8 @@ pub struct FlightReport {
     pub pd_ratios: [Option<f64>; AXIS_COUNT],
     /// Per-axis gain text (e.g. "P:57 I:66 D:58 FF:0"); empty when the header has no PID data.
     pub pid_labels: [String; AXIS_COUNT],
+    /// Per-axis D-Min and D-Max (`AxisPid::d_range_for_display`); `None` shows base D.
+    pub d_ranges: [Option<(u32, u32)>; AXIS_COUNT],
     pub step_reports: Vec<StepAxisReport>,
     pub optimal_p: [Option<OptimalPAnalysis>; AXIS_COUNT],
     pub gyro_analysis: Option<GyroAnalysisResult>,
@@ -407,9 +409,14 @@ pub fn generate_markdown_report(
                 writeln!(md, "### {}", AXIS_NAMES[axis_index])?;
                 writeln!(md)?;
                 writeln!(md, "- **Current P:** {}", analysis.current_p)?;
-                if let Some(d) = analysis.current_d {
-                    writeln!(md, "- **Current D:** {}", d)?;
+                match (report.d_ranges[axis_index], analysis.current_d) {
+                    (Some((min, max)), _) => {
+                        writeln!(md, "- **Current D:** D-Min {}, D-Max {}", min, max)?
+                    }
+                    (None, Some(d)) => writeln!(md, "- **Current D:** {}", d)?,
+                    (None, None) => {}
                 }
+                let d_range = report.d_ranges[axis_index];
                 writeln!(
                     md,
                     "- **Td measured:** {:.1} ms ({} samples)",
@@ -434,11 +441,21 @@ pub fn generate_markdown_report(
                     PRecommendation::Increase {
                         conservative_p,
                         reasoning,
-                    } => format!("Increase P to {} — {}", conservative_p, reasoning),
+                    } => format!(
+                        "Increase P to {}{} — {}",
+                        conservative_p,
+                        analysis.d_target_suffix(*conservative_p, d_range),
+                        reasoning
+                    ),
                     PRecommendation::Decrease {
                         recommended_p,
                         reasoning,
-                    } => format!("Decrease P to {} — {}", recommended_p, reasoning),
+                    } => format!(
+                        "Decrease P to {}{} — {}",
+                        recommended_p,
+                        analysis.d_target_suffix(*recommended_p, d_range),
+                        reasoning
+                    ),
                     PRecommendation::Investigate { issue } => format!("Investigate — {}", issue),
                 };
                 writeln!(md, "- **Recommendation:** {}", rec_text)?;
