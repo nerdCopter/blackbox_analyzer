@@ -1622,35 +1622,34 @@ pub fn rpm_motor_frequency_lines(
     ]
 }
 
-/// Calculate RPM notch filter frequency response (S-curve)
-/// Transfer function: H(f) = 1 - depth * (1 / (1 + ((f - f0) / (f0 / Q))^2))
-/// Returns amplitude multiplication factor (0.0 = full attenuation, 1.0 = no filtering)
+/// Magnitude response of Betaflight's RPM notch (`rpmNotchApply` in `common/filter.c`).
+/// The filter is a state-variable band-pass subtracted from the input:
+/// `out = in - (weight / Q) * BP(in)`, so H(s) = 1 - weight * (s / Q) / (s^2 + s / Q + 1)
+/// with s = j * x. The digital form warps frequency as x = tan(pi f / fs) / tan(pi f0 / fs).
+/// Returns the amplitude factor (1 - weight at the center, 1.0 far away). The -3 dB width of a
+/// full-depth notch is about f0 / Q.
 pub fn rpm_notch_response(
     frequency_hz: f64,
     notch_center_hz: f64,
     q_factor: f64,
-    depth: f64, // 0.0 to 1.0 (from weight)
+    weight: f64,         // 0.0 to 1.0 (harmonic weight, after any fade)
+    sample_rate_hz: f64, // Rate the filter runs at (gyro rate)
 ) -> f64 {
-    if q_factor <= 0.0 || notch_center_hz <= 0.0 {
+    if q_factor <= 0.0 || notch_center_hz <= 0.0 || sample_rate_hz <= 0.0 {
         return 1.0; // No filtering
     }
-
-    // Clamp depth to valid range to avoid negative responses
-    let depth = depth.clamp(0.0, 1.0);
-
-    // Bandwidth = f0 / Q
-    let bandwidth = notch_center_hz / q_factor;
-
-    // Frequency difference from notch center
-    let delta_f = frequency_hz - notch_center_hz;
-
-    // Notch response (Lorentzian/Cauchy distribution)
-    // At center: returns 1 - depth
-    // Far from center: returns 1.0
-    let response = 1.0 / (1.0 + (delta_f / bandwidth).powi(2));
-
-    // Apply depth scaling
-    1.0 - (depth * response)
+    let nyquist = sample_rate_hz / 2.0;
+    if frequency_hz <= 0.0 || frequency_hz >= nyquist || notch_center_hz >= nyquist {
+        return 1.0;
+    }
+    let weight = weight.clamp(0.0, 1.0);
+    let x = (std::f64::consts::PI * frequency_hz / sample_rate_hz).tan()
+        / (std::f64::consts::PI * notch_center_hz / sample_rate_hz).tan();
+    let k = 1.0 / q_factor;
+    let real = 1.0 - x * x;
+    let numerator = real.powi(2) + (x * k * (1.0 - weight)).powi(2);
+    let denominator = real.powi(2) + (x * k).powi(2);
+    (numerator / denominator).sqrt()
 }
 
 /// Generate RPM filter notch curves for all harmonics
@@ -1660,6 +1659,7 @@ pub fn generate_rpm_filter_curves(
     motor_base_hz: f64,
     max_frequency_hz: f64,
     num_points: usize,
+    sample_rate_hz: f64,
 ) -> Vec<RpmFilterCurveData> {
     if num_points < 2 {
         return Vec::new();
@@ -1704,7 +1704,8 @@ pub fn generate_rpm_filter_curves(
 
         for i in 0..num_points {
             let freq = (log_start + i as f64 * log_step).exp();
-            let response = rpm_notch_response(freq, harmonic_freq, config.q_factor, weight);
+            let response =
+                rpm_notch_response(freq, harmonic_freq, config.q_factor, weight, sample_rate_hz);
             curve_points.push((freq, response));
         }
 
@@ -1825,6 +1826,74 @@ mod tests {
         let none = rpm_motor_frequency_lines(&cfg, None);
         assert_eq!(none.len(), 1);
         assert!(none[0].1.contains("unavailable"));
+    }
+
+    /// Betaflight `rpmNotchUpdate` / `rpmNotchApply` difference equations, run on a sine.
+    fn simulate_bf_rpm_notch_gain(f0: f64, f: f64, q: f64, weight: f64, fs: f64) -> f64 {
+        let dt = 1.0 / fs;
+        let ff = (std::f64::consts::PI * f0 * dt).tan();
+        let qq = 1.0 / q;
+        let a1 = 1.0 / (1.0 + ff * (ff + qq));
+        let a2 = ff * a1;
+        let wq = qq * weight;
+        let (mut ic1, mut ic2) = (0.0f64, 0.0f64);
+        let n = (fs * 3.0) as usize;
+        let mut peak = 0.0f64;
+        for i in 0..n {
+            let input = (2.0 * std::f64::consts::PI * f * i as f64 * dt).sin();
+            let v3 = input - ic2;
+            let v1 = a1 * ic1 + a2 * v3;
+            let v2 = ic2 + ff * v1;
+            ic1 = 2.0 * v1 - ic1;
+            ic2 = 2.0 * v2 - ic2;
+            let out = input - wq * v1;
+            if i > n / 2 {
+                peak = peak.max(out.abs());
+            }
+        }
+        peak
+    }
+
+    #[test]
+    fn test_rpm_notch_response_matches_betaflight_filter() {
+        let fs = 8000.0;
+        for &(f0, q, w) in &[(229.0, 5.0, 1.0), (458.0, 5.0, 0.6), (150.0, 3.0, 1.0)] {
+            for &f in &[
+                0.5 * f0,
+                0.9 * f0,
+                0.97 * f0,
+                f0,
+                1.03 * f0,
+                1.1 * f0,
+                1.5 * f0,
+            ] {
+                let model = rpm_notch_response(f, f0, q, w, fs);
+                let simulated = simulate_bf_rpm_notch_gain(f0, f, q, w, fs);
+                assert!(
+                    (model - simulated).abs() < 0.02,
+                    "f0 {f0} f {f} q {q} w {w}: model {model} simulated {simulated}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_rpm_notch_response_shape() {
+        let fs = 8000.0;
+        // Center depth is 1 - weight; weight 0 is flat
+        assert!((rpm_notch_response(229.0, 229.0, 5.0, 1.0, fs)).abs() < 1e-9);
+        assert!((rpm_notch_response(229.0, 229.0, 5.0, 0.4, fs) - 0.6).abs() < 1e-9);
+        assert!((rpm_notch_response(229.0, 229.0, 5.0, 0.0, fs) - 1.0).abs() < 1e-9);
+        // Full-depth -3 dB half-width is about f0 / (2 Q): 22.9 Hz for 229 Hz at Q 5
+        let edge = rpm_notch_response(229.0 + 229.0 / 10.0, 229.0, 5.0, 1.0, fs);
+        assert!(
+            (edge - std::f64::consts::FRAC_1_SQRT_2).abs() < 0.03,
+            "edge {edge}"
+        );
+        // Invalid input is flat
+        assert_eq!(rpm_notch_response(100.0, 229.0, 0.0, 1.0, fs), 1.0);
+        assert_eq!(rpm_notch_response(100.0, 229.0, 5.0, 1.0, 0.0), 1.0);
+        assert_eq!(rpm_notch_response(5000.0, 229.0, 5.0, 1.0, fs), 1.0);
     }
 
     #[test]

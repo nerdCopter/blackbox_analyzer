@@ -518,3 +518,4 @@ pub const RPM_FILTER_COLOR: (u8, u8, u8) = (70, 130, 180); // Steel blue: RPM fi
 pub const RPM_FILTER_CURVE_AMPLITUDE_FRACTION: f64 = 0.3; // Motor-plot RPM curve height, fraction of the y-axis max (same look as the gyro plot's filter curves)
 pub const RPM_FILTER_CURVE_OFFSET_FRACTION: f64 = 0.05; // Motor-plot RPM curve baseline, fraction of the y-axis max
 pub const RPM_FILTER_CURVE_POINTS: usize = 1000; // Sample points per RPM filter curve on the motor plot
+pub const RPM_FILTER_DEFAULT_GYRO_RATE_HZ: f64 = 8000.0; // Gyro rate assumed for the RPM notch response when the header gives none (same default as the gyro plot)

@@ -408,6 +408,7 @@ pub fn plot_gyro_spectrums(
                         motor_base_hz.median,
                         max_freq_val,
                         1000, // Number of points for smooth curves
+                        gyro_rate_hz,
                     );
 
                     // Use subtle blue color to distinguish from other filters

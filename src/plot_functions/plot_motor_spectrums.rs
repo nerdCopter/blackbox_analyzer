@@ -10,7 +10,7 @@ use crate::constants::{
     MOTOR_OSCILLATION_WINDOW_S, MOTOR_SPECTRUM_AXIS_ORIGIN,
     MOTOR_SPECTRUM_Y_LABEL_PRECISION_THRESHOLD, NYQUIST_DIVISOR, RPM_FILTER_COLOR,
     RPM_FILTER_CURVE_AMPLITUDE_FRACTION, RPM_FILTER_CURVE_OFFSET_FRACTION, RPM_FILTER_CURVE_POINTS,
-    TUKEY_ALPHA,
+    RPM_FILTER_DEFAULT_GYRO_RATE_HZ, TUKEY_ALPHA,
 };
 use crate::data_analysis::calc_step_response; // For tukeywin
 use crate::data_analysis::fft_utils; // For fft_forward
@@ -233,6 +233,9 @@ pub fn plot_motor_spectrums(
     // RPM filter overlay: each motor's own median frequency from its eRPM channel and the header
     // motor_poles. No eRPM or pole count for a motor: that motor's overlay is not drawn.
     let rpm_filter_config = filter_response::extract_rpm_filter_config(header_metadata);
+    // The RPM notch runs at the gyro rate; its response is warped by that rate.
+    let gyro_rate_hz = filter_response::extract_gyro_rate(header_metadata)
+        .unwrap_or(RPM_FILTER_DEFAULT_GYRO_RATE_HZ);
     let rpm_freqs = rpm_filter_config
         .as_ref()
         .and_then(|c| filter_response::rpm_motor_frequencies(log_data, c));
@@ -456,6 +459,7 @@ pub fn plot_motor_spectrums(
                         base.median,
                         x_max,
                         RPM_FILTER_CURVE_POINTS,
+                        gyro_rate_hz,
                     ) {
                         chart.draw_series(LineSeries::new(
                             curve
