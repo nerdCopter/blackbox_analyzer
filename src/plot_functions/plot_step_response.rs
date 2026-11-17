@@ -486,11 +486,8 @@ pub fn plot_step_response(
                         let d1_label = match format_d_target(
                             axis_pid_data.d.map(|v| v.saturating_sub(step)),
                             axis_pid_data.d_min.map(|v| v.saturating_sub(step)),
-                            axis_pid_data
-                                .d_max
-                                .or(axis_pid_data.d)
-                                .map(|v| v.saturating_sub(step)),
-                            dmax_enabled,
+                            axis_pid_data.d_max.map(|v| v.saturating_sub(step)),
+                            axis_pid_data.d_range_for_display(dmax_enabled).is_some(),
                         ) {
                             Some(d_text) => {
                                 format!("  Recommendation (conservative): {d_text} [optional D−1]")
@@ -657,43 +654,11 @@ pub fn plot_step_response(
                         });
 
                         // Recommendation — D-suffix helper
-                        let effective_pd = analysis.recommended_pd_conservative.or_else(|| {
-                            analysis
-                                .current_d
-                                .filter(|&d| d > 0)
-                                .map(|d| analysis.current_p as f64 / d as f64)
-                        });
-                        let axis_pid_for_d = pid_metadata.get_axis(axis_index);
-                        let d_suffix = |recommended_p: u32| -> String {
-                            let (Some(current_d), Some(rec_pd)) =
-                                (analysis.current_d, effective_pd)
-                            else {
-                                return String::new();
-                            };
-                            if rec_pd <= 0.0 || current_d == 0 {
-                                return String::new();
-                            }
-                            let rec_d = ((recommended_p as f64) / rec_pd).round() as u32;
-                            // With dynamic D, scale both ends by the same factor as base D.
-                            if dmax_enabled {
-                                if let Some(ax) = axis_pid_for_d {
-                                    if let (Some(min), Some(max)) = (ax.d_min, ax.d_max) {
-                                        let scale = rec_d as f64 / current_d as f64;
-                                        let rec_min = (min as f64 * scale).round() as u32;
-                                        let rec_max = (max as f64 * scale).round() as u32;
-                                        return format!(
-                                            ", D-Min≈{} ({:+}), D-Max≈{} ({:+})",
-                                            rec_min,
-                                            rec_min as i64 - min as i64,
-                                            rec_max,
-                                            rec_max as i64 - max as i64
-                                        );
-                                    }
-                                }
-                            }
-                            let d_delta = (rec_d as i64) - (current_d as i64);
-                            format!(", D≈{} ({:+})", rec_d, d_delta)
-                        };
+                        let d_range = pid_metadata
+                            .get_axis(axis_index)
+                            .and_then(|ax| ax.d_range_for_display(dmax_enabled));
+                        let d_suffix =
+                            |recommended_p: u32| analysis.d_target_suffix(recommended_p, d_range);
 
                         let rec_label = match &analysis.recommendation {
                             PRecommendation::Optimal { .. } => format!(

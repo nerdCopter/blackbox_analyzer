@@ -502,8 +502,42 @@ impl OptimalPAnalysis {
         }
     }
 
+    /// Recommended-D text appended to a P recommendation, shared by the console and the plot
+    /// legend. Scales the D that matches the P:D ratio: base D as `, D≈x (+n)`, or, when
+    /// `d_range` holds the axis D-Min and D-Max (dynamic D enabled), both ends by the same
+    /// factor as `, D-Min≈a (+n), D-Max≈b (+n)`. Empty when D or the ratio is unknown.
+    pub fn d_target_suffix(&self, recommended_p: u32, d_range: Option<(u32, u32)>) -> String {
+        let effective_pd = self.recommended_pd_conservative.or_else(|| {
+            self.current_d
+                .filter(|&d| d > 0)
+                .map(|d| self.current_p as f64 / d as f64)
+        });
+        let (Some(current_d), Some(rec_pd)) = (self.current_d, effective_pd) else {
+            return String::new();
+        };
+        if rec_pd <= 0.0 || current_d == 0 {
+            return String::new();
+        }
+        let rec_d = (recommended_p as f64 / rec_pd).round() as u32;
+        // AxisPid::calculate_goal_d_with_range scales from the axis' current P; here the
+        // target D follows the recommended P, so the ends are scaled directly.
+        if let Some((min, max)) = d_range {
+            let scale = rec_d as f64 / current_d as f64;
+            let rec_min = (min as f64 * scale).round() as u32;
+            let rec_max = (max as f64 * scale).round() as u32;
+            return format!(
+                ", D-Min≈{} ({:+}), D-Max≈{} ({:+})",
+                rec_min,
+                rec_min as i64 - min as i64,
+                rec_max,
+                rec_max as i64 - max as i64
+            );
+        }
+        format!(", D≈{} ({:+})", rec_d, rec_d as i64 - current_d as i64)
+    }
+
     /// Format analysis as human-readable console output
-    pub fn format_console_output(&self, axis_name: &str) -> String {
+    pub fn format_console_output(&self, axis_name: &str, d_range: Option<(u32, u32)>) -> String {
         let mut output = String::new();
 
         // Header: axis name and Td measurement
@@ -543,23 +577,6 @@ impl OptimalPAnalysis {
         // Current P
         output.push_str(&format!("  Current P={}\n", self.current_p));
 
-        // Recommendation — shared D-suffix helper
-        let effective_pd = self.recommended_pd_conservative.or_else(|| {
-            self.current_d
-                .filter(|&d| d > 0)
-                .map(|d| self.current_p as f64 / d as f64)
-        });
-        let d_suffix = |recommended_p: u32| -> String {
-            if let (Some(current_d), Some(rec_pd)) = (self.current_d, effective_pd) {
-                if rec_pd > 0.0 && current_d > 0 {
-                    let rec_d = (recommended_p as f64 / rec_pd).round() as u32;
-                    let d_delta = rec_d as i32 - current_d as i32;
-                    return format!(", D≈{} ({:+})", rec_d, d_delta);
-                }
-            }
-            String::new()
-        };
-
         match &self.recommendation {
             PRecommendation::Optimal { .. } => {
                 output.push_str(&format!(
@@ -573,7 +590,7 @@ impl OptimalPAnalysis {
                     "  Recommendation (Conservative): P≈{} ({:+}){}\n",
                     conservative_p,
                     p_delta,
-                    d_suffix(*conservative_p),
+                    self.d_target_suffix(*conservative_p, d_range),
                 ));
             }
             PRecommendation::Decrease { recommended_p, .. } => {
@@ -582,7 +599,7 @@ impl OptimalPAnalysis {
                     "  Recommendation (Decrease): P≈{} ({:+}){}\n",
                     recommended_p,
                     p_delta,
-                    d_suffix(*recommended_p),
+                    self.d_target_suffix(*recommended_p, d_range),
                 ));
             }
             PRecommendation::Investigate { issue } => {
@@ -613,5 +630,44 @@ impl OptimalPAnalysis {
         }
 
         output
+    }
+}
+
+#[cfg(test)]
+mod d_target_tests {
+    use super::*;
+
+    fn analysis(current_d: Option<u32>, rec_pd: Option<f64>) -> OptimalPAnalysis {
+        let samples: Vec<f64> = (0..40).map(|i| 28.0 + (i % 5) as f64).collect();
+        OptimalPAnalysis::analyze(&samples, 40, current_d, None, rec_pd, Some((25.0, 3.0)))
+            .expect("analysis from synthetic Td samples")
+    }
+
+    #[test]
+    fn d_target_suffix_scales_base_d() {
+        // P 40, D 20, target P:D 2.0 -> recommended P 44 needs D = 44 / 2.0 = 22.
+        let a = analysis(Some(20), Some(2.0));
+        assert_eq!(a.d_target_suffix(44, None), ", D≈22 (+2)");
+    }
+
+    #[test]
+    fn d_target_suffix_scales_both_ends_with_dynamic_d() {
+        // Same D scale factor 22 / 20 = 1.1 applied to D-Min 20 and D-Max 30.
+        let a = analysis(Some(20), Some(2.0));
+        assert_eq!(
+            a.d_target_suffix(44, Some((20, 30))),
+            ", D-Min≈22 (+2), D-Max≈33 (+3)"
+        );
+        // Equal ends stay equal.
+        assert_eq!(
+            a.d_target_suffix(44, Some((20, 20))),
+            ", D-Min≈22 (+2), D-Max≈22 (+2)"
+        );
+    }
+
+    #[test]
+    fn d_target_suffix_empty_without_d_or_ratio() {
+        assert_eq!(analysis(None, None).d_target_suffix(44, Some((20, 30))), "");
+        assert_eq!(analysis(Some(0), Some(2.0)).d_target_suffix(44, None), "");
     }
 }

@@ -1656,11 +1656,8 @@ INFO: Skipping Step Response input data filtering for {input_file_str}: {reason}
                                         if let Some(d_text) = format_d_target(
                                             axis_pid.d.map(|v| v.saturating_sub(step)),
                                             axis_pid.d_min.map(|v| v.saturating_sub(step)),
-                                            axis_pid
-                                                .d_max
-                                                .or(axis_pid.d)
-                                                .map(|v| v.saturating_sub(step)),
-                                            dmax_enabled,
+                                            axis_pid.d_max.map(|v| v.saturating_sub(step)),
+                                            axis_pid.d_range_for_display(dmax_enabled).is_some(),
                                         ) {
                                             println!("  Recommendation (conservative): {d_text} [optional D−1]");
                                         }
@@ -1875,7 +1872,12 @@ INFO: Skipping Step Response input data filtering for {input_file_str}: {reason}
                                         aircraft_profile.axes[axis_index].event_count;
                                     analysis.source_files = aircraft_profile.file_count;
                                     // Print console output
-                                    println!("{}", analysis.format_console_output(axis_name));
+                                    let d_range = pid_metadata
+                                        .get_axis(axis_index)
+                                        .and_then(|ax| {
+                                            ax.d_range_for_display(pid_metadata.is_dmax_enabled())
+                                        });
+                                    println!("{}", analysis.format_console_output(axis_name, d_range));
                                     // Store for PNG overlay (move instead of clone)
                                     optimal_p_analyses[axis_index] = Some(analysis);
                                 }
