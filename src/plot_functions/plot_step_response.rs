@@ -11,8 +11,7 @@ use crate::constants::{
     COLOR_STEP_RESPONSE_COMBINED, COLOR_STEP_RESPONSE_HIGH_SP, COLOR_STEP_RESPONSE_LOW_SP,
     FINAL_NORMALIZED_STEADY_STATE_TOLERANCE, LINE_WIDTH_PLOT,
     LOW_AUTHORITY_SETPOINT_THRESHOLD_DEG_S, POST_AVERAGING_SMOOTHING_WINDOW, RESPONSE_LENGTH_S,
-    STEADY_STATE_END_S, STEADY_STATE_START_S, TD_COEFFICIENT_OF_VARIATION_MAX,
-    TD_CONSISTENCY_MIN_THRESHOLD,
+    STEADY_STATE_END_S, STEADY_STATE_START_S,
 };
 use crate::data_analysis::calc_step_response; // For average_responses and moving_average_smooth_f64
 use crate::data_analysis::calc_step_response::{compute_setpoint_authority, SetpointAuthority};
@@ -689,31 +688,15 @@ pub fn plot_step_response(
 
                         // Reliability — always shown, after recommendation; orange when poor
                         {
-                            let cv_str = analysis.td_stats.coefficient_of_variation.map_or_else(
-                                || "CV=N/A".to_string(),
-                                |cv| {
-                                    format!(
-                                        "CV={:.1}% (⊢≤{:.0}%)",
-                                        cv * 100.0,
-                                        TD_COEFFICIENT_OF_VARIATION_MAX * 100.0,
-                                    )
-                                },
-                            );
-                            let cons_str = format!(
-                                "Consistency={:.0}% (⊢≥{:.0}%)",
-                                analysis.td_stats.consistency * 100.0,
-                                TD_CONSISTENCY_MIN_THRESHOLD * 100.0,
+                            let rel_text = format!(
+                                "  {}: {}",
+                                analysis.td_stats.reliability_label(),
+                                analysis.td_stats.reliability_details()
                             );
                             let (rel_label, rel_color) = if analysis.td_stats.is_consistent() {
-                                (
-                                    format!("  Reliable: {cons_str}, {cv_str}"),
-                                    COLOR_OPTIMAL_P_TEXT,
-                                )
+                                (rel_text, COLOR_OPTIMAL_P_TEXT)
                             } else {
-                                (
-                                    format!("  Unreliable: {cons_str}, {cv_str}"),
-                                    COLOR_OPTIMAL_P_WARNING,
-                                )
+                                (rel_text, COLOR_OPTIMAL_P_WARNING)
                             };
                             series.push(PlotSeries {
                                 data: vec![],

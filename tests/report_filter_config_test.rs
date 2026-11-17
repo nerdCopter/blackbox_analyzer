@@ -270,6 +270,16 @@ fn optimal_p_section_shows_the_d_range_like_the_plot() {
         rec.contains(", D-Min≈") && rec.contains(", D-Max≈"),
         "{rec}"
     );
+    // The recommended P carries its signed delta, as the plot legend does.
+    assert!(rec.contains(" (+"), "{rec}");
+    let reliability = contents
+        .lines()
+        .find(|l| l.starts_with("- **Reliable:**") || l.starts_with("- **Unreliable:**"))
+        .expect("a reliability line");
+    assert!(
+        reliability.contains("Consistency=") && reliability.contains("CV="),
+        "{reliability}"
+    );
 
     report.d_ranges[0] = None;
     let single = dir.path().join("single_report.md");

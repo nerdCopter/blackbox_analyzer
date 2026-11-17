@@ -442,8 +442,9 @@ pub fn generate_markdown_report(
                         conservative_p,
                         reasoning,
                     } => format!(
-                        "Increase P to {}{} — {}",
+                        "Increase P to {} ({:+}){} — {}",
                         conservative_p,
+                        *conservative_p as i64 - analysis.current_p as i64,
                         analysis.d_target_suffix(*conservative_p, d_range),
                         reasoning
                     ),
@@ -451,14 +452,21 @@ pub fn generate_markdown_report(
                         recommended_p,
                         reasoning,
                     } => format!(
-                        "Decrease P to {}{} — {}",
+                        "Decrease P to {} ({:+}){} — {}",
                         recommended_p,
+                        *recommended_p as i64 - analysis.current_p as i64,
                         analysis.d_target_suffix(*recommended_p, d_range),
                         reasoning
                     ),
                     PRecommendation::Investigate { issue } => format!("Investigate — {}", issue),
                 };
                 writeln!(md, "- **Recommendation:** {}", rec_text)?;
+                writeln!(
+                    md,
+                    "- **{}:** {}",
+                    analysis.td_stats.reliability_label(),
+                    analysis.td_stats.reliability_details()
+                )?;
                 if analysis.source_files > 1 {
                     writeln!(
                         md,

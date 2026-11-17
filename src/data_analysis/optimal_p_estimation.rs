@@ -195,6 +195,35 @@ impl TdStatistics {
         })
     }
 
+    /// Consistency and CV text with their thresholds, shared by the plot legend, console and
+    /// report, for example `Consistency=86% (⊢≥70%), CV=24.8% (⊢≤40%)`.
+    pub fn reliability_details(&self) -> String {
+        let cv_str = self.coefficient_of_variation.map_or_else(
+            || "CV=N/A".to_string(),
+            |cv| {
+                format!(
+                    "CV={:.1}% (⊢≤{:.0}%)",
+                    cv * 100.0,
+                    TD_COEFFICIENT_OF_VARIATION_MAX * 100.0,
+                )
+            },
+        );
+        format!(
+            "Consistency={:.0}% (⊢≥{:.0}%), {cv_str}",
+            self.consistency * 100.0,
+            TD_CONSISTENCY_MIN_THRESHOLD * 100.0,
+        )
+    }
+
+    /// `Reliable` or `Unreliable`, from `is_consistent`.
+    pub fn reliability_label(&self) -> &'static str {
+        if self.is_consistent() {
+            "Reliable"
+        } else {
+            "Unreliable"
+        }
+    }
+
     /// Check if measurements are consistent enough for reliable analysis
     pub fn is_consistent(&self) -> bool {
         // Need at least 2 samples for meaningful consistency check
@@ -608,26 +637,11 @@ impl OptimalPAnalysis {
         }
 
         // Reliability — always shown, after recommendation
-        let cv_str = self.td_stats.coefficient_of_variation.map_or_else(
-            || "CV=N/A".to_string(),
-            |cv| {
-                format!(
-                    "CV={:.1}% (⊢≤{:.0}%)",
-                    cv * 100.0,
-                    TD_COEFFICIENT_OF_VARIATION_MAX * 100.0,
-                )
-            },
-        );
-        let cons_str = format!(
-            "Consistency={:.0}% (⊢≥{:.0}%)",
-            self.td_stats.consistency * 100.0,
-            TD_CONSISTENCY_MIN_THRESHOLD * 100.0,
-        );
-        if self.td_stats.is_consistent() {
-            output.push_str(&format!("  Reliable: {cons_str}, {cv_str}\n"));
-        } else {
-            output.push_str(&format!("  Unreliable: {cons_str}, {cv_str}\n"));
-        }
+        output.push_str(&format!(
+            "  {}: {}\n",
+            self.td_stats.reliability_label(),
+            self.td_stats.reliability_details()
+        ));
 
         output
     }
@@ -663,6 +677,31 @@ mod d_target_tests {
             a.d_target_suffix(44, Some((20, 20))),
             ", D-Min≈22 (+2), D-Max≈22 (+2)"
         );
+    }
+
+    #[test]
+    fn reliability_text_uses_the_shared_thresholds() {
+        let stats = |samples: Vec<f64>| {
+            OptimalPAnalysis::analyze(&samples, 40, Some(20), None, Some(2.0), Some((25.0, 3.0)))
+                .expect("analysis from synthetic Td samples")
+                .td_stats
+        };
+        // Identical samples: no spread, so the CV limit and consistency minimum are met.
+        let steady = stats(vec![30.0; 40]);
+        assert_eq!(steady.reliability_label(), "Reliable");
+        let text = steady.reliability_details();
+        assert!(text.starts_with("Consistency="), "{text}");
+        assert!(
+            text.contains("(⊢≥70%)") && text.contains("(⊢≤40%)"),
+            "{text}"
+        );
+        // Samples alternating between 10 and 50 ms give a CV far above the 40% limit.
+        let spread = stats(
+            (0..40)
+                .map(|i| if i % 2 == 0 { 10.0 } else { 50.0 })
+                .collect(),
+        );
+        assert_eq!(spread.reliability_label(), "Unreliable");
     }
 
     #[test]
