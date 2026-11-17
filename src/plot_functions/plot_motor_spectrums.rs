@@ -475,7 +475,12 @@ pub fn plot_motor_spectrums(
                             ShapeStyle::from(rpm_color).stroke_width(1),
                         ))?;
                     }
-                    filter_response::rpm_filter_legend_text(rpm_config, &base, x_max)
+                    filter_response::rpm_filter_legend_text(
+                        rpm_config,
+                        &base,
+                        x_max,
+                        rpm_filter_rate_hz,
+                    )
                 } else {
                     format!(
                         "RPM Filter ({}): not drawn, no eRPM or motor_poles for this motor",

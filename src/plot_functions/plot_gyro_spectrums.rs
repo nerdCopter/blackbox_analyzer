@@ -454,6 +454,7 @@ pub fn plot_gyro_spectrums(
                             rpm_config,
                             &motor_base_hz,
                             max_freq_val,
+                            rpm_filter_rate_hz,
                         ),
                         color: rpm_filter_color,
                         stroke_width: 1,

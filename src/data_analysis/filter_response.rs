@@ -1511,6 +1511,7 @@ pub fn rpm_filter_legend_text(
     config: &RpmFilterConfig,
     base: &RpmFundamentalHz,
     max_freq_hz: f64,
+    sample_rate_hz: f64,
 ) -> String {
     let items: Vec<String> = (1..=config.harmonics)
         .map(|harmonic| {
@@ -1523,9 +1524,14 @@ pub fn rpm_filter_legend_text(
                 * RATIO_TO_PERCENT;
             let note = if weight <= 0.0 {
                 " (disabled)"
-            } else if freq < config.min_hz {
+            } else if freq < config.min_hz && config.fade_range_hz > 0.0 {
                 " (below min)"
-            } else if freq > max_freq_hz {
+            } else if freq
+                .max(config.min_hz)
+                .min(RPM_FILTER_MAX_HZ_RATE_FRACTION * sample_rate_hz)
+                > max_freq_hz
+            {
+                // Same clamped center the curve generator draws
                 " (off plot)"
             } else {
                 ""
@@ -1707,13 +1713,13 @@ pub fn generate_rpm_filter_curves(
     for harmonic_num in 1..=config.harmonics {
         let raw_freq = motor_base_hz * harmonic_num as f64;
 
-        // Skip if below minimum
-        if raw_freq < config.min_hz {
-            continue;
-        }
         // Betaflight clamps the notch center to [min_hz, 0.48 * rate] (rpm_filter.c), so the
-        // display range check uses the clamped center
-        let harmonic_freq = raw_freq.min(RPM_FILTER_MAX_HZ_RATE_FRACTION * sample_rate_hz);
+        // display range check uses the clamped center. A center below min_hz sits at min_hz
+        // with weight 0 when the fade range is positive (the margin is 0), and with full weight
+        // when the fade range is 0.
+        let harmonic_freq = raw_freq
+            .max(config.min_hz)
+            .min(RPM_FILTER_MAX_HZ_RATE_FRACTION * sample_rate_hz);
         if harmonic_freq > max_frequency_hz {
             continue;
         }
@@ -1825,12 +1831,14 @@ mod tests {
         let cfg = test_rpm_config(3, vec![1.0, 1.0, 1.0]);
         // Legend lists every configured harmonic at the median; no range
         assert_eq!(
-            rpm_filter_legend_text(&cfg, &base, 503.0),
+            rpm_filter_legend_text(&cfg, &base, 503.0, 8000.0),
             "RPM Filter (3) @ median eRPM: 100% @ 229Hz, 100% @ 458Hz, 100% @ 687Hz (off plot)"
         );
         // Weight 0 stays in the legend as 0%
         let cfg0 = test_rpm_config(3, vec![1.0, 0.0, 1.0]);
-        assert!(rpm_filter_legend_text(&cfg0, &base, 503.0).contains("0% @ 458Hz (disabled)"));
+        assert!(
+            rpm_filter_legend_text(&cfg0, &base, 503.0, 8000.0).contains("0% @ 458Hz (disabled)")
+        );
         // Median below min_hz is noted
         let low = RpmFundamentalHz {
             low: 20.0,
@@ -1839,8 +1847,39 @@ mod tests {
         };
         let cfg2 = test_rpm_config(2, vec![1.0, 1.0]);
         assert_eq!(
-            rpm_filter_legend_text(&cfg2, &low, 503.0),
+            rpm_filter_legend_text(&cfg2, &low, 503.0, 8000.0),
             "RPM Filter (2) @ median eRPM: 100% @ 30Hz (below min), 100% @ 60Hz (below min)"
+        );
+    }
+
+    #[test]
+    fn test_rpm_filter_legend_uses_clamped_center() {
+        // H3 raw 2100 Hz is clamped to 0.48 * 4000 = 1920 Hz, inside the 2000 Hz plot: not off plot
+        let cfg = test_rpm_config(3, vec![1.0, 1.0, 1.0]);
+        let base = RpmFundamentalHz {
+            low: 600.0,
+            median: 700.0,
+            high: 800.0,
+        };
+        let text = rpm_filter_legend_text(&cfg, &base, 2000.0, 4000.0);
+        assert!(
+            text.contains("100% @ 2100Hz,") || text.ends_with("100% @ 2100Hz"),
+            "{text}"
+        );
+        assert!(!text.contains("off plot"), "{text}");
+        // Below the clamp the raw center decides: a plot limit under 1920 Hz marks it off plot
+        assert!(rpm_filter_legend_text(&cfg, &base, 1500.0, 4000.0).contains("2100Hz (off plot)"));
+        // Fade 0: a median below min_hz is clamped to min_hz at full weight, not "below min"
+        let mut no_fade = test_rpm_config(1, vec![1.0]);
+        no_fade.fade_range_hz = 0.0;
+        let low = RpmFundamentalHz {
+            low: 80.0,
+            median: 90.0,
+            high: 95.0,
+        };
+        assert_eq!(
+            rpm_filter_legend_text(&no_fade, &low, 503.0, 8000.0),
+            "RPM Filter (1) @ median eRPM: 100% @ 90Hz"
         );
     }
 
@@ -1965,10 +2004,16 @@ mod tests {
         // Fundamental exactly at min_hz: weight fades to 0, nothing attenuates, no curve
         let at_min = generate_rpm_filter_curves(&cfg, 100.0, 500.0, 4000, fs);
         assert!(at_min.iter().all(|c| c.0 != 1));
-        // Below min_hz: no curve
+        // Below min_hz with a positive fade range: the weight fades to 0, no curve
         assert!(generate_rpm_filter_curves(&cfg, 90.0, 500.0, 4000, fs)
             .iter()
             .all(|c| c.0 != 1));
+        // Below min_hz with fade 0: Betaflight clamps the center to min_hz at full weight
+        let mut no_fade = test_rpm_config(1, vec![1.0]);
+        no_fade.fade_range_hz = 0.0;
+        let curves = generate_rpm_filter_curves(&no_fade, 90.0, 500.0, 4000, fs);
+        assert_eq!(curves[0].3, 100.0);
+        assert!(depth_at(&curves, 1, 100.0) > 0.98);
     }
 
     #[test]
