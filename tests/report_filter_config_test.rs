@@ -10,7 +10,7 @@ use blackbox_analyzer::data_analysis::filter_response::{
     AllFilterConfigs, AxisFilterConfig, FilterConfig, FilterType, ImufFilterConfig,
     RpmFilterConfig, RpmFundamentalHz, RpmMotorFrequencies,
 };
-use blackbox_analyzer::report::{generate_markdown_report, FlightReport};
+use blackbox_analyzer::report::{generate_markdown_report, FlightReport, StepAxisReport};
 
 fn base_report(filter_config: Option<AllFilterConfigs>) -> FlightReport {
     FlightReport {
@@ -198,4 +198,44 @@ fn pid_tuning_table_shows_zero_ff_label() {
     assert!(contents.contains("| Axis | PID | P:D Ratio |"));
     assert!(contents.contains("| Roll | P:57 I:66 D:58 D-Min:58 D-Max:80 FF:0 | N/A |"));
     assert!(contents.contains("| Yaw (informational) | N/A | N/A |"));
+}
+
+fn step_axis(hint: Option<String>) -> StepAxisReport {
+    StepAxisReport {
+        axis_name: "Roll",
+        peak_value: 1.01,
+        assessment: "Near optimal",
+        current_pd_ratio: 1.2,
+        conservative: None,
+        moderate: None,
+        aggressive: None,
+        near_optimal_hint: hint,
+        setpoint_authority_name: None,
+        setpoint_authority_mean: None,
+        warnings: Vec::new(),
+    }
+}
+
+#[test]
+fn near_optimal_hint_replaces_the_none_line_in_the_report() {
+    let dir = tempfile::tempdir().expect("create temp dir");
+
+    let mut report = base_report(None);
+    report.step_reports = vec![step_axis(Some(
+        "D-Min≈19, D-Max≈29 [optional D−1]".to_string(),
+    ))];
+    let with_hint = dir.path().join("hint_report.md");
+    generate_markdown_report(&report, &with_hint).expect("generate report");
+    let contents = fs::read_to_string(&with_hint).expect("read report");
+    assert!(
+        contents.contains("- **Recommendation (conservative):** D-Min≈19, D-Max≈29 [optional D−1]")
+    );
+    assert!(!contents.contains("No obvious tuning adjustments needed"));
+
+    let mut report = base_report(None);
+    report.step_reports = vec![step_axis(None)];
+    let without = dir.path().join("none_report.md");
+    generate_markdown_report(&report, &without).expect("generate report");
+    let contents = fs::read_to_string(&without).expect("read report");
+    assert!(contents.contains("- **Recommendation:** No obvious tuning adjustments needed"));
 }

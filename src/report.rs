@@ -47,6 +47,8 @@ pub struct StepAxisReport {
     pub conservative: Option<DTermRec>,
     pub moderate: Option<DTermRec>,
     pub aggressive: Option<DTermRec>,
+    /// Optional D-1 hint shown for the near-optimal zone, which has no P:D recommendation.
+    pub near_optimal_hint: Option<String>,
     pub setpoint_authority_name: Option<&'static str>,
     pub setpoint_authority_mean: Option<f32>,
     pub warnings: Vec<String>,
@@ -267,9 +269,13 @@ pub fn generate_markdown_report(
                     fmt_dterm_rec(rec)
                 )?;
             }
+            if let Some(hint) = &axis_report.near_optimal_hint {
+                writeln!(md, "- **Recommendation (conservative):** {}", hint)?;
+            }
             if axis_report.conservative.is_none()
                 && axis_report.moderate.is_none()
                 && axis_report.aggressive.is_none()
+                && axis_report.near_optimal_hint.is_none()
             {
                 writeln!(
                     md,

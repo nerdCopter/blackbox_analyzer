@@ -482,16 +482,8 @@ pub fn plot_step_response(
                     // Near optimal (1.00–1.02): D−1 hint replaces the "none" label —
                     // showing "none" and a concrete suggestion together is contradictory.
                     if let Some(axis_pid_data) = pid_metadata.get_axis(axis_index) {
-                        let step = crate::constants::D_STEP_OPTIONAL;
-                        let d1_label = match format_d_target(
-                            axis_pid_data.d.map(|v| v.saturating_sub(step)),
-                            axis_pid_data.d_min.map(|v| v.saturating_sub(step)),
-                            axis_pid_data.d_max.map(|v| v.saturating_sub(step)),
-                            axis_pid_data.d_range_for_display(dmax_enabled).is_some(),
-                        ) {
-                            Some(d_text) => {
-                                format!("  Recommendation (conservative): {d_text} [optional D−1]")
-                            }
+                        let d1_label = match axis_pid_data.near_optimal_d_hint(dmax_enabled) {
+                            Some(d_text) => format!("  Recommendation (conservative): {d_text}"),
                             None => "  Recommendation (none): No obvious tuning adjustments needed"
                                 .to_string(),
                         };

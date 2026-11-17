@@ -1652,14 +1652,10 @@ INFO: Skipping Step Response input data filtering for {input_file_str}: {reason}
                                     } else if assessment == "Near optimal" {
                                         // Near optimal (1.00–1.02): D−1 hint only — no "none" line,
                                         // since "none" and a concrete suggestion are contradictory.
-                                        let step = crate::constants::D_STEP_OPTIONAL;
-                                        if let Some(d_text) = format_d_target(
-                                            axis_pid.d.map(|v| v.saturating_sub(step)),
-                                            axis_pid.d_min.map(|v| v.saturating_sub(step)),
-                                            axis_pid.d_max.map(|v| v.saturating_sub(step)),
-                                            axis_pid.d_range_for_display(dmax_enabled).is_some(),
-                                        ) {
-                                            println!("  Recommendation (conservative): {d_text} [optional D−1]");
+                                        if let Some(d_text) =
+                                            axis_pid.near_optimal_d_hint(dmax_enabled)
+                                        {
+                                            println!("  Recommendation (conservative): {d_text}");
                                         }
                                     } else {
                                         // Optimal zone (1.02–1.08): no adjustment needed
@@ -1733,6 +1729,13 @@ INFO: Skipping Step Response input data filtering for {input_file_str}: {reason}
                     conservative,
                     moderate,
                     aggressive,
+                    near_optimal_hint: if assessment == "Near optimal" {
+                        pid_metadata
+                            .get_axis(axis_index)
+                            .and_then(|axis| axis.near_optimal_d_hint(dmax_enabled))
+                    } else {
+                        None
+                    },
                     setpoint_authority_name: setpoint_authority_names[axis_index],
                     setpoint_authority_mean: setpoint_authority_means[axis_index],
                     warnings: std::mem::take(&mut step_warnings[axis_index]),

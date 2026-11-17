@@ -146,6 +146,22 @@ impl AxisPid {
         matches!((self.d_min, self.d_max), (Some(min), Some(max)) if min > 0 && min < max)
     }
 
+    /// Optional D-1 hint for an axis in the near-optimal peak zone. Single source for the
+    /// plot legend, console and report: base D, or D-Min and D-Max when this axis has a
+    /// valid range (`d_range_for_display`), each lowered by `D_STEP_OPTIONAL`. `None` when
+    /// no D is known.
+    pub fn near_optimal_d_hint(&self, dmax_enabled: bool) -> Option<String> {
+        let step = crate::constants::D_STEP_OPTIONAL;
+        let range = self.d_range_for_display(dmax_enabled);
+        format_d_target(
+            self.d.map(|v| v.saturating_sub(step)),
+            range.map(|(min, _)| min.saturating_sub(step)),
+            range.map(|(_, max)| max.saturating_sub(step)),
+            range.is_some(),
+        )
+        .map(|text| format!("{text} [optional D−1]"))
+    }
+
     /// D-Min and D-Max for display and recommendation text: both known, `0 < D-Min <= D-Max`,
     /// on a log with dynamic D enabled; `None` otherwise (callers then show base D). Every
     /// plot, report and console path uses this one rule so they agree per axis.
@@ -1788,6 +1804,30 @@ mod tests {
             (pid.roll.p, pid.roll.i, pid.roll.d),
             (Some(57), None, Some(58))
         );
+    }
+
+    #[test]
+    fn test_near_optimal_d_hint_follows_the_per_axis_rule() {
+        let pid = parse_pid_metadata(&headers(
+            "Betaflight 4.5.0",
+            &[
+                ("rollPID", "40,50,30"),
+                ("pitchPID", "42,52,40"),
+                ("d_min", "20,0,0"),
+            ],
+        ));
+        let on = pid.is_dmax_enabled();
+        // Roll has a range: both ends lowered by D_STEP_OPTIONAL (1).
+        assert_eq!(
+            pid.roll.near_optimal_d_hint(on).as_deref(),
+            Some("D-Min≈19, D-Max≈29 [optional D−1]")
+        );
+        // Pitch has d_min 0: single D lowered by 1, same as a log without dynamic D.
+        assert_eq!(
+            pid.pitch.near_optimal_d_hint(on).as_deref(),
+            Some("D≈39 [optional D−1]")
+        );
+        assert_eq!(AxisPid::default().near_optimal_d_hint(on), None);
     }
 
     #[test]
