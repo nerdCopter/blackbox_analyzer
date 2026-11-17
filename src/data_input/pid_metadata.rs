@@ -152,11 +152,16 @@ impl AxisPid {
     /// no D is known.
     pub fn near_optimal_d_hint(&self, dmax_enabled: bool) -> Option<String> {
         let step = crate::constants::D_STEP_OPTIONAL;
-        let range = self.d_range_for_display(dmax_enabled);
+        // A lowered D (or D-Min) of 0 would switch dynamic D off, so it is no hint.
+        let lowered_d = self.d.map(|v| v.saturating_sub(step)).filter(|&v| v > 0)?;
+        let range = self
+            .d_range_for_display(dmax_enabled)
+            .map(|(min, max)| (min.saturating_sub(step), max.saturating_sub(step)))
+            .filter(|&(min, _)| min > 0);
         format_d_target(
-            self.d.map(|v| v.saturating_sub(step)),
-            range.map(|(min, _)| min.saturating_sub(step)),
-            range.map(|(_, max)| max.saturating_sub(step)),
+            Some(lowered_d),
+            range.map(|(min, _)| min),
+            range.map(|(_, max)| max),
             range.is_some(),
         )
         .map(|text| format!("{text} [optional D−1]"))
@@ -1828,6 +1833,84 @@ mod tests {
             Some("D≈39 [optional D−1]")
         );
         assert_eq!(AxisPid::default().near_optimal_d_hint(on), None);
+    }
+
+    #[test]
+    fn test_near_optimal_d_hint_never_lowers_a_range_end_to_zero() {
+        // BF 4.5 range D-Min 1 to D 20: D-Min 1 lowered by 1 would be 0, which switches
+        // dynamic D off, so the hint falls back to the single base D.
+        let pid = parse_pid_metadata(&headers(
+            "Betaflight 4.5.0",
+            &[("rollPID", "40,50,20"), ("d_min", "1,0,0")],
+        ));
+        assert!(pid.is_dmax_enabled());
+        assert_eq!(
+            pid.roll.near_optimal_d_hint(true).as_deref(),
+            Some("D≈19 [optional D−1]")
+        );
+        // Base D of 1 lowered by 1 is 0: no hint at all.
+        let one = AxisPid {
+            d: Some(1),
+            ..Default::default()
+        };
+        assert_eq!(one.near_optimal_d_hint(false), None);
+    }
+
+    #[test]
+    fn test_title_and_report_agree_per_axis_for_parsed_headers() {
+        let sets: [&[(&str, &str)]; 4] = [
+            // range on roll, d_min 0 on pitch, yaw D 0
+            &[
+                ("rollPID", "40,50,30"),
+                ("pitchPID", "42,52,40"),
+                ("yawPID", "45,80,0"),
+                ("d_min", "20,0,0"),
+            ],
+            // 2025.12+: range on roll and pitch (equal), yaw D 0
+            &[
+                ("rollPID", "47,76,80"),
+                ("pitchPID", "67,96,106"),
+                ("yawPID", "35,65,0"),
+                ("d_max", "82,106,0"),
+            ],
+            // slider at 0: d_max equals D on every axis
+            &[
+                ("rollPID", "45,80,30"),
+                ("pitchPID", "47,84,34"),
+                ("yawPID", "45,80,0"),
+                ("d_max", "30,34,0"),
+            ],
+            // yaw-only range
+            &[
+                ("rollPID", "40,50,30"),
+                ("pitchPID", "42,52,40"),
+                ("yawPID", "45,80,25"),
+                ("d_min", "0,0,15"),
+            ],
+        ];
+        for extra in sets {
+            let pid = parse_pid_metadata(&headers("Betaflight 4.5.0", extra));
+            let on = pid.is_dmax_enabled();
+            for axis in [&pid.roll, &pid.pitch, &pid.yaw] {
+                let title = axis.format_for_title(&pid.firmware_type, on);
+                let report = axis.format_for_report(&pid.firmware_type, on);
+                match axis.d_range_for_display(on) {
+                    Some((min, max)) => {
+                        assert!(title.contains(&format!("D:{min}/{max}")), "{title}");
+                        assert!(
+                            report.contains(&format!("D-Min:{min} D-Max:{max}")),
+                            "{report}"
+                        );
+                    }
+                    None => {
+                        assert!(
+                            !title.contains('/') && !report.contains("D-Min"),
+                            "{title} | {report}"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]

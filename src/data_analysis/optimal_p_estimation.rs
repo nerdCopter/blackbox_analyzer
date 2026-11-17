@@ -531,6 +531,20 @@ impl OptimalPAnalysis {
         }
     }
 
+    /// Td source text shared by the legend, console and report, for example
+    /// `File Group — 11 flights, 94 throttle-punches`.
+    pub fn source_summary(&self) -> String {
+        let label = if self.source_files > 1 {
+            "File Group"
+        } else {
+            "Single File"
+        };
+        format!(
+            "{} — {} flights, {} throttle-punches",
+            label, self.source_files, self.source_events
+        )
+    }
+
     /// Recommended-D text appended to a P recommendation, shared by the console and the plot
     /// legend. Scales the D that matches the P:D ratio: base D as `, D≈x (+n)`, or, when
     /// `d_range` holds the axis D-Min and D-Max (dynamic D enabled), both ends by the same
@@ -578,16 +592,7 @@ impl OptimalPAnalysis {
             self.td_tolerance_ms,
             self.td_stats.num_samples,
         ));
-        // Td source: group/single, flights, punches
-        let source_label = if self.source_files > 1 {
-            "File Group"
-        } else {
-            "Single File"
-        };
-        output.push_str(&format!(
-            "  Td source: {} — {} flights, {} throttle-punches\n",
-            source_label, self.source_files, self.source_events,
-        ));
+        output.push_str(&format!("  Td source: {}\n", self.source_summary()));
         output.push_str(&format!("  Noise: {}\n", self.noise_level.name()));
 
         // Deviation

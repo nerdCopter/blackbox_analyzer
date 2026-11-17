@@ -292,3 +292,68 @@ fn optimal_p_section_shows_the_d_range_like_the_plot() {
         .expect("an Increase P recommendation line");
     assert!(rec.contains(", D≈") && !rec.contains("D-Min"), "{rec}");
 }
+
+#[test]
+fn near_optimal_hint_report_text_matches_the_shared_helper_for_roll_and_pitch() {
+    use blackbox_analyzer::data_input::pid_metadata::parse_pid_metadata;
+
+    // BF 4.5: roll has a range (20 to 30); pitch has d_min 0, so it shows a single D.
+    let headers: Vec<(String, String)> = [
+        ("Firmware revision", "Betaflight 4.5.0"),
+        ("rollPID", "40,50,30"),
+        ("pitchPID", "42,52,40"),
+        ("d_min", "20,0,0"),
+    ]
+    .iter()
+    .map(|(k, v)| (k.to_string(), v.to_string()))
+    .collect();
+    let pid = parse_pid_metadata(&headers);
+    let on = pid.is_dmax_enabled();
+    let roll_hint = pid.roll.near_optimal_d_hint(on).expect("roll hint");
+    let pitch_hint = pid.pitch.near_optimal_d_hint(on).expect("pitch hint");
+    assert!(roll_hint.contains("D-Min≈"), "{roll_hint}");
+    assert!(
+        pitch_hint.starts_with("D≈") && !pitch_hint.contains("D-Min"),
+        "{pitch_hint}"
+    );
+
+    let mut report = base_report(None);
+    let mut roll = step_axis(Some(roll_hint.clone()));
+    roll.axis_name = "Roll";
+    let mut pitch = step_axis(Some(pitch_hint.clone()));
+    pitch.axis_name = "Pitch";
+    report.step_reports = vec![roll, pitch];
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let path = dir.path().join("two_axis_report.md");
+    generate_markdown_report(&report, &path).expect("generate report");
+    let contents = fs::read_to_string(&path).expect("read report");
+    assert!(contents.contains(&format!("- **Recommendation (conservative):** {roll_hint}")));
+    assert!(contents.contains(&format!(
+        "- **Recommendation (conservative):** {pitch_hint}"
+    )));
+}
+
+#[test]
+fn optimal_p_source_line_uses_the_shared_summary() {
+    use blackbox_analyzer::data_analysis::optimal_p_estimation::OptimalPAnalysis;
+
+    let samples: Vec<f64> = (0..40).map(|i| 60.0 + (i % 5) as f64).collect();
+    let mut analysis =
+        OptimalPAnalysis::analyze(&samples, 40, Some(20), None, Some(2.0), Some((25.0, 3.0)))
+            .expect("analysis from synthetic Td samples");
+    analysis.source_files = 11;
+    analysis.source_events = 94;
+    let expected = analysis.source_summary();
+    assert_eq!(expected, "File Group — 11 flights, 94 throttle-punches");
+
+    let mut report = base_report(None);
+    report.optimal_p[1] = Some(analysis);
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let path = dir.path().join("source_report.md");
+    generate_markdown_report(&report, &path).expect("generate report");
+    let contents = fs::read_to_string(&path).expect("read report");
+    assert!(
+        contents.contains(&format!("- **Source:** {expected}")),
+        "{contents}"
+    );
+}

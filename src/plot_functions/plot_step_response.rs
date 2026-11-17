@@ -594,18 +594,9 @@ pub fn plot_step_response(
                             stroke_width: 0,
                         });
 
-                        // Td source: group/single, flights, punches
-                        let source_label = if analysis.source_files > 1 {
-                            "File Group"
-                        } else {
-                            "Single File"
-                        };
                         series.push(PlotSeries {
                             data: vec![],
-                            label: format!(
-                                "  Td source: {} — {} flights, {} throttle-punches",
-                                source_label, analysis.source_files, analysis.source_events,
-                            ),
+                            label: format!("  Td source: {}", analysis.source_summary()),
                             color: COLOR_OPTIMAL_P_TEXT,
                             stroke_width: 0,
                         });

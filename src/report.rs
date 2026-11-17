@@ -21,6 +21,7 @@ use crate::data_analysis::filter_response::{
 use crate::data_analysis::optimal_p_estimation::{OptimalPAnalysis, PRecommendation};
 use crate::data_analysis::stick_distribution::StickDistributionResult;
 use crate::data_analysis::transfer_function_estimation::Confidence;
+use crate::data_input::pid_metadata::format_d_target;
 use crate::plot_functions::motor_desync::{
     fallback_oscillation_overlaps, DesyncConfidence, MotorDesyncResult,
 };
@@ -467,19 +468,7 @@ pub fn generate_markdown_report(
                     analysis.td_stats.reliability_label(),
                     analysis.td_stats.reliability_details()
                 )?;
-                if analysis.source_files > 1 {
-                    writeln!(
-                        md,
-                        "- **Source:** {} files, {} throttle-punch events",
-                        analysis.source_files, analysis.source_events
-                    )?;
-                } else {
-                    writeln!(
-                        md,
-                        "- **Source:** {} throttle-punch events",
-                        analysis.source_events
-                    )?;
-                }
+                writeln!(md, "- **Source:** {}", analysis.source_summary())?;
                 writeln!(md)?;
             }
         }
@@ -916,16 +905,14 @@ fn fmt_imuf(f: &crate::data_analysis::filter_response::ImufFilterConfig) -> Stri
 }
 
 fn fmt_dterm_rec(rec: &DTermRec) -> String {
-    if rec.d_min.is_some() || rec.d_max.is_some() {
-        let d_min_s = rec.d_min.map_or("N/A".to_string(), |v| v.to_string());
-        let d_max_s = rec.d_max.map_or("N/A".to_string(), |v| v.to_string());
-        format!(
-            "P:D={:.2} (D-Min≈{}, D-Max≈{})",
-            rec.pd_ratio, d_min_s, d_max_s
-        )
-    } else if let Some(d) = rec.d {
-        format!("P:D={:.2} (D≈{})", rec.pd_ratio, d)
-    } else {
-        format!("P:D={:.2}", rec.pd_ratio)
+    // A range end present means the axis has a valid D-Min/D-Max pair (see main.rs callers).
+    match format_d_target(
+        rec.d,
+        rec.d_min,
+        rec.d_max,
+        rec.d_min.is_some() || rec.d_max.is_some(),
+    ) {
+        Some(d_text) => format!("P:D={:.2} ({})", rec.pd_ratio, d_text),
+        None => format!("P:D={:.2}", rec.pd_ratio),
     }
 }
