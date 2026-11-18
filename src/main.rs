@@ -235,8 +235,8 @@ impl Drop for CwdGuard {
 
 // Data input import
 use crate::data_input::bbl_reader::{
-    expand_bbl_to_scratch_csvs, export_base_stem, export_stem_candidates, FLIGHT_EXPORT_FAILED,
-    FLIGHT_FILTERED,
+    expand_bbl_to_scratch_csvs, export_base_stem, export_stem_candidates, export_stem_matches_bbl,
+    FLIGHT_EXPORT_FAILED, FLIGHT_FILTERED,
 };
 use crate::data_input::log_data::LogRowData;
 use crate::data_input::log_parser::{self, parse_log_file};
@@ -492,23 +492,46 @@ fn dir_name_prefix(dir: &Path) -> String {
     format!("{sanitized}_")
 }
 
-/// Inputs whose output name needs the source-folder prefix. Starts with every input whose base
-/// stem (`export_base_stem`, so `LOG.BBL` and `LOG.01.csv` match) occurs in two or more folders,
-/// then adds any input whose final output name still equals another input's (for example an
+/// True when two inputs can write the same output name: equal stems, or a BBL against a CSV whose
+/// stem is one of its exports (`LOG.BBL` against `LOG.02.csv`; flight stems are unknown until the
+/// BBL is decoded). Two CSVs with different stems never collide.
+fn output_names_can_collide(file_a: &str, file_b: &str) -> bool {
+    let (stem_a, stem_b) = (
+        input_stem(file_a).to_ascii_lowercase(),
+        input_stem(file_b).to_ascii_lowercase(),
+    );
+    let is_bbl = |file: &str| {
+        Path::new(file)
+            .extension()
+            .is_some_and(|e| is_bbl_extension(&e.to_string_lossy()))
+    };
+    stem_a == stem_b
+        || (is_bbl(file_a) && export_stem_matches_bbl(&stem_b, &stem_a))
+        || (is_bbl(file_b) && export_stem_matches_bbl(&stem_a, &stem_b))
+}
+
+/// Inputs whose output name needs the source-folder prefix. Starts with every pair of inputs from
+/// different folders that can write the same name (`output_names_can_collide`), then adds any input whose final output name still equals another input's (for example an
 /// unprefixed `a_log` against `a/log` prefixed to `a_log`), until no two names are equal.
 fn files_needing_prefix(files: &[(&str, &Path)]) -> HashSet<String> {
-    let mut dirs_by_key: HashMap<String, HashSet<&Path>> = HashMap::new();
+    let mut groups: HashMap<String, Vec<(&str, &Path)>> = HashMap::new();
     for (file, dir) in files {
-        dirs_by_key
+        groups
             .entry(export_base_stem(&input_stem(file)))
             .or_default()
-            .insert(dir);
+            .push((file, dir));
     }
-    let mut prefixed: HashSet<String> = files
-        .iter()
-        .filter(|(file, _)| dirs_by_key[&export_base_stem(&input_stem(file))].len() > 1)
-        .map(|(file, _)| (*file).to_string())
-        .collect();
+    let mut prefixed: HashSet<String> = HashSet::new();
+    for group in groups.values() {
+        for (i, (file_a, dir_a)) in group.iter().enumerate() {
+            for (file_b, dir_b) in &group[i + 1..] {
+                if dir_a != dir_b && output_names_can_collide(file_a, file_b) {
+                    prefixed.insert((*file_a).to_string());
+                    prefixed.insert((*file_b).to_string());
+                }
+            }
+        }
+    }
     loop {
         let mut by_root: HashMap<String, Vec<(&str, &Path)>> = HashMap::new();
         for (file, dir) in files {
@@ -3505,5 +3528,21 @@ mod dir_prefix_tests {
         assert!(claim_bbl_expansion(&seen, p));
         assert!(!claim_bbl_expansion(&seen, p));
         assert!(claim_bbl_expansion(&seen, Path::new("d/OTHER.BBL")));
+    }
+
+    #[test]
+    fn different_flight_numbers_in_two_folders_get_no_prefix() {
+        let (a, b) = (Path::new("a"), Path::new("b"));
+        let set = files_needing_prefix(&[("a/LOG.01.csv", a), ("b/LOG.02.csv", b)]);
+        assert!(set.is_empty());
+    }
+
+    #[test]
+    fn bbl_collides_with_a_csv_named_like_one_of_its_exports() {
+        let (a, b) = (Path::new("a"), Path::new("b"));
+        let set = files_needing_prefix(&[("a/LOG.BBL", a), ("b/LOG.02.csv", b)]);
+        assert_eq!(set.len(), 2);
+        let set = files_needing_prefix(&[("a/LOG.BBL", a), ("b/OTHER.02.csv", b)]);
+        assert!(set.is_empty());
     }
 }
