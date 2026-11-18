@@ -145,7 +145,7 @@ fn report_lists_rpm_filter_motor_frequency_ranges() {
         "- **RPM Filter motor frequency:** 167–290 Hz (median 229) (all motors, 10th–90th percentile, from eRPM)"
     ));
     assert!(contents.contains(
-        "- **RPM Filter harmonic ranges:** H1 167–290 Hz (median 229), H2 334–580 Hz (median 458)"
+        "- **RPM Filter harmonic ranges:** Harmonic 1 167–290 Hz (median 229), Harmonic 2 334–580 Hz (median 458)"
     ));
     assert!(contents
         .contains("- **RPM Filter per-motor frequency:** M0 160–280 Hz (median 220), M1 no eRPM"));
