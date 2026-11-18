@@ -345,7 +345,9 @@ fn collect_bbl_stems(
             .extension()
             .is_some_and(|ext| is_bbl_extension(&ext.to_string_lossy()))
         {
-            if let Some(stem) = path.file_stem() {
+            // The same file reached twice (named directly and through its folder) is one BBL.
+            let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+            if let Some(stem) = path.file_stem().filter(|_| visited.insert(canonical)) {
                 *stem_counts
                     .entry(stem.to_string_lossy().to_ascii_lowercase())
                     .or_insert(0) += 1;
@@ -2855,16 +2857,20 @@ fn main() -> Result<(), Box<dyn Error>> {
         show_legend = false;
     }
 
-    // Folder prefix only where output names would otherwise be equal (same base stem in more
-    // than one source folder); every other input keeps its plain name.
-    let prefix_files = files_needing_prefix(
-        &input_files
-            .iter()
-            .filter_map(|f_str| {
-                effective_source_dir(f_str, &bbl_origin_dirs).map(|dir| (f_str.as_str(), dir))
-            })
-            .collect::<Vec<_>>(),
-    );
+    // Folder prefix only where output names would otherwise be equal in one shared output
+    // folder (`-O`); without `-O` each log writes beside its own source, so no prefix is needed.
+    let prefix_files = if output_dir.is_some() {
+        files_needing_prefix(
+            &input_files
+                .iter()
+                .filter_map(|f_str| {
+                    effective_source_dir(f_str, &bbl_origin_dirs).map(|dir| (f_str.as_str(), dir))
+                })
+                .collect::<Vec<_>>(),
+        )
+    } else {
+        HashSet::new()
+    };
 
     // Construct AnalysisOptions once before the loop; cloned per file at the process_file call
     // site below (not Copy — carries the raw --start/--end argument text as owned Strings).
@@ -3544,5 +3550,25 @@ mod dir_prefix_tests {
         assert_eq!(set.len(), 2);
         let set = files_needing_prefix(&[("a/LOG.BBL", a), ("b/OTHER.02.csv", b)]);
         assert!(set.is_empty());
+    }
+
+    #[test]
+    fn a_bbl_reached_twice_is_not_a_stem_collision() {
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let id = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("bbcsvr-prescan-{}-{id}", std::process::id()));
+        let sub = dir.join("sub");
+        std::fs::create_dir_all(&sub).expect("failed to create test dir");
+        std::fs::write(dir.join("LOG.BBL"), b"a").unwrap();
+        let file = dir.join("LOG.BBL").to_string_lossy().into_owned();
+        let folder = dir.to_string_lossy().into_owned();
+
+        let once = find_colliding_bbl_stems(&[file.clone(), folder.clone()], false);
+        assert!(once.is_empty(), "same file named twice is one BBL");
+
+        std::fs::write(sub.join("LOG.bbl"), b"b").unwrap();
+        let two = find_colliding_bbl_stems(&[file, folder], true);
+        assert_eq!(two, HashSet::from(["log".to_string()]));
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
