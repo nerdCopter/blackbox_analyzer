@@ -152,7 +152,7 @@ pub fn export_base_stem(csv_stem: &str) -> String {
 /// Lowercased BBL stems a kept export's CSV stem can derive from, most specific first: the name
 /// without its collision tag (`LOG.02.csv` of a single-flight `LOG.02.BBL`), then that name
 /// without its flight number (`LOG.02.csv` of a multi-flight `LOG.BBL`).
-pub fn export_stem_candidates(csv_stem: &str) -> Vec<String> {
+fn export_stem_candidates(csv_stem: &str) -> Vec<String> {
     let lower = csv_stem.to_ascii_lowercase();
     let (name, _) = split_collision_tag(&lower);
     let base = strip_flight_number(name);

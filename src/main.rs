@@ -235,8 +235,8 @@ impl Drop for CwdGuard {
 
 // Data input import
 use crate::data_input::bbl_reader::{
-    expand_bbl_to_scratch_csvs, export_base_stem, export_stem_candidates, export_stem_matches_bbl,
-    FLIGHT_EXPORT_FAILED, FLIGHT_FILTERED,
+    expand_bbl_to_scratch_csvs, export_base_stem, export_stem_matches_bbl, FLIGHT_EXPORT_FAILED,
+    FLIGHT_FILTERED,
 };
 use crate::data_input::log_data::LogRowData;
 use crate::data_input::log_parser::{self, parse_log_file};
@@ -638,12 +638,6 @@ fn expand_one_bbl_file(
     PRINTED_DISCOVERY_WARNING.store(false, Ordering::Relaxed);
     match result {
         Ok((flights, scratch_dir)) => {
-            // The source BBL itself is recorded too (its path is not an input in eager mode), so
-            // the duplicate check knows the real BBL stem, not only its flight CSV names.
-            if !flights.is_empty() {
-                let source_dir = bbl_path.parent().map(Path::to_path_buf).unwrap_or_default();
-                bbl_origin_dirs.insert(bbl_path.to_string_lossy().to_string(), source_dir);
-            }
             for (scratch_csv_path, origin_dir) in flights {
                 bbl_origin_dirs.insert(scratch_csv_path.clone(), origin_dir);
                 csv_files.push(scratch_csv_path);
@@ -825,84 +819,20 @@ fn find_csv_files_in_dir_impl(
     Ok((csv_files, skipped_count, bbl_origin_dirs, scratch_dirs))
 }
 
-/// Canonical form of `dir` for comparing source folders; the raw path when it cannot resolve.
-fn comparable_dir(dir: &Path) -> PathBuf {
-    let dir = if dir.as_os_str().is_empty() {
-        Path::new(".")
-    } else {
-        dir
-    };
-    dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf())
-}
-
-/// Removes inputs that would analyze one log twice: an exact repeated path, and a plain CSV that
-/// is a kept export of a BBL also in the input set — same folder, same base stem (see
-/// `export_base_stem`). The BBL (lazy, or already expanded to `bbl_origin_dirs` paths) is the one
-/// that stays. A CSV with no BBL beside it in the inputs is always kept.
-fn drop_duplicate_log_inputs(
-    files: Vec<String>,
-    bbl_origin_dirs: &HashMap<String, PathBuf>,
-) -> Vec<String> {
-    let mut bbl_keys: HashSet<(PathBuf, String)> = HashSet::new();
-    for f in &files {
-        let path = Path::new(f);
-        let is_bbl = path
-            .extension()
-            .is_some_and(|e| is_bbl_extension(&e.to_string_lossy()));
-        if is_bbl {
-            if let (Some(dir), Some(stem)) = (path.parent(), path.file_stem()) {
-                bbl_keys.insert((
-                    comparable_dir(dir),
-                    stem.to_string_lossy().to_ascii_lowercase(),
-                ));
-            }
-        }
-    }
-    // BBLs already expanded in eager mode: recorded under their own path (see expand_one_bbl_file).
-    for (source, origin) in bbl_origin_dirs {
-        let path = Path::new(source);
-        if path
-            .extension()
-            .is_some_and(|e| is_bbl_extension(&e.to_string_lossy()))
-        {
-            if let Some(stem) = path.file_stem() {
-                bbl_keys.insert((
-                    comparable_dir(origin),
-                    stem.to_string_lossy().to_ascii_lowercase(),
-                ));
-            }
-        }
-    }
+/// Removes a repeated input path (compared canonically) so one file is analyzed once. A CSV is
+/// never dropped for resembling a BBL's export: a name match is not proof of the same log.
+fn drop_repeated_inputs(files: Vec<String>) -> Vec<String> {
     let mut seen: HashSet<PathBuf> = HashSet::new();
     let mut kept = Vec::with_capacity(files.len());
     for f in files {
         let canonical = Path::new(&f)
             .canonicalize()
             .unwrap_or_else(|_| PathBuf::from(&f));
-        if !seen.insert(canonical) {
+        if seen.insert(canonical) {
+            kept.push(f);
+        } else {
             print_discovery_skip_warning(&format!("Note: Skipping {f}: input already listed"));
-            continue;
         }
-        let path = Path::new(&f);
-        let is_plain_csv = !bbl_origin_dirs.contains_key(&f)
-            && path
-                .extension()
-                .is_some_and(|e| e.to_string_lossy().eq_ignore_ascii_case(CSV_EXTENSION));
-        if is_plain_csv {
-            if let Some(dir) = path.parent() {
-                let dir = comparable_dir(dir);
-                let covered = export_stem_candidates(&input_stem(&f))
-                    .into_iter()
-                    .any(|cand| bbl_keys.contains(&(dir.clone(), cand)));
-                if covered {
-                    print_discovery_skip_warning(&format!(
-                        "Note: Skipping {f}: export of a BBL already in the inputs"
-                    ));
-                    continue;
-                }
-            }
-        }
-        kept.push(f);
     }
     kept
 }
@@ -2837,7 +2767,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     };
     let (input_files, skipped_subdirs, bbl_origin_dirs, bbl_scratch_dirs) =
         expand_input_paths(&input_paths, recursive, bbl_opts, debug_mode);
-    let input_files = drop_duplicate_log_inputs(input_files, &bbl_origin_dirs);
+    let input_files = drop_repeated_inputs(input_files);
 
     // Print summary of skipped subdirectories when not using recursive mode
     if !recursive && skipped_subdirs > 0 {
@@ -3508,47 +3438,6 @@ mod dir_prefix_tests {
     }
 
     #[test]
-    fn plain_csv_beside_bbl_input_is_dropped_but_lone_csv_is_kept() {
-        let files = vec![
-            "d/LOG.BBL".to_string(),
-            "d/LOG.01.csv".to_string(),
-            "d/LOG.02.ab12cd.csv".to_string(),
-            "d/OTHER.csv".to_string(),
-            "e/LOG.01.csv".to_string(),
-        ];
-        let kept = drop_duplicate_log_inputs(files, &HashMap::new());
-        assert_eq!(kept, vec!["d/LOG.BBL", "d/OTHER.csv", "e/LOG.01.csv"]);
-    }
-
-    #[test]
-    fn expanded_bbl_export_wins_over_same_path_and_older_plain_csv() {
-        // Eager mode: d/LOG.BBL is already replaced by its export paths, and the folder scan
-        // lists the same kept file again plus an older export beside the BBL.
-        let mut origins = HashMap::new();
-        origins.insert("d/LOG.BBL".to_string(), PathBuf::from("d"));
-        origins.insert("o/LOG.01.csv".to_string(), PathBuf::from("d"));
-        let files = vec![
-            "o/LOG.01.csv".to_string(),
-            "o/LOG.01.csv".to_string(),
-            "d/LOG.01.csv".to_string(),
-            "d/LOG.csv".to_string(),
-        ];
-        let kept = drop_duplicate_log_inputs(files, &origins);
-        assert_eq!(kept, vec!["o/LOG.01.csv"]);
-    }
-
-    #[test]
-    fn export_of_one_bbl_does_not_cover_an_unrelated_numbered_csv() {
-        // Eager: d/LOG.02.BBL exported o/LOG.02.csv; d/LOG.03.csv is a separate capture.
-        let mut origins = HashMap::new();
-        origins.insert("d/LOG.02.BBL".to_string(), PathBuf::from("d"));
-        origins.insert("o/LOG.02.csv".to_string(), PathBuf::from("d"));
-        let files = vec!["o/LOG.02.csv".to_string(), "d/LOG.03.csv".to_string()];
-        let kept = drop_duplicate_log_inputs(files, &origins);
-        assert_eq!(kept, vec!["o/LOG.02.csv", "d/LOG.03.csv"]);
-    }
-
-    #[test]
     fn a_repeated_bbl_is_claimed_once() {
         let seen = RefCell::new(HashSet::new());
         let p = Path::new("d/LOG.BBL");
@@ -3591,5 +3480,17 @@ mod dir_prefix_tests {
         let two = find_colliding_bbl_stems(&[file, folder], true);
         assert_eq!(two, HashSet::from(["log".to_string()]));
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn repeated_paths_are_dropped_but_name_alike_csvs_are_kept() {
+        let files = vec![
+            "d/LOG.BBL".to_string(),
+            "d/LOG.01.csv".to_string(),
+            "d/LOG.csv".to_string(),
+            "d/LOG.01.csv".to_string(),
+        ];
+        let kept = drop_repeated_inputs(files);
+        assert_eq!(kept, vec!["d/LOG.BBL", "d/LOG.01.csv", "d/LOG.csv"]);
     }
 }
