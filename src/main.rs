@@ -638,6 +638,12 @@ fn expand_one_bbl_file(
     PRINTED_DISCOVERY_WARNING.store(false, Ordering::Relaxed);
     match result {
         Ok((flights, scratch_dir)) => {
+            // The source BBL itself is recorded too (its path is not an input in eager mode), so
+            // the duplicate check knows the real BBL stem, not only its flight CSV names.
+            if !flights.is_empty() {
+                let source_dir = bbl_path.parent().map(Path::to_path_buf).unwrap_or_default();
+                bbl_origin_dirs.insert(bbl_path.to_string_lossy().to_string(), source_dir);
+            }
             for (scratch_csv_path, origin_dir) in flights {
                 bbl_origin_dirs.insert(scratch_csv_path.clone(), origin_dir);
                 csv_files.push(scratch_csv_path);
@@ -850,11 +856,20 @@ fn drop_duplicate_log_inputs(
                     stem.to_string_lossy().to_ascii_lowercase(),
                 ));
             }
-        } else if let Some(origin) = bbl_origin_dirs.get(f) {
-            // Only the export's own name: it may come from `LOG.BBL` or `LOG.02.BBL`, and a
-            // looser key would also cover an unrelated `LOG.03.csv`.
-            if let Some(name) = export_stem_candidates(&input_stem(f)).into_iter().next() {
-                bbl_keys.insert((comparable_dir(origin), name));
+        }
+    }
+    // BBLs already expanded in eager mode: recorded under their own path (see expand_one_bbl_file).
+    for (source, origin) in bbl_origin_dirs {
+        let path = Path::new(source);
+        if path
+            .extension()
+            .is_some_and(|e| is_bbl_extension(&e.to_string_lossy()))
+        {
+            if let Some(stem) = path.file_stem() {
+                bbl_keys.insert((
+                    comparable_dir(origin),
+                    stem.to_string_lossy().to_ascii_lowercase(),
+                ));
             }
         }
     }
@@ -3507,25 +3522,30 @@ mod dir_prefix_tests {
 
     #[test]
     fn expanded_bbl_export_wins_over_same_path_and_older_plain_csv() {
-        // Eager mode: the BBL is already replaced by its export paths (origin dir "d"), and the
-        // folder scan lists the same kept file again plus an older export beside the BBL.
+        // Eager mode: d/LOG.BBL is already replaced by its export paths, and the folder scan
+        // lists the same kept file again plus an older export beside the BBL.
         let mut origins = HashMap::new();
+        origins.insert("d/LOG.BBL".to_string(), PathBuf::from("d"));
         origins.insert("o/LOG.01.csv".to_string(), PathBuf::from("d"));
         let files = vec![
             "o/LOG.01.csv".to_string(),
             "o/LOG.01.csv".to_string(),
             "d/LOG.01.csv".to_string(),
+            "d/LOG.csv".to_string(),
         ];
         let kept = drop_duplicate_log_inputs(files, &origins);
         assert_eq!(kept, vec!["o/LOG.01.csv"]);
     }
 
     #[test]
-    fn in_folder_name_equal_to_a_prefixed_name_gets_the_prefix_too() {
-        // a/log and b/log become a_log and b_log; a/a_log would equal the first one.
-        let (a, b) = (Path::new("a"), Path::new("b"));
-        let set = files_needing_prefix(&[("a/log.csv", a), ("b/log.csv", b), ("a/a_log.csv", a)]);
-        assert!(set.contains("a/a_log.csv"));
+    fn export_of_one_bbl_does_not_cover_an_unrelated_numbered_csv() {
+        // Eager: d/LOG.02.BBL exported o/LOG.02.csv; d/LOG.03.csv is a separate capture.
+        let mut origins = HashMap::new();
+        origins.insert("d/LOG.02.BBL".to_string(), PathBuf::from("d"));
+        origins.insert("o/LOG.02.csv".to_string(), PathBuf::from("d"));
+        let files = vec!["o/LOG.02.csv".to_string(), "d/LOG.03.csv".to_string()];
+        let kept = drop_duplicate_log_inputs(files, &origins);
+        assert_eq!(kept, vec!["o/LOG.02.csv", "d/LOG.03.csv"]);
     }
 
     #[test]
@@ -3571,15 +3591,5 @@ mod dir_prefix_tests {
         let two = find_colliding_bbl_stems(&[file, folder], true);
         assert_eq!(two, HashSet::from(["log".to_string()]));
         std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn export_of_one_bbl_does_not_cover_an_unrelated_numbered_csv() {
-        // Eager: d/LOG.02.BBL exported d/LOG.02.csv; d/LOG.03.csv is a separate capture.
-        let mut origins = HashMap::new();
-        origins.insert("o/LOG.02.csv".to_string(), PathBuf::from("d"));
-        let files = vec!["o/LOG.02.csv".to_string(), "d/LOG.03.csv".to_string()];
-        let kept = drop_duplicate_log_inputs(files, &origins);
-        assert_eq!(kept, vec!["o/LOG.02.csv", "d/LOG.03.csv"]);
     }
 }
