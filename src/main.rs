@@ -2252,8 +2252,15 @@ INFO: Skipping Step Response input data filtering for {input_file_str}: {reason}
         )?;
     }
 
+    let rpm_filter = filter_response::extract_rpm_filter_config(Some(&header_metadata));
+
     if plot_config.throttle_freq_heatmap {
-        plot_throttle_freq_heatmap(&all_log_data, &root_name_string, sample_rate)?;
+        plot_throttle_freq_heatmap(
+            &all_log_data,
+            &root_name_string,
+            sample_rate,
+            rpm_filter.as_ref(),
+        )?;
     }
 
     if plot_config.d_term_heatmap {
@@ -2263,6 +2270,7 @@ INFO: Skipping Step Response input data filtering for {input_file_str}: {reason}
             sample_rate,
             using_debug_fallback,
             debug_mode_label,
+            rpm_filter.as_ref(),
         )?;
     }
 
@@ -2284,7 +2292,6 @@ INFO: Skipping Step Response input data filtering for {input_file_str}: {reason}
     // --- Filter configuration (from header metadata, independent of CSV data) ---
     let filter_config = Some(filter_response::parse_filter_config(&header_metadata));
     let dynamic_notch = filter_response::extract_dynamic_notch_range(Some(&header_metadata));
-    let rpm_filter = filter_response::extract_rpm_filter_config(Some(&header_metadata));
     let rpm_motor_frequencies = rpm_filter
         .as_ref()
         .and_then(|c| filter_response::rpm_motor_frequencies(&all_log_data, c));

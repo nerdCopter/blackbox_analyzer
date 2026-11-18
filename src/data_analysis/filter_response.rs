@@ -9,7 +9,7 @@ use crate::constants::{
     RPM_FILTER_CURVE_START_FLOOR_HZ, RPM_FILTER_CURVE_START_FRACTION,
     RPM_FILTER_DEFAULT_GYRO_RATE_HZ, RPM_FILTER_ERPM_PER_LSB, RPM_FILTER_MAX_HZ_RATE_FRACTION,
     RPM_FILTER_MICROSECONDS_PER_SECOND, RPM_FILTER_MIN_MOTOR_POLES, RPM_FILTER_POLES_PER_PAIR,
-    RPM_FILTER_SECONDS_PER_MINUTE,
+    RPM_FILTER_SECONDS_PER_MINUTE, RPM_HEATMAP_MIN_BIN_SAMPLES, RPM_HEATMAP_MIN_LINE_POINTS,
 };
 use crate::data_input::log_data::LogRowData;
 
@@ -1546,6 +1546,12 @@ pub fn rpm_filter_legend_text(
     )
 }
 
+/// Name of RPM filter harmonic `harmonic` (1 = motor fundamental) used by the heatmap legend,
+/// console and report.
+pub fn rpm_harmonic_label(harmonic: u32) -> String {
+    format!("Harmonic {harmonic}")
+}
+
 /// Motor fundamental frequency ranges for a whole log: all motors pooled and each motor alone.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RpmMotorFrequencies {
@@ -1580,6 +1586,108 @@ pub fn rpm_motor_frequencies(
     Some(RpmMotorFrequencies { pooled, per_motor })
 }
 
+/// Median motor fundamental (Hz) per throttle bin, pooling all motors. A sample lands in the
+/// bin of its row's `setpoint[3]` (same binning as the throttle-frequency heatmap). A bin with
+/// fewer than `min_samples` usable eRPM samples is `None`.
+pub fn rpm_fundamental_hz_by_throttle_bin(
+    log_data: &[LogRowData],
+    motor_poles: u32,
+    bin_count: usize,
+    throttle_min: f64,
+    throttle_max: f64,
+    min_samples: usize,
+) -> Vec<Option<f64>> {
+    let bin_size = (throttle_max - throttle_min) / bin_count.max(1) as f64;
+    if bin_count == 0 || bin_size <= 0.0 {
+        return Vec::new();
+    }
+    let mut per_bin: Vec<Vec<f64>> = vec![Vec::new(); bin_count];
+    for row in log_data {
+        let Some(throttle) = row.setpoint[3] else {
+            continue;
+        };
+        let idx = (((throttle - throttle_min) / bin_size).floor() as usize).min(bin_count - 1);
+        per_bin[idx].extend(
+            row.erpms
+                .iter()
+                .flatten()
+                .copied()
+                .filter(|v| v.is_finite() && *v > 0.0),
+        );
+    }
+    per_bin
+        .into_iter()
+        .map(|samples| {
+            if samples.len() < min_samples {
+                return None;
+            }
+            rpm_fundamental_hz_from_erpm(samples.into_iter(), motor_poles).map(|f| f.median)
+        })
+        .collect()
+}
+
+/// RPM filter harmonic lines for the heatmap: harmonic `h` is drawn at `h` x the per-bin median
+/// motor Hz (x) against the bin's throttle (y). A line breaks where a bin has no median or the
+/// harmonic leaves the plot (`x > x_max`); runs under `min_points` points are dropped. Each run is tagged
+/// with its harmonic number.
+fn rpm_harmonic_overlay_lines(
+    median_hz_by_bin: &[Option<f64>],
+    throttle_centers: &[f64],
+    harmonics: u32,
+    x_max: f64,
+    min_points: usize,
+) -> Vec<(u32, Vec<(f64, f64)>)> {
+    let mut lines = Vec::new();
+    for harmonic in 1..=harmonics {
+        let mut run: Vec<(f64, f64)> = Vec::new();
+        let mut finish = |run: &mut Vec<(f64, f64)>| {
+            if run.len() >= min_points {
+                lines.push((harmonic, std::mem::take(run)));
+            } else {
+                run.clear();
+            }
+        };
+        for (hz, &y) in median_hz_by_bin.iter().zip(throttle_centers) {
+            match hz.map(|f| f * harmonic as f64) {
+                Some(x) if x <= x_max => run.push((x, y)),
+                _ => finish(&mut run),
+            }
+        }
+        finish(&mut run);
+    }
+    lines
+}
+
+/// RPM harmonic overlay lines for a throttle-frequency heatmap, from the log's eRPM and the
+/// header `motor_poles`. Empty when the config has no pole count or no bin has enough samples.
+pub fn rpm_throttle_overlay_lines(
+    log_data: &[LogRowData],
+    config: &RpmFilterConfig,
+    throttle_min: f64,
+    throttle_max: f64,
+    throttle_centers: &[f64],
+    x_max: f64,
+) -> Vec<(u32, Vec<(f64, f64)>)> {
+    let Some(poles) = config.motor_poles else {
+        return Vec::new();
+    };
+    let medians = rpm_fundamental_hz_by_throttle_bin(
+        log_data,
+        poles,
+        throttle_centers.len(),
+        throttle_min,
+        throttle_max,
+        RPM_HEATMAP_MIN_BIN_SAMPLES,
+    );
+    rpm_harmonic_overlay_lines(
+        &medians,
+        throttle_centers,
+        config.harmonics,
+        x_max,
+        RPM_HEATMAP_MIN_LINE_POINTS,
+    )
+}
+
 /// Console and report lines for the RPM filter motor frequencies as `(label, text)`.
 /// Console prints `RPM Filter {label}: {text}`; the report prints `- **RPM Filter {label}:** {text}`.
 pub fn rpm_motor_frequency_lines(
@@ -1604,7 +1712,7 @@ pub fn rpm_motor_frequency_lines(
         "{RPM_FILTER_BAND_LOW_PERCENTILE:.0}th–{RPM_FILTER_BAND_HIGH_PERCENTILE:.0}th percentile"
     );
     let harmonics = (1..=config.harmonics)
-        .map(|h| format!("H{h} {}", range(&f.pooled, h as f64)))
+        .map(|h| format!("{} {}", rpm_harmonic_label(h), range(&f.pooled, h as f64)))
         .collect::<Vec<_>>()
         .join(", ");
     let per_motor = f
@@ -1766,7 +1874,11 @@ pub fn generate_rpm_filter_curves(
             curve_points[first.saturating_sub(1)..=(last + 1).min(num_points - 1)].to_vec();
 
         // Create label
-        let label = format!("RPM H{} @ {:.0}Hz", harmonic_num, harmonic_freq);
+        let label = format!(
+            "RPM {} @ {:.0}Hz",
+            rpm_harmonic_label(harmonic_num),
+            harmonic_freq
+        );
 
         curves.push((harmonic_num, label, curve_points, harmonic_freq));
     }
@@ -1777,6 +1889,98 @@ pub fn generate_rpm_filter_curves(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn harmonics_are_multiples_of_median_and_clipped() {
+        let medians = [Some(100.0), Some(120.0), Some(140.0)];
+        let y = [10.0, 20.0, 30.0];
+        let lines = rpm_harmonic_overlay_lines(&medians, &y, 3, 300.0, 2);
+        // Harmonics 1 and 2 stay on plot; harmonic 3 has one on-plot point (300 at bin 0), so it is dropped.
+        assert_eq!(lines[0].0, 1);
+        assert_eq!(lines[1].0, 2);
+        assert_eq!(
+            lines[0].1,
+            vec![(100.0, 10.0), (120.0, 20.0), (140.0, 30.0)]
+        );
+        assert_eq!(
+            lines[1].1,
+            vec![(200.0, 10.0), (240.0, 20.0), (280.0, 30.0)]
+        );
+        assert_eq!(lines.len(), 2);
+        // The plot limit is inclusive: points at 270 and exactly 300 Hz form a run that ends at 300.
+        let edge =
+            rpm_harmonic_overlay_lines(&[Some(90.0), Some(100.0), Some(110.0)], &y, 3, 300.0, 2);
+        assert_eq!(edge[2].0, 3);
+        assert_eq!(edge[2].1, vec![(270.0, 10.0), (300.0, 20.0)]);
+        // A higher minimum drops the three-point runs too.
+        assert!(rpm_harmonic_overlay_lines(&medians, &y, 3, 300.0, 4).is_empty());
+    }
+
+    #[test]
+    fn missing_bin_splits_the_line() {
+        let medians = [Some(100.0), None, Some(110.0), Some(120.0)];
+        let y = [1.0, 2.0, 3.0, 4.0];
+        let lines = rpm_harmonic_overlay_lines(&medians, &y, 1, 500.0, 2);
+        assert_eq!(lines, vec![(1, vec![(110.0, 3.0), (120.0, 4.0)])]);
+    }
+
+    #[test]
+    fn rpm_harmonic_label_is_shared_by_report_text() {
+        let label = rpm_harmonic_label(2);
+        assert_eq!(label, "Harmonic 2");
+        let cfg = RpmFilterConfig {
+            harmonics: 2,
+            min_hz: 100.0,
+            q_factor: 5.0,
+            weights: vec![1.0, 1.0],
+            motor_poles: Some(12),
+            fade_range_hz: 50.0,
+            lpf_hz: 150.0,
+        };
+        let freqs = RpmMotorFrequencies {
+            pooled: RpmFundamentalHz {
+                low: 100.0,
+                median: 200.0,
+                high: 300.0,
+            },
+            per_motor: vec![],
+        };
+        let lines = rpm_motor_frequency_lines(&cfg, Some(&freqs));
+        assert!(lines
+            .iter()
+            .any(|(k, text)| *k == "harmonic ranges" && text.contains(&label)));
+    }
+
+    #[test]
+    fn test_rpm_fundamental_hz_by_throttle_bin() {
+        // Throttle 0..1000 in 10 bins of 100: setpoint 50 -> bin 0, 950 -> bin 9, 1000 clamps to bin 9
+        let row = |throttle: f64, erpms: Vec<Option<f64>>| LogRowData {
+            setpoint: [None, None, None, Some(throttle)],
+            erpms,
+            ..Default::default()
+        };
+        let log = vec![
+            row(50.0, vec![Some(840.0), Some(840.0)]),
+            row(60.0, vec![Some(840.0), None]),
+            row(950.0, vec![Some(1680.0), Some(1680.0)]),
+            row(1000.0, vec![Some(1680.0), Some(0.0)]),
+            row(450.0, vec![Some(500.0)]), // below min_samples: bin 4 stays None
+        ];
+        let bins = rpm_fundamental_hz_by_throttle_bin(&log, 12, 10, 0.0, 1000.0, 3);
+        assert_eq!(bins.len(), 10);
+        // Spec: 12 poles, 840 LSB = 233.333 Hz; 1680 LSB = 466.667 Hz
+        assert!((bins[0].unwrap() - 233.333).abs() < 0.01);
+        assert!((bins[9].unwrap() - 466.667).abs() < 0.01);
+        assert!(bins[4].is_none() && bins[1].is_none());
+        assert!(rpm_fundamental_hz_by_throttle_bin(&log, 12, 0, 0.0, 1000.0, 1).is_empty());
+
+        // One usable sample plus zeros does not meet the minimum; the same count of usable samples does.
+        let mut zeros = vec![row(550.0, vec![Some(840.0)])];
+        zeros.extend((0..19).map(|_| row(550.0, vec![Some(0.0)])));
+        assert!(rpm_fundamental_hz_by_throttle_bin(&zeros, 12, 10, 0.0, 1000.0, 20)[5].is_none());
+        let valid: Vec<_> = (0..20).map(|_| row(550.0, vec![Some(840.0)])).collect();
+        assert!(rpm_fundamental_hz_by_throttle_bin(&valid, 12, 10, 0.0, 1000.0, 20)[5].is_some());
+    }
 
     #[test]
     fn test_rpm_fundamental_hz_from_erpm() {
@@ -1909,7 +2113,7 @@ mod tests {
         );
         assert_eq!(
             lines[1].1,
-            "H1 167–290 Hz (median 229), H2 334–580 Hz (median 458)"
+            "Harmonic 1 167–290 Hz (median 229), Harmonic 2 334–580 Hz (median 458)"
         );
         assert_eq!(lines[2].1, "M0 160–280 Hz (median 220), M1 no eRPM");
         let none = rpm_motor_frequency_lines(&cfg, None);

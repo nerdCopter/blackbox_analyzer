@@ -229,6 +229,7 @@ pub fn plot_psd_db_heatmap(
             x_label: "Time (s)".to_string(),
             y_label: "Frequency (Hz)".to_string(),
             max_db: GYRO_PSD_HEATMAP_MAX_DB, // Keep existing gyro scaling
+            overlay_lines: Vec::new(),
         };
 
         let filtered_heatmap_config = HeatmapPlotConfig {
@@ -243,6 +244,7 @@ pub fn plot_psd_db_heatmap(
             x_label: "Time (s)".to_string(),
             y_label: "Frequency (Hz)".to_string(),
             max_db: GYRO_PSD_HEATMAP_MAX_DB, // Keep existing gyro scaling
+            overlay_lines: Vec::new(),
         };
 
         all_heatmap_data[axis_idx] = Some((unfiltered_heatmap_config, filtered_heatmap_config));

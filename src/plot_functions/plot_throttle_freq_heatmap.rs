@@ -10,6 +10,7 @@ use crate::constants::{
 };
 use crate::data_analysis::calc_step_response;
 use crate::data_analysis::fft_utils;
+use crate::data_analysis::filter_response::RpmFilterConfig;
 use crate::data_input::log_data::LogRowData;
 use crate::plot_framework::{
     draw_dual_heatmap_plot, AxisHeatmapSpectrum, HeatmapData, HeatmapPlotConfig,
@@ -30,6 +31,7 @@ pub fn plot_throttle_freq_heatmap(
     log_data: &[LogRowData],
     root_name: &str,
     sample_rate: Option<f64>,
+    rpm_filter: Option<&RpmFilterConfig>,
 ) -> Result<(), Box<dyn Error>> {
     let output_file = format!("{root_name}_Throttle_Freq_Heatmap_comparative.png");
     let plot_type_name = "Throttle-Frequency Heatmap";
@@ -80,6 +82,16 @@ pub fn plot_throttle_freq_heatmap(
     let throttle_y_bins: Vec<f64> = (0..THROTTLE_Y_BINS_COUNT)
         .map(|i| THROTTLE_Y_MIN_VALUE + (i as f64 + 0.5) * throttle_bin_size) // Center of the bin
         .collect();
+
+    // RPM harmonics from logged eRPM; shared by every axis and both columns.
+    let rpm_overlay_lines = crate::plot_functions::rpm_heatmap_overlay_lines(
+        log_data,
+        rpm_filter,
+        THROTTLE_Y_MIN_VALUE,
+        THROTTLE_Y_MAX_VALUE,
+        &throttle_y_bins,
+        max_freq_to_plot,
+    );
 
     let mut all_heatmap_data: [Option<(HeatmapPlotConfig, HeatmapPlotConfig)>; 3] =
         Default::default();
@@ -244,6 +256,7 @@ pub fn plot_throttle_freq_heatmap(
             x_label: "Frequency (Hz)".to_string(),
             y_label: "Throttle (setpoint)".to_string(),
             max_db: GYRO_PSD_HEATMAP_MAX_DB, // Keep existing gyro scaling
+            overlay_lines: rpm_overlay_lines.clone(),
         };
 
         let filtered_heatmap_config = HeatmapPlotConfig {
@@ -258,6 +271,7 @@ pub fn plot_throttle_freq_heatmap(
             x_label: "Frequency (Hz)".to_string(),
             y_label: "Throttle (setpoint)".to_string(),
             max_db: GYRO_PSD_HEATMAP_MAX_DB, // Keep existing gyro scaling
+            overlay_lines: rpm_overlay_lines.clone(),
         };
 
         all_heatmap_data[axis_idx] = Some((unfiltered_heatmap_config, filtered_heatmap_config));
@@ -273,5 +287,3 @@ pub fn plot_throttle_freq_heatmap(
             })
     })
 }
-
-// src/plot_functions/plot_throttle_freq_heatmap.rs
