@@ -1546,6 +1546,12 @@ pub fn rpm_filter_legend_text(
     )
 }
 
+/// Name of RPM filter harmonic `harmonic` (1 = motor fundamental) used by the heatmap legend,
+/// console and report.
+pub fn rpm_harmonic_label(harmonic: u32) -> String {
+    format!("Harmonic {harmonic}")
+}
+
 /// Motor fundamental frequency ranges for a whole log: all motors pooled and each motor alone.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RpmMotorFrequencies {
@@ -1706,7 +1712,7 @@ pub fn rpm_motor_frequency_lines(
         "{RPM_FILTER_BAND_LOW_PERCENTILE:.0}th–{RPM_FILTER_BAND_HIGH_PERCENTILE:.0}th percentile"
     );
     let harmonics = (1..=config.harmonics)
-        .map(|h| format!("H{h} {}", range(&f.pooled, h as f64)))
+        .map(|h| format!("{} {}", rpm_harmonic_label(h), range(&f.pooled, h as f64)))
         .collect::<Vec<_>>()
         .join(", ");
     let per_motor = f
@@ -1868,7 +1874,11 @@ pub fn generate_rpm_filter_curves(
             curve_points[first.saturating_sub(1)..=(last + 1).min(num_points - 1)].to_vec();
 
         // Create label
-        let label = format!("RPM H{} @ {:.0}Hz", harmonic_num, harmonic_freq);
+        let label = format!(
+            "RPM {} @ {:.0}Hz",
+            rpm_harmonic_label(harmonic_num),
+            harmonic_freq
+        );
 
         curves.push((harmonic_num, label, curve_points, harmonic_freq));
     }
@@ -1885,7 +1895,7 @@ mod tests {
         let medians = [Some(100.0), Some(120.0), Some(140.0)];
         let y = [10.0, 20.0, 30.0];
         let lines = rpm_harmonic_overlay_lines(&medians, &y, 3, 300.0, 2);
-        // H1 and H2 stay on plot; H3 has one on-plot point (300 at bin 0), so it is dropped.
+        // Harmonics 1 and 2 stay on plot; harmonic 3 has one on-plot point (300 at bin 0), so it is dropped.
         assert_eq!(lines[0].0, 1);
         assert_eq!(lines[1].0, 2);
         assert_eq!(
@@ -1907,6 +1917,33 @@ mod tests {
         let y = [1.0, 2.0, 3.0, 4.0];
         let lines = rpm_harmonic_overlay_lines(&medians, &y, 1, 500.0, 2);
         assert_eq!(lines, vec![(1, vec![(110.0, 3.0), (120.0, 4.0)])]);
+    }
+
+    #[test]
+    fn rpm_harmonic_label_is_shared_by_report_text() {
+        let label = rpm_harmonic_label(2);
+        assert_eq!(label, "Harmonic 2");
+        let cfg = RpmFilterConfig {
+            harmonics: 2,
+            min_hz: 100.0,
+            q_factor: 5.0,
+            weights: vec![1.0, 1.0],
+            motor_poles: Some(12),
+            fade_range_hz: 50.0,
+            lpf_hz: 150.0,
+        };
+        let freqs = RpmMotorFrequencies {
+            pooled: RpmFundamentalHz {
+                low: 100.0,
+                median: 200.0,
+                high: 300.0,
+            },
+            per_motor: vec![],
+        };
+        let lines = rpm_motor_frequency_lines(&cfg, Some(&freqs));
+        assert!(lines
+            .iter()
+            .any(|(k, text)| *k == "harmonic ranges" && text.contains(&label)));
     }
 
     #[test]
@@ -2071,7 +2108,7 @@ mod tests {
         );
         assert_eq!(
             lines[1].1,
-            "H1 167–290 Hz (median 229), H2 334–580 Hz (median 458)"
+            "Harmonic 1 167–290 Hz (median 229), Harmonic 2 334–580 Hz (median 458)"
         );
         assert_eq!(lines[2].1, "M0 160–280 Hz (median 220), M1 no eRPM");
         let none = rpm_motor_frequency_lines(&cfg, None);

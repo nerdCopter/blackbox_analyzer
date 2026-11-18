@@ -25,7 +25,7 @@ pub mod plot_step_response;
 pub mod plot_throttle_freq_heatmap;
 
 // Helper function for formatting debug suffix in plot labels
-/// RPM filter harmonic lines for a throttle-frequency heatmap, labeled `RPM Filter H<n>` for the
+/// RPM filter harmonic lines for a throttle-frequency heatmap, labeled `RPM Filter Harmonic <n>` for the
 /// legend. Empty without eRPM, `motor_poles` or a Betaflight RPM filter config.
 pub fn rpm_heatmap_overlay_lines(
     log_data: &[LogRowData],
@@ -48,7 +48,10 @@ pub fn rpm_heatmap_overlay_lines(
     )
     .into_iter()
     .map(|(harmonic, points)| HeatmapOverlayLine {
-        label: format!("RPM Filter H{harmonic}"),
+        label: format!(
+            "RPM Filter {}",
+            filter_response::rpm_harmonic_label(harmonic)
+        ),
         points,
     })
     .collect()
