@@ -2836,6 +2836,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Output names are claimed per output folder: an input holding the same bytes as an earlier
     // one is the same log and is dropped (before profiling, so it counts once); a different log
     // with the same file name gets a numeric suffix. BBL placeholders claim when expanded.
+    // Create `-O` before claiming names so its canonical path is the same for every claim
+    // (process_file creates it anyway).
+    if let Some(dir) = output_dir.as_deref() {
+        if let Err(e) = fs::create_dir_all(dir) {
+            eprintln!("⚠️  Cannot create output directory {dir}: {e}");
+        }
+    }
     let out_dir_of = |f: &str| -> PathBuf {
         match output_dir.as_deref() {
             Some(dir) => PathBuf::from(dir),
