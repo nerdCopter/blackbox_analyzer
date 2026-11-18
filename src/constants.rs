@@ -306,6 +306,7 @@ pub const COLOR_OPTIMAL_P_SKIP: RGBColor = RGBColor(120, 60, 60);
 // Stroke widths for lines
 pub const LINE_WIDTH_PLOT: u32 = 1; // Width for plot lines
 pub const LINE_WIDTH_LEGEND: u32 = 2; // Width for legend lines
+pub const LEGEND_BACKGROUND_OPACITY: f64 = 0.5; // Opacity of the white legend box behind series labels; lower lets a spectrum spike under the box show through
 
 // Filtering delay analysis thresholds and parameters
 #[allow(dead_code)] // Used in enhanced cross-correlation analysis

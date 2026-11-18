@@ -238,7 +238,7 @@ pub fn plot_motor_erpm(
         chart
             .configure_series_labels()
             .position(SeriesLabelPosition::UpperRight)
-            .background_style(WHITE.mix(0.8))
+            .background_style(WHITE.mix(crate::constants::LEGEND_BACKGROUND_OPACITY))
             .border_style(BLACK)
             .label_font(crate::font_config::FONT_TUPLE_LEGEND)
             .draw()?;
