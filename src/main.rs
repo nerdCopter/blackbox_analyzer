@@ -12,6 +12,7 @@ mod plot_functions;
 mod report;
 mod types;
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::env;
 use std::error::Error;
@@ -273,6 +274,18 @@ struct BblExpansionOptions<'a> {
     /// file). Consulted by `expand_bbl_to_scratch_csvs` to decide whether a retained export needs
     /// a disambiguating suffix; see `find_colliding_bbl_stems`.
     colliding_stems: &'a HashSet<String>,
+    /// Canonical paths of the `.bbl` files already expanded this run. A BBL named twice (for
+    /// example the file and its folder) would otherwise export into two scratch directories and
+    /// count as two flights. Only consulted when `eager` is true.
+    expanded_bbls: &'a RefCell<HashSet<PathBuf>>,
+}
+
+/// True the first time `bbl_path` (canonicalized) is claimed in `seen`, false for a repeat.
+fn claim_bbl_expansion(seen: &RefCell<HashSet<PathBuf>>, bbl_path: &Path) -> bool {
+    let canonical = bbl_path
+        .canonicalize()
+        .unwrap_or_else(|_| bbl_path.to_path_buf());
+    seen.borrow_mut().insert(canonical)
 }
 
 /// True for a `.bbl`/`.BBL` or `.bfl`/`.BFL` extension (case-insensitive). Both extensions name
@@ -576,6 +589,14 @@ fn expand_one_bbl_file(
         return;
     }
 
+    if !claim_bbl_expansion(bbl_opts.expanded_bbls, bbl_path) {
+        print_discovery_skip_warning(&format!(
+            "Note: Skipping {}: input already listed",
+            bbl_path.display()
+        ));
+        return;
+    }
+
     let result = expand_bbl_to_scratch_csvs(
         bbl_path,
         bbl_opts.force_export,
@@ -865,7 +886,9 @@ fn print_usage_and_exit(program_name: &str) {
     eprintln!(
         "              -O/--output-dir). A later --keep run reuses a complete, fresh set (CSV and"
     );
-    eprintln!("              .headers.csv newer than the .bbl) instead of decoding; otherwise it");
+    eprintln!(
+        "              .headers.csv not older than the .bbl) instead of decoding; otherwise it"
+    );
     eprintln!("              decodes. -F/--force-export re-extracts.");
     eprintln!();
     eprintln!("--- PLOT TYPE SELECTION ---");
@@ -2758,6 +2781,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     } else {
         HashSet::new()
     };
+    let expanded_bbls = RefCell::new(HashSet::new());
     let bbl_opts = BblExpansionOptions {
         force_export: bbl_force_export,
         keep: keep_bbl_csv,
@@ -2768,6 +2792,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         // time.
         eager: estimate_optimal_p,
         colliding_stems: &colliding_bbl_stems,
+        expanded_bbls: &expanded_bbls,
     };
     let (input_files, skipped_subdirs, bbl_origin_dirs, bbl_scratch_dirs) =
         expand_input_paths(&input_paths, recursive, bbl_opts, debug_mode);
@@ -3182,6 +3207,7 @@ mod bbl_input_expansion_tests {
                 keep_base_dir: None,
                 eager: true,
                 colliding_stems: &empty_collisions,
+                expanded_bbls: &RefCell::new(HashSet::new()),
             };
 
             expand_one_bbl_file(
@@ -3220,6 +3246,7 @@ mod bbl_input_expansion_tests {
             keep_base_dir: None,
             eager: false,
             colliding_stems: &empty_collisions,
+            expanded_bbls: &RefCell::new(HashSet::new()),
         };
 
         expand_one_bbl_file(
@@ -3252,6 +3279,7 @@ mod bbl_input_expansion_tests {
                 keep_base_dir: None,
                 eager: false,
                 colliding_stems: &empty_collisions,
+                expanded_bbls: &RefCell::new(HashSet::new()),
             };
             let (csv_files, _skipped_subdirs, bbl_origin_dirs, scratch_dirs) = expand_input_paths(
                 &[path.to_string_lossy().to_string()],
@@ -3283,6 +3311,7 @@ mod bbl_input_expansion_tests {
             keep_base_dir: None,
             eager: true,
             colliding_stems: &empty_collisions,
+            expanded_bbls: &RefCell::new(HashSet::new()),
         };
         let (csv_files, _skipped_subdirs, bbl_origin_dirs, _scratch_dirs) = expand_input_paths(
             &[path.to_string_lossy().to_string()],
@@ -3467,5 +3496,14 @@ mod dir_prefix_tests {
         let (a, b) = (Path::new("a"), Path::new("b"));
         let set = files_needing_prefix(&[("a/log.csv", a), ("b/log.csv", b), ("a/a_log.csv", a)]);
         assert!(set.contains("a/a_log.csv"));
+    }
+
+    #[test]
+    fn a_repeated_bbl_is_claimed_once() {
+        let seen = RefCell::new(HashSet::new());
+        let p = Path::new("d/LOG.BBL");
+        assert!(claim_bbl_expansion(&seen, p));
+        assert!(!claim_bbl_expansion(&seen, p));
+        assert!(claim_bbl_expansion(&seen, Path::new("d/OTHER.BBL")));
     }
 }
