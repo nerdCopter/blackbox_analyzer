@@ -851,9 +851,10 @@ fn drop_duplicate_log_inputs(
                 ));
             }
         } else if let Some(origin) = bbl_origin_dirs.get(f) {
-            let dir = comparable_dir(origin);
-            for cand in export_stem_candidates(&input_stem(f)) {
-                bbl_keys.insert((dir.clone(), cand));
+            // Only the export's own name: it may come from `LOG.BBL` or `LOG.02.BBL`, and a
+            // looser key would also cover an unrelated `LOG.03.csv`.
+            if let Some(name) = export_stem_candidates(&input_stem(f)).into_iter().next() {
+                bbl_keys.insert((comparable_dir(origin), name));
             }
         }
     }
@@ -909,7 +910,7 @@ fn print_usage_and_exit(program_name: &str) {
     eprintln!("            low-value (very short / low data density / minimal gyro activity).");
     eprintln!("  -K, --keep: Keep the exported .csv/.headers.csv files (source folder, or");
     eprintln!(
-        "              -O/--output-dir). A later --keep run reuses a complete, fresh set (CSV and"
+        "              -O/--output-dir). A later --keep run reuses a matching, fresh set (CSV and"
     );
     eprintln!(
         "              .headers.csv not older than the .bbl) instead of decoding; otherwise it"
@@ -3570,5 +3571,15 @@ mod dir_prefix_tests {
         let two = find_colliding_bbl_stems(&[file, folder], true);
         assert_eq!(two, HashSet::from(["log".to_string()]));
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn export_of_one_bbl_does_not_cover_an_unrelated_numbered_csv() {
+        // Eager: d/LOG.02.BBL exported d/LOG.02.csv; d/LOG.03.csv is a separate capture.
+        let mut origins = HashMap::new();
+        origins.insert("o/LOG.02.csv".to_string(), PathBuf::from("d"));
+        let files = vec!["o/LOG.02.csv".to_string(), "d/LOG.03.csv".to_string()];
+        let kept = drop_duplicate_log_inputs(files, &origins);
+        assert_eq!(kept, vec!["o/LOG.02.csv", "d/LOG.03.csv"]);
     }
 }

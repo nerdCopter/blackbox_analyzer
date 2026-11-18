@@ -199,7 +199,10 @@ fn find_reusable_exports(
             .and_then(|m| m.modified().ok())
             .is_some_and(|m| m >= bbl_mtime)
     };
-    let mut found: Vec<PathBuf> = Vec::new();
+    // One export generation per flight: a re-export beside a tagged pair is written as
+    // `.tag-N`, so keep only the newest file for each flight name.
+    let mut newest: std::collections::HashMap<String, (std::time::SystemTime, PathBuf)> =
+        std::collections::HashMap::new();
     // A bare "LOG.BBL" has an empty parent; read_dir rejects "" where "." works.
     let export_dir = if export_dir.as_os_str().is_empty() {
         Path::new(".")
@@ -237,8 +240,18 @@ fn find_reusable_exports(
         if !not_older(&path) || !not_older(&headers) {
             return Err(Some("a kept export is older than the BBL"));
         }
-        found.push(path);
+        let modified = std::fs::metadata(&path)
+            .and_then(|m| m.modified())
+            .unwrap_or(bbl_mtime);
+        let flight = split_collision_tag(&lower).0.to_string();
+        match newest.get(&flight) {
+            Some((seen, _)) if *seen >= modified => {}
+            _ => {
+                newest.insert(flight, (modified, path));
+            }
+        }
     }
+    let mut found: Vec<PathBuf> = newest.into_values().map(|(_, path)| path).collect();
     found.sort();
     if found.is_empty() {
         Err(None)
@@ -590,6 +603,21 @@ mod tests {
         // A colliding stem must not take an untagged export, nor a non-colliding one a tagged one.
         assert_eq!(find_reusable_exports(&bbl, &dir, Some("999999")), Err(None));
         assert_eq!(find_reusable_exports(&bbl, &dir, None), Err(None));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn reuse_takes_only_the_newest_generation_of_a_tagged_flight() {
+        let dir = temp_test_dir("reuse-generation");
+        let bbl = write_bbl(&dir, 0);
+        write_export(&dir, "LOG.ab12cd", 100);
+        write_export(&dir, "LOG.ab12cd-2", 200);
+        write_export(&dir, "LOG.02.ab12cd", 100);
+        let found = find_reusable_exports(&bbl, &dir, Some("ab12cd")).unwrap();
+        assert_eq!(
+            found,
+            vec![dir.join("LOG.02.ab12cd.csv"), dir.join("LOG.ab12cd-2.csv")]
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
