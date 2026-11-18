@@ -306,7 +306,7 @@ pub const COLOR_OPTIMAL_P_SKIP: RGBColor = RGBColor(120, 60, 60);
 // Stroke widths for lines
 pub const LINE_WIDTH_PLOT: u32 = 1; // Width for plot lines
 pub const LINE_WIDTH_LEGEND: u32 = 2; // Width for legend lines
-pub const LEGEND_BACKGROUND_OPACITY: f64 = 0.5; // Opacity of the white legend box behind series labels; lower lets a spectrum spike under the box show through
+pub const LEGEND_BACKGROUND_OPACITY: f64 = 0.7; // Opacity of the white legend box behind series labels; lower lets a spectrum spike under the box show through, higher keeps the text readable
 pub const HEATMAP_LEGEND_BACKGROUND_OPACITY: f64 = 0.7; // Opacity of the white legend box on heatmaps; higher than the line plots because the colored cells are darker behind the text
 
 // Filtering delay analysis thresholds and parameters
