@@ -516,6 +516,8 @@ enum NameClaim {
 /// name, and is skipped. Different logs that share a file name get a numeric suffix.
 #[derive(Default)]
 struct OutputClaims {
+    /// Result already given to a claimed file, so claiming the same file again is idempotent.
+    by_path: HashMap<PathBuf, Option<u32>>,
     taken: HashMap<(PathBuf, String), PathBuf>,
     /// Claimed inputs by output folder and byte length: only equal-length files are compared.
     by_len: HashMap<(PathBuf, u64), Vec<PathBuf>>,
@@ -523,6 +525,29 @@ struct OutputClaims {
 
 impl OutputClaims {
     fn claim(&mut self, out_dir: &Path, stem: &str, csv: &Path) -> NameClaim {
+        let out_dir = &out_dir
+            .canonicalize()
+            .unwrap_or_else(|_| out_dir.to_path_buf());
+        let csv_key = csv.canonicalize().unwrap_or_else(|_| csv.to_path_buf());
+        match self.by_path.get(&csv_key) {
+            Some(None) => return NameClaim::Free,
+            Some(Some(n)) => return NameClaim::Suffixed(*n),
+            None => {}
+        }
+        let claimed = self.claim_new(out_dir, stem, csv);
+        match &claimed {
+            NameClaim::Free => {
+                self.by_path.insert(csv_key, None);
+            }
+            NameClaim::Suffixed(n) => {
+                self.by_path.insert(csv_key, Some(*n));
+            }
+            NameClaim::Duplicate(_) => {}
+        }
+        claimed
+    }
+
+    fn claim_new(&mut self, out_dir: &Path, stem: &str, csv: &Path) -> NameClaim {
         let len = fs::metadata(csv).map(|m| m.len()).ok();
         if let Some(len) = len {
             let same_log = self
@@ -3459,11 +3484,22 @@ mod output_name_tests {
         assert_eq!(claims.claim(out, "LOG", &f1), NameClaim::Free);
         assert_eq!(claims.claim(out, "log", &f2), NameClaim::Suffixed(2));
         assert_eq!(claims.claim(out, "LOG", &f3), NameClaim::Suffixed(3));
-        // A repeat of the suffixed log is still recognized as that log.
-        assert_eq!(
-            claims.claim(out, "LOG", &f2),
-            NameClaim::Duplicate(f2.clone())
-        );
+        // Claiming the same file again returns its earlier result.
+        assert_eq!(claims.claim(out, "LOG", &f2), NameClaim::Suffixed(2));
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn claiming_the_same_file_twice_gives_the_same_result() {
+        // A BBL's reused export is the same path as an already-claimed kept CSV input.
+        let d = temp_dir("claim-same");
+        let (f1, f2) = (write(&d, "a.csv", b"one"), write(&d, "b.csv", b"two"));
+        let mut claims = OutputClaims::default();
+        let out = Path::new("out");
+        assert_eq!(claims.claim(out, "x", &f1), NameClaim::Free);
+        assert_eq!(claims.claim(out, "x", &f2), NameClaim::Suffixed(2));
+        assert_eq!(claims.claim(out, "x", &f1), NameClaim::Free);
+        assert_eq!(claims.claim(out, "x", &f2), NameClaim::Suffixed(2));
         std::fs::remove_dir_all(&d).ok();
     }
 

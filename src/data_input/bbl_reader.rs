@@ -189,8 +189,10 @@ fn find_reusable_exports(
     } else {
         export_dir
     };
-    for entry in std::fs::read_dir(export_dir).map_err(|_| None)?.flatten() {
-        let path = entry.path();
+    for entry in std::fs::read_dir(export_dir).map_err(|_| None)? {
+        let path = entry
+            .map_err(|_| Some("a directory entry could not be read"))?
+            .path();
         let Some(file_name) = path.file_name() else {
             continue;
         };
