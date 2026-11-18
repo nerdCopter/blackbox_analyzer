@@ -525,6 +525,8 @@ pub const RPM_FILTER_MAX_HZ_RATE_FRACTION: f64 = 0.48; // Betaflight keeps the R
 pub const RPM_FILTER_CURVE_START_FRACTION: f64 = 0.5; // RPM curves are drawn from this fraction of rpm_filter_min_hz (the notch is faded out below min_hz)
 pub const RPM_FILTER_CURVE_START_FLOOR_HZ: f64 = 1.0; // Lowest curve start, Hz (log-spaced sampling needs a positive start)
 pub const RPM_FILTER_CURVE_MIN_ATTENUATION: f64 = 0.05; // RPM curves are drawn only where the notch attenuates by at least this fraction (0.05 = 5%)
+pub const GYRO_RATE_MIN_HZ: f64 = 1000.0; // Lowest gyro rate accepted from a header (1 kHz, e.g. EmuFlight with hardware LPF)
+pub const GYRO_RATE_MAX_HZ: f64 = 32500.0; // Highest gyro rate accepted from a header: 32 kHz gyro (31.25 us period, written as integer 31 = 32258 Hz)
 pub const RPM_FILTER_MICROSECONDS_PER_SECOND: f64 = 1_000_000.0; // blackbox looptime header is in microseconds
 pub const RPM_HEATMAP_MIN_BIN_SAMPLES: usize = 20; // Throttle bins with fewer eRPM samples get no RPM harmonic point on the heatmap
 pub const RPM_HEATMAP_LINE_COLOR: (u8, u8, u8) = (235, 30, 30); // Red: opposite the viridis heatmap's blue-green-yellow range so the harmonic lines stand out
