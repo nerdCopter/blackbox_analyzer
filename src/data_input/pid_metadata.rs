@@ -23,6 +23,15 @@ pub enum FirmwareType {
     Unknown,
 }
 
+/// Aggressive P:D target with its D values, from `AxisPid::aggressive_recommendation`
+#[derive(Debug, Clone, Copy)]
+pub struct AggressiveRecommendation {
+    pub pd_ratio: f64,
+    pub d: Option<u32>,
+    pub d_min: Option<u32>,
+    pub d_max: Option<u32>,
+}
+
 /// PID values for a single axis
 #[derive(Debug, Clone, Default)]
 pub struct AxisPid {
@@ -76,7 +85,8 @@ impl AxisPid {
     /// Note: For Betaflight < 4.6, base D = D-Max (maximum). For BF >= 4.6, base D = D-Min (minimum).
     /// This function calculates proportionally regardless of firmware version.
     ///
-    /// When dmax_enabled is false, returns (base_d, None, None) regardless of d_min/d_max field presence.
+    /// When this axis has no valid D-Min/D-Max pair (see `d_range_for_display`), returns
+    /// (base_d, None, None) regardless of d_min/d_max field presence.
     pub fn calculate_goal_d_with_range(
         &self,
         target_ratio: f64,
@@ -96,8 +106,13 @@ impl AxisPid {
             return (recommended_base_d, None, None);
         }
 
-        // If D-Min/D-Max system is disabled, only return base D
-        if !dmax_enabled {
+        // Without a valid D-Min/D-Max pair on this axis, only return base D
+        if self.d_range_for_display(dmax_enabled).is_none() {
+            return (recommended_base_d, None, None);
+        }
+
+        // A recommended base D that rounds to 0 has no representable range: base D only.
+        if rec_base == 0 {
             return (recommended_base_d, None, None);
         }
 
@@ -107,7 +122,8 @@ impl AxisPid {
         // Calculate recommended D-Min if present
         let rec_d_min = self.d_min.map(|current_min| {
             if current_min > 0 {
-                ((current_min as f64) * scale_factor).round() as u32
+                // A recommended D-Min of 0 would switch dynamic D off.
+                (((current_min as f64) * scale_factor).round() as u32).max(1)
             } else {
                 0
             }
@@ -133,42 +149,107 @@ impl AxisPid {
         (recommended_base_d, rec_d_min, rec_d_max)
     }
 
-    /// Format D term with dynamic range support (D-Min/D-Max)
+    /// True when this axis has a dynamic D range: 0 < D-Min < D-Max.
     ///
-    /// Decision tree when D-Max system is enabled:
-    /// 1. If D-Min != D-Max and both non-zero → show "D:min/max" range
-    /// 2. If only D-Min or D-Max is non-zero → show that single value
-    /// 3. If D-Min == D-Max and both non-zero → show base D value (or D-Min if D is missing)
-    /// 4. Fallback to base D value if available
-    fn format_d_term(d: Option<u32>, d_min: Option<u32>, d_max: Option<u32>) -> Option<String> {
-        match (d_min, d_max) {
-            // Both D-Min and D-Max available and different - show range
-            (Some(min), Some(max)) if min != max && min > 0 && max > 0 => {
-                Some(format!("D:{min}/{max}"))
-            }
-            // D-Min non-zero but D-Max is zero - show only D-Min
-            (Some(min), Some(0)) if min > 0 => Some(format!("D:{min}")),
-            // D-Max non-zero but D-Min is zero - show only D-Max
-            (Some(0), Some(max)) if max > 0 => Some(format!("D:{max}")),
-            // D-Min and D-Max are equal and non-zero - prefer base D, fallback to D-Min
-            (Some(min), Some(max)) if min == max && min > 0 => {
-                Some(format!("D:{}", d.unwrap_or(min)))
-            }
-            // Only D-Min present (no D-Max)
-            // If base D exists and differs, show min/base (min first to maintain min/max ordering)
-            (Some(min), None) if min > 0 => match d {
-                Some(base) if base != min => Some(format!("D:{min}/{base}")),
-                _ => Some(format!("D:{min}")),
-            },
-            // Only D-Max present and base D is missing - show D-Max directly
-            (None, Some(max)) if d.is_none() && max > 0 => Some(format!("D:{max}")),
-            // Only D-Max available (no D-Min) and different from base D
-            (None, Some(max)) if d.is_some() && d != Some(max) && max > 0 => {
-                Some(format!("D:{}/{max}", d.unwrap()))
-            }
-            // Fallback to base D value
-            _ => d.map(|v| format!("D:{v}")),
+    /// Matches the firmware activation rule on every Betaflight branch:
+    /// - 4.0 to 4.5 (`pid_init.c` / `pid.c`): `d_min > 0 && d_min < D`, D is the maximum.
+    /// - 2025.12 and master (`pid_init.c`): `D > 0 && d_max > D`, D is the minimum.
+    ///
+    /// `parse_pid_metadata` fills the missing end of the range from base D, so this one
+    /// check covers both layouts.
+    pub fn has_dynamic_d_range(&self) -> bool {
+        matches!((self.d_min, self.d_max), (Some(min), Some(max)) if min > 0 && min < max)
+    }
+
+    /// Aggressive P:D recommendation for the significant-overshoot zone: the ratio is the
+    /// current P:D times `PD_RATIO_AGGRESSIVE_MULTIPLIER`, with the matching D (and D-Min/D-Max
+    /// on an axis with a valid range). Single source for the plot legend, console and report.
+    pub fn aggressive_recommendation(
+        &self,
+        current_pd_ratio: f64,
+        dmax_enabled: bool,
+    ) -> AggressiveRecommendation {
+        let pd_ratio = current_pd_ratio * crate::constants::PD_RATIO_AGGRESSIVE_MULTIPLIER;
+        let (d, d_min, d_max) = self.calculate_goal_d_with_range(pd_ratio, dmax_enabled);
+        AggressiveRecommendation {
+            pd_ratio,
+            d,
+            d_min,
+            d_max,
         }
+    }
+
+    /// Optional D-1 hint for an axis in the near-optimal peak zone. Single source for the
+    /// plot legend, console and report: base D, or D-Min and D-Max when this axis has a
+    /// valid range (`d_range_for_display`), each lowered by `D_STEP_OPTIONAL`. `None` when
+    /// no D is known or when applying the hint would switch dynamic D off: a lowered end of
+    /// 0, or a lowered base D that reaches the other end of an active range.
+    pub fn near_optimal_d_hint(&self, dmax_enabled: bool) -> Option<String> {
+        let step = crate::constants::D_STEP_OPTIONAL;
+        let lowered_d = self.d.map(|v| v.saturating_sub(step)).filter(|&v| v > 0)?;
+        let Some((min, max)) = self.d_range_for_display(dmax_enabled) else {
+            return format_d_target(Some(lowered_d), None, None, false)
+                .map(|text| format!("{text} [optional D−1]"));
+        };
+        let (low_min, low_max) = (min.saturating_sub(step), max.saturating_sub(step));
+        let text = if low_min > 0 {
+            format_d_target(Some(lowered_d), Some(low_min), Some(low_max), true)
+        } else if self.d == Some(max) && min < max && lowered_d <= min {
+            // Lowering only the upper end would collapse the range (D reaches D-Min).
+            return None;
+        } else {
+            format_d_target(Some(lowered_d), None, None, false)
+        };
+        text.map(|t| format!("{t} [optional D−1]"))
+    }
+
+    /// Legend and console line for a near-optimal axis: the D-1 hint as a conservative
+    /// recommendation, or the "none" line when no hint applies.
+    pub fn near_optimal_recommendation_line(&self, dmax_enabled: bool) -> String {
+        match self.near_optimal_d_hint(dmax_enabled) {
+            Some(hint) => format!("Recommendation (conservative): {hint}"),
+            None => "Recommendation (none): No obvious tuning adjustments needed".to_string(),
+        }
+    }
+
+    /// D-Min and D-Max for display and recommendation text: both known, `0 < D-Min <= D-Max`,
+    /// on a log with dynamic D enabled; `None` otherwise (callers then show base D). Every
+    /// plot, report and console path uses this one rule so they agree per axis.
+    pub fn d_range_for_display(&self, dmax_enabled: bool) -> Option<(u32, u32)> {
+        match (dmax_enabled, self.d_min, self.d_max) {
+            (true, Some(min), Some(max)) if min > 0 && min <= max => Some((min, max)),
+            _ => None,
+        }
+    }
+
+    /// Format every known gain for the report: P, I, D, D-Min, D-Max, FF.
+    /// When dynamic D is configured on the log (`dmax_enabled`), every axis with a valid
+    /// range (`d_range_for_display`) prints `D-Min:a D-Max:b` in place of the base
+    /// D, even when the two are equal, because the base D equals one end of the range and
+    /// its meaning changed between Betaflight versions. Otherwise it prints `D:x`. Each
+    /// field prints only when the log header carries it. EmuFlight labels feedforward "DF" and hides a zero value;
+    /// other firmware prints FF:0.
+    pub fn format_for_report(&self, firmware_type: &FirmwareType, dmax_enabled: bool) -> String {
+        let mut parts = Vec::new();
+        if let Some(p) = self.p {
+            parts.push(format!("P:{p}"));
+        }
+        if let Some(i) = self.i {
+            parts.push(format!("I:{i}"));
+        }
+        if let Some((min, max)) = self.d_range_for_display(dmax_enabled) {
+            parts.push(format!("D-Min:{min}"));
+            parts.push(format!("D-Max:{max}"));
+        } else if let Some(d) = self.d {
+            parts.push(format!("D:{d}"));
+        }
+        match (firmware_type, self.ff) {
+            (FirmwareType::EmuFlight, Some(ff)) if ff > 0 => parts.push(format!("DF:{ff}")),
+            (FirmwareType::EmuFlight, _) => {}
+            (_, Some(ff)) => parts.push(format!("FF:{ff}")),
+            _ => {}
+        }
+        parts.join(" ")
     }
 
     /// Format PID values for display with firmware-specific terminology
@@ -195,26 +276,24 @@ impl AxisPid {
             parts.push(format!("I:{i}"));
         }
 
-        // Handle D, D-Min, and D-Max formatting
-        if dmax_enabled {
-            if let Some(d_str) = Self::format_d_term(self.d, self.d_min, self.d_max) {
-                parts.push(d_str);
-            }
-        } else {
-            // D-Max system disabled - show only base D value
-            if let Some(d) = self.d {
-                parts.push(format!("D:{d}"));
-            }
+        // D, or D-Min/D-Max when this axis has a valid range on a dynamic-D log
+        if let Some((min, max)) = self.d_range_for_display(dmax_enabled) {
+            parts.push(format!("D:{min}/{max}"));
+        } else if let Some(d) = self.d {
+            parts.push(format!("D:{d}"));
         }
 
         // Add FF before P:D ratio
+        // EmuFlight (DF) hides a zero value; other firmware shows an explicit FF:0
+        // when the log header carries an FF value of 0.
         if let Some(ff) = self.ff {
-            if ff > 0 {
-                let ff_label = match firmware_type {
-                    FirmwareType::EmuFlight => "DF",
-                    _ => "FF",
-                };
-                parts.push(format!("{ff_label}:{ff}"));
+            match firmware_type {
+                FirmwareType::EmuFlight => {
+                    if ff > 0 {
+                        parts.push(format!("DF:{ff}"));
+                    }
+                }
+                _ => parts.push(format!("FF:{ff}")),
             }
         }
 
@@ -269,57 +348,34 @@ impl PidMetadata {
         &self.firmware_type
     }
 
-    /// Check if D-Min/D-Max dynamic D is enabled
-    /// Returns true if any control parameter (gain, advance, or simplified gain) is non-zero
-    /// AND there's actual dynamic range on roll/pitch axes.
+    /// Check if D-Min/D-Max dynamic D is configured on any axis.
     ///
-    /// Dynamic range checks:
-    /// - BF 4.6+ (d_max field exists): D-Min ≠ D-Max
-    /// - BF <4.6 (no d_max field): D ≠ D-Min (where D is the max)
-    ///
-    /// When values are equal, there's no dynamic range and system is effectively disabled.
+    /// The firmware activates dynamic D from the D-Min/D-Max range alone (see
+    /// `AxisPid::has_dynamic_d_range`). The gain and advance settings only shape the
+    /// boost, and simplified tuning only changes how the stored values are computed.
+    /// None of them decide whether the range applies, so none of them gate this check.
     pub fn is_dmax_enabled(&self) -> bool {
-        // Check if control parameters are non-zero
-        let has_active_params = self.d_max_gain.is_some_and(|g| g > 0)
-            || self.d_max_advance.is_some_and(|a| a > 0)
-            || self.simplified_d_max_gain.is_some_and(|sg| sg > 0);
+        [&self.roll, &self.pitch, &self.yaw]
+            .iter()
+            .any(|axis| axis.has_dynamic_d_range())
+    }
+}
 
-        if !has_active_params {
-            return false;
-        }
-
-        // Check roll axis for dynamic range
-        let roll_has_range = if self.roll.d_max.is_some() {
-            // BF 4.6+: Check if D-Min ≠ D-Max
-            self.roll
-                .d_min
-                .and_then(|dmin| self.roll.d_max.map(|dmax| dmin != dmax))
-                .unwrap_or(false)
-        } else {
-            // BF <4.6: Check if D ≠ D-Min (D is the max in old firmware)
-            self.roll
-                .d
-                .and_then(|d| self.roll.d_min.map(|dmin| d != dmin))
-                .unwrap_or(false)
-        };
-
-        // Check pitch axis for dynamic range
-        let pitch_has_range = if self.pitch.d_max.is_some() {
-            // BF 4.6+: Check if D-Min ≠ D-Max
-            self.pitch
-                .d_min
-                .and_then(|dmin| self.pitch.d_max.map(|dmax| dmin != dmax))
-                .unwrap_or(false)
-        } else {
-            // BF <4.6: Check if D ≠ D-Min (D is the max in old firmware)
-            self.pitch
-                .d
-                .and_then(|d| self.pitch.d_min.map(|dmin| d != dmin))
-                .unwrap_or(false)
-        };
-
-        // System is enabled if either roll or pitch has dynamic range
-        roll_has_range || pitch_has_range
+/// Format a recommended D target for a legend or console line.
+/// With dynamic D enabled and at least one end known, prints `D-Min≈a, D-Max≈b` (a missing
+/// end prints `N/A`); otherwise prints the base D as `D≈x`. Returns `None` when no D is known.
+pub fn format_d_target(
+    d: Option<u32>,
+    d_min: Option<u32>,
+    d_max: Option<u32>,
+    dmax_enabled: bool,
+) -> Option<String> {
+    if dmax_enabled && (d_min.is_some() || d_max.is_some()) {
+        let min = d_min.map_or("N/A".to_string(), |v| v.to_string());
+        let max = d_max.map_or("N/A".to_string(), |v| v.to_string());
+        Some(format!("D-Min≈{min}, D-Max≈{max}"))
+    } else {
+        d.map(|v| format!("D≈{v}"))
     }
 }
 
@@ -415,9 +471,7 @@ fn parse_ff_values(
         let values = parse_comma_separated_values(ff_weight_str);
         if values.len() >= AXIS_COUNT {
             for (i, &value) in values.iter().enumerate().take(AXIS_COUNT) {
-                if value > 0 {
-                    ff_values[i] = Some(value);
-                }
+                ff_values[i] = Some(value);
             }
         }
     }
@@ -544,54 +598,93 @@ pub fn parse_pid_metadata(header_metadata: &[(String, String)]) -> PidMetadata {
         pid_data.yaw.d_max = Some(value);
     }
 
-    // Parse D-Max control parameters (BF 4.5+)
-    // These determine if the D-Min/D-Max dynamic D system is actively enabled
-    if let Some(gain_str) = header_map.get("d_max_gain") {
-        pid_data.d_max_gain = gain_str.parse::<u32>().ok();
-    }
-    if let Some(advance_str) = header_map.get("d_max_advance") {
-        pid_data.d_max_advance = advance_str.parse::<u32>().ok();
-    }
-    // Simplified tuning D-Max gain (BF 4.6+)
-    if let Some(simplified_gain_str) = header_map.get("simplified_dmax_gain") {
-        pid_data.simplified_d_max_gain = simplified_gain_str.parse::<u32>().ok();
+    // Complete the D-Min/D-Max range. Betaflight stores only one end in a separate header;
+    // base D (from the PID string) is the other end, and which end changed over time:
+    // - `d_min` header only (BF 4.0 to 4.5): base D is the maximum.
+    // - `d_max` header only (BF 2025.12 and master): base D is the minimum.
+    // A 5-value PID string or a log with both headers already carries both ends.
+    let has_d_min_header = d_min_values.iter().any(Option::is_some);
+    let has_d_max_header = d_max_values.iter().any(Option::is_some);
+    // The firmware ignores a stored end that lies on the wrong side of base D (`d_max <= D`
+    // on 2025.12+, `d_min >= D` on 4.0 to 4.5): D stays constant. Clamp that end to D so
+    // the pair never reads as an inverted range, for example after float rounding when
+    // simplified tuning computes both from the same default.
+    for axis in [&mut pid_data.roll, &mut pid_data.pitch, &mut pid_data.yaw] {
+        if has_d_max_header && !has_d_min_header {
+            if axis.d_min.is_none() {
+                axis.d_min = axis.d;
+            }
+            if let (Some(d), Some(max)) = (axis.d, axis.d_max) {
+                axis.d_max = Some(max.max(d));
+            }
+        }
+        if has_d_min_header && !has_d_max_header {
+            if axis.d_max.is_none() {
+                axis.d_max = axis.d;
+            }
+            if let (Some(d), Some(min)) = (axis.d, axis.d_min) {
+                axis.d_min = Some(min.min(d));
+            }
+        }
     }
 
+    // D-Max boost parameters. Renamed across versions: `d_min_gain` / `d_min_advance`
+    // (BF 4.0 to 4.2), `d_max_gain` / `d_max_advance` (BF 4.3 and later).
+    pid_data.d_max_gain = parse_first_u32(&header_map, &["d_max_gain", "d_min_gain"]);
+    pid_data.d_max_advance = parse_first_u32(&header_map, &["d_max_advance", "d_min_advance"]);
+    // Simplified tuning D-Max gain: `simplified_dmax_gain` (BF 4.3 to 4.5),
+    // `simplified_d_max_gain` (BF 2025.12 and master).
+    pid_data.simplified_d_max_gain = parse_first_u32(
+        &header_map,
+        &["simplified_d_max_gain", "simplified_dmax_gain"],
+    );
+
     pid_data
+}
+
+/// Parse the first header in `keys` that holds a valid unsigned integer.
+fn parse_first_u32(
+    header_map: &std::collections::HashMap<String, String>,
+    keys: &[&str],
+) -> Option<u32> {
+    keys.iter()
+        .find_map(|k| header_map.get(*k).and_then(|v| v.parse::<u32>().ok()))
 }
 
 /// Parse PID values from a string like "31,56,21" (basic) or "45,80,40,120" (INAV with FF)
 /// or "57,66,58,58,206" (Betaflight 4.6+ with P,I,D,D-Max,FF)
 fn parse_axis_pid(pid_str: &str) -> AxisPid {
-    let values = parse_comma_separated_values(pid_str);
+    // Parse by position so an empty or invalid token cannot shift later values forward.
+    let tokens: Vec<Option<u32>> = pid_str
+        .split(',')
+        .map(|t| t.trim().parse::<u32>().ok())
+        .collect();
+    let values: Vec<u32> = tokens.iter().flatten().copied().collect();
+    // A malformed string keeps its leading P, I and D but yields no FF or D-Max.
+    let well_formed = values.len() == tokens.len();
 
-    let mut axis_pid = AxisPid::default();
-
-    if !values.is_empty() {
-        axis_pid.p = Some(values[0]);
-    }
-    if values.len() > 1 {
-        axis_pid.i = Some(values[1]);
-    }
-    if values.len() > 2 {
-        axis_pid.d = Some(values[2]);
+    let mut axis_pid = AxisPid {
+        p: tokens.first().copied().flatten(),
+        i: tokens.get(1).copied().flatten(),
+        d: tokens.get(2).copied().flatten(),
+        ..Default::default()
+    };
+    if !well_formed {
+        return axis_pid;
     }
 
     // Handle different formats based on value count
     match values.len() {
-        4 if values[3] > 0 => {
+        4 => {
             // INAV style: P,I,D,FF
             axis_pid.ff = Some(values[3]);
         }
-        4 => {}
         5 => {
             // Betaflight 4.6+ style: P,I,D(base=D-Min),D-Max,FF
             // In BF 4.6+, base D IS the minimum (floor), not the maximum
             axis_pid.d_min = Some(values[2]); // Base D is D-Min in BF 4.6+
             axis_pid.d_max = Some(values[3]);
-            if values[4] > 0 {
-                axis_pid.ff = Some(values[4]);
-            }
+            axis_pid.ff = Some(values[4]);
         }
         _ => {
             // 3 or fewer values: basic P,I,D format (no FF or D-Max)
@@ -665,6 +758,168 @@ mod tests {
         assert_eq!(pid_data.yaw.i, Some(90));
         assert_eq!(pid_data.yaw.d, Some(7));
         assert_eq!(pid_data.yaw.ff, Some(15));
+    }
+
+    #[test]
+    fn test_zero_ff_parsed_and_displayed() {
+        // BF 4.6+ 5-value PID string with FF=0, no ff_weight header
+        let metadata = vec![
+            (
+                "Firmware revision".to_string(),
+                "Betaflight 4.6.0".to_string(),
+            ),
+            ("rollPID".to_string(), "57,66,58,58,0".to_string()),
+            ("pitchPID".to_string(), "59,69,72,72,0".to_string()),
+            ("yawPID".to_string(), "57,66,0,0,0".to_string()),
+        ];
+        let pid_data = parse_pid_metadata(&metadata);
+        assert_eq!(pid_data.roll.ff, Some(0));
+        assert!(pid_data
+            .roll
+            .format_for_title(&pid_data.firmware_type, false)
+            .ends_with("FF:0"));
+
+        // ff_weight header with zeros (BF <4.6 style), mixed with a non-zero axis
+        let metadata = vec![
+            (
+                "Firmware revision".to_string(),
+                "Betaflight 4.3.0".to_string(),
+            ),
+            ("rollPID".to_string(), "40,50,30".to_string()),
+            ("pitchPID".to_string(), "40,50,30".to_string()),
+            ("yawPID".to_string(), "40,50,0".to_string()),
+            ("ff_weight".to_string(), "0,0,80".to_string()),
+        ];
+        let pid_data = parse_pid_metadata(&metadata);
+        assert_eq!(pid_data.roll.ff, Some(0));
+        assert_eq!(pid_data.yaw.ff, Some(80));
+        assert_eq!(
+            pid_data
+                .roll
+                .format_for_title(&pid_data.firmware_type, false),
+            " - P:40 I:50 D:30 FF:0"
+        );
+
+        // No FF info at all: nothing printed
+        let metadata = vec![
+            (
+                "Firmware revision".to_string(),
+                "Betaflight 4.3.0".to_string(),
+            ),
+            ("rollPID".to_string(), "40,50,30".to_string()),
+        ];
+        let pid_data = parse_pid_metadata(&metadata);
+        assert_eq!(pid_data.roll.ff, None);
+        assert_eq!(
+            pid_data
+                .roll
+                .format_for_title(&pid_data.firmware_type, false),
+            " - P:40 I:50 D:30"
+        );
+
+        // EmuFlight: zero df_yaw stays hidden
+        let metadata = vec![
+            (
+                "Firmware revision".to_string(),
+                "EmuFlight 0.4.0".to_string(),
+            ),
+            ("yawPID".to_string(), "90,90,7".to_string()),
+            ("df_yaw".to_string(), "0".to_string()),
+        ];
+        let pid_data = parse_pid_metadata(&metadata);
+        assert_eq!(
+            pid_data
+                .yaw
+                .format_for_title(&pid_data.firmware_type, false),
+            " - P:90 I:90 D:7"
+        );
+    }
+
+    #[test]
+    fn test_inav_zero_ff_and_incomplete_field() {
+        // INAV blackbox.c writes rollPID/pitchPID/yawPID as "P,I,D,FF" (4 values).
+        let metadata = vec![
+            ("Firmware revision".to_string(), "INAV 8.0.0".to_string()),
+            ("rollPID".to_string(), "40,30,23,0".to_string()),
+            ("pitchPID".to_string(), "44,32,25,60".to_string()),
+            ("yawPID".to_string(), "45,35,0,0".to_string()),
+        ];
+        let pid_data = parse_pid_metadata(&metadata);
+        assert_eq!(pid_data.roll.ff, Some(0));
+        assert_eq!(pid_data.pitch.ff, Some(60));
+        assert_eq!(pid_data.yaw.ff, Some(0));
+        assert_eq!(
+            pid_data
+                .roll
+                .format_for_title(&pid_data.firmware_type, false),
+            " - P:40 I:30 D:23 FF:0"
+        );
+
+        // A trailing empty token is not a value: 3 parsed values, FF stays unknown.
+        let metadata = vec![
+            ("Firmware revision".to_string(), "INAV 8.0.0".to_string()),
+            ("rollPID".to_string(), "40,30,23,".to_string()),
+        ];
+        let pid_data = parse_pid_metadata(&metadata);
+        assert_eq!(pid_data.roll.ff, None);
+    }
+
+    #[test]
+    fn test_ff_weight_overrides_pid_string_including_zero() {
+        let metadata = vec![
+            (
+                "Firmware revision".to_string(),
+                "Betaflight 4.6.0".to_string(),
+            ),
+            ("rollPID".to_string(), "57,66,58,58,120".to_string()),
+            ("ff_weight".to_string(), "0,0,0".to_string()),
+        ];
+        let pid_data = parse_pid_metadata(&metadata);
+        assert_eq!(pid_data.roll.ff, Some(0));
+    }
+
+    #[test]
+    fn test_format_for_report_lists_all_known_gains() {
+        let metadata = vec![
+            (
+                "Firmware revision".to_string(),
+                "Betaflight 4.6.0".to_string(),
+            ),
+            ("rollPID".to_string(), "57,66,58,80,0".to_string()),
+            ("pitchPID".to_string(), "59,69,72".to_string()),
+        ];
+        let pid_data = parse_pid_metadata(&metadata);
+        let fw = &pid_data.firmware_type;
+        assert_eq!(
+            pid_data
+                .roll
+                .format_for_report(fw, pid_data.is_dmax_enabled()),
+            "P:57 I:66 D-Min:58 D-Max:80 FF:0"
+        );
+        // Fields absent from the header are not printed.
+        assert_eq!(
+            pid_data
+                .pitch
+                .format_for_report(fw, pid_data.is_dmax_enabled()),
+            "P:59 I:69 D:72"
+        );
+        // EmuFlight: DF label, zero hidden.
+        let ef = AxisPid {
+            p: Some(52),
+            i: Some(57),
+            d: Some(38),
+            ff: Some(0),
+            ..Default::default()
+        };
+        assert_eq!(
+            ef.format_for_report(&FirmwareType::EmuFlight, false),
+            "P:52 I:57 D:38"
+        );
+        let ef = AxisPid { ff: Some(15), ..ef };
+        assert_eq!(
+            ef.format_for_report(&FirmwareType::EmuFlight, false),
+            "P:52 I:57 D:38 DF:15"
+        );
     }
 
     #[test]
@@ -788,7 +1043,7 @@ mod tests {
             " - P:31 I:56 D:21 DF:84"
         );
 
-        // Test with zero FF (should be omitted)
+        // Zero FF: shown as FF:0 for non-EmuFlight, omitted for EmuFlight (DF)
         let axis_pid_zero_ff = AxisPid {
             p: Some(31),
             i: Some(56),
@@ -798,6 +1053,10 @@ mod tests {
         };
         assert_eq!(
             axis_pid_zero_ff.format_for_title(&FirmwareType::Betaflight, false),
+            " - P:31 I:56 D:21 FF:0"
+        );
+        assert_eq!(
+            axis_pid_zero_ff.format_for_title(&FirmwareType::EmuFlight, false),
             " - P:31 I:56 D:21"
         );
 
@@ -819,9 +1078,9 @@ mod tests {
             p: Some(31),
             i: Some(56),
             d: Some(21),
+            d_min: Some(21),
             d_max: Some(35),
             ff: None,
-            ..Default::default()
         };
         assert_eq!(
             axis_pid_diff_dmax.format_for_title(&FirmwareType::Betaflight, true),
@@ -873,7 +1132,7 @@ mod tests {
 
     #[test]
     fn test_format_for_title_zero_handling() {
-        // Test D:XX/0 should become D:XX (don't show /0) - with dmax_enabled=true
+        // D-Max 0 is not a range end (firmware keeps D constant): base D, with dmax_enabled=true
         let axis_pid_dmax_zero = AxisPid {
             p: Some(31),
             i: Some(56),
@@ -884,10 +1143,10 @@ mod tests {
         };
         assert_eq!(
             axis_pid_dmax_zero.format_for_title(&FirmwareType::Betaflight, true),
-            " - P:31 I:56 D:15"
+            " - P:31 I:56 D:21"
         );
 
-        // Test 0/XX should become D:XX (don't show 0/) - with dmax_enabled=true
+        // D-Min 0 disables dynamic D on the axis: base D, with dmax_enabled=true
         let axis_pid_dmin_zero = AxisPid {
             p: Some(31),
             i: Some(56),
@@ -898,7 +1157,7 @@ mod tests {
         };
         assert_eq!(
             axis_pid_dmin_zero.format_for_title(&FirmwareType::Betaflight, true),
-            " - P:31 I:56 D:35"
+            " - P:31 I:56 D:21"
         );
 
         // Test D:XX/0 with only D-Max (no D-Min) should become D:XX - with dmax_enabled=true
@@ -1215,231 +1474,612 @@ mod tests {
 
     #[test]
     fn test_format_d_term_edge_cases() {
-        // Only D-Min present, base D differs
-        let axis_only_dmin = AxisPid {
+        // Both ends known and ordered: range.
+        let axis_range = AxisPid {
             d: Some(50),
             d_min: Some(30),
-            d_max: None,
+            d_max: Some(50),
             ..Default::default()
         };
-        assert!(axis_only_dmin
+        assert!(axis_range
             .format_for_title(&FirmwareType::Betaflight, true)
             .contains("D:30/50"));
 
-        // Only D-Max present, no base D
-        let axis_only_dmax_no_base = AxisPid {
-            d: None,
-            d_min: None,
-            d_max: Some(80),
-            ..Default::default()
-        };
-        assert!(axis_only_dmax_no_base
-            .format_for_title(&FirmwareType::Betaflight, true)
-            .contains("D:80"));
+        // One end missing or the pair inverted: base D, never a partial or inverted range.
+        for (d_min, d_max) in [(Some(30), None), (None, Some(80)), (Some(60), Some(40))] {
+            let axis = AxisPid {
+                d: Some(50),
+                d_min,
+                d_max,
+                ..Default::default()
+            };
+            let title = axis.format_for_title(&FirmwareType::Betaflight, true);
+            assert!(title.contains("D:50") && !title.contains('/'), "{title}");
+            assert_eq!(axis.d_range_for_display(true), None);
+        }
+    }
+
+    fn headers(rev: &str, extra: &[(&str, &str)]) -> Vec<(String, String)> {
+        let mut v = vec![("Firmware revision".to_string(), rev.to_string())];
+        v.extend(extra.iter().map(|(k, x)| (k.to_string(), x.to_string())));
+        v
     }
 
     #[test]
-    fn test_is_dmax_enabled() {
-        // Test D-Max disabled when all parameters are zero
-        let pid_data_disabled = PidMetadata {
-            d_max_gain: Some(0),
-            d_max_advance: Some(0),
-            simplified_d_max_gain: Some(0),
-            ..Default::default()
-        };
-        assert!(!pid_data_disabled.is_dmax_enabled());
+    fn test_dynamic_d_legacy_layout_bf_4_0_to_4_5() {
+        // Values from real BF 4.0.2 (d_min_gain names) and 4.5.0 (d_max_gain names) logs.
+        for (rev, gain, adv) in [
+            (
+                "Betaflight 4.0.2 (56bdc8d26) AIKONF4",
+                "d_min_gain",
+                "d_min_advance",
+            ),
+            (
+                "Betaflight 4.5.0 (f69fedd1f) STM32F7X2",
+                "d_max_gain",
+                "d_max_advance",
+            ),
+        ] {
+            let pid = parse_pid_metadata(&headers(
+                rev,
+                &[
+                    ("rollPID", "31,65,21"),
+                    ("pitchPID", "37,75,23"),
+                    ("yawPID", "45,120,0"),
+                    ("d_min", "20,22,0"),
+                    (gain, "27"),
+                    (adv, "20"),
+                ],
+            ));
+            assert!(pid.is_dmax_enabled(), "{rev}");
+            assert_eq!(pid.d_max_gain, Some(27), "{rev}");
+            assert_eq!(pid.d_max_advance, Some(20), "{rev}");
+            // D (21) is the maximum; D-Min comes from the d_min header.
+            assert_eq!(
+                pid.roll
+                    .format_for_report(&pid.firmware_type, pid.is_dmax_enabled()),
+                "P:31 I:65 D-Min:20 D-Max:21"
+            );
+            assert_eq!(
+                pid.pitch
+                    .format_for_report(&pid.firmware_type, pid.is_dmax_enabled()),
+                "P:37 I:75 D-Min:22 D-Max:23"
+            );
+            // Yaw: d_min 0 means no dynamic D.
+            assert_eq!(
+                pid.yaw
+                    .format_for_report(&pid.firmware_type, pid.is_dmax_enabled()),
+                "P:45 I:120 D:0"
+            );
+            assert_eq!(
+                pid.roll
+                    .format_for_title(&pid.firmware_type, pid.is_dmax_enabled()),
+                " - P:31 I:65 D:20/21"
+            );
+        }
+    }
 
-        // Test D-Max disabled when all parameters are None
-        let pid_data_none = PidMetadata {
-            d_max_gain: None,
-            d_max_advance: None,
-            simplified_d_max_gain: None,
-            ..Default::default()
-        };
-        assert!(!pid_data_none.is_dmax_enabled());
+    #[test]
+    fn test_dynamic_d_new_layout_bf_2025_12_and_master() {
+        // BF 2025.12+ blackbox.c: rollPID is "P,I,D" with D the minimum, plus a d_max header.
+        // Simplified tuning off and on give the same result: the range alone decides.
+        for simplified in [
+            ("simplified_pids_mode", "0"),
+            ("simplified_d_max_gain", "100"),
+        ] {
+            let pid = parse_pid_metadata(&headers(
+                "Betaflight 2025.12.0 (abc) STM32H743",
+                &[
+                    ("rollPID", "38,81,21"),
+                    ("pitchPID", "40,83,23"),
+                    ("yawPID", "30,80,0"),
+                    ("d_max", "35,38,0"),
+                    ("d_max_gain", "37"),
+                    ("d_max_advance", "20"),
+                    simplified,
+                ],
+            ));
+            assert!(pid.is_dmax_enabled());
+            assert_eq!(
+                pid.roll
+                    .format_for_report(&pid.firmware_type, pid.is_dmax_enabled()),
+                "P:38 I:81 D-Min:21 D-Max:35"
+            );
+            assert_eq!(
+                pid.pitch
+                    .format_for_report(&pid.firmware_type, pid.is_dmax_enabled()),
+                "P:40 I:83 D-Min:23 D-Max:38"
+            );
+            assert_eq!(
+                pid.yaw
+                    .format_for_report(&pid.firmware_type, pid.is_dmax_enabled()),
+                "P:30 I:80 D:0"
+            );
+            assert_eq!(
+                pid.roll
+                    .format_for_title(&pid.firmware_type, pid.is_dmax_enabled()),
+                " - P:38 I:81 D:21/35"
+            );
+        }
+        // Header name for the simplified gain differs from 4.3 to 4.5.
+        let pid = parse_pid_metadata(&headers(
+            "Betaflight 2025.12.0",
+            &[("simplified_d_max_gain", "100")],
+        ));
+        assert_eq!(pid.simplified_d_max_gain, Some(100));
+    }
 
-        // Test D-Max enabled when d_max_gain > 0 AND has dynamic range
-        let pid_data_gain = PidMetadata {
-            roll: AxisPid {
-                p: Some(40),
-                d: Some(50),
-                d_min: Some(30), // D ≠ D-Min, has dynamic range
-                d_max: None,
-                ..Default::default()
-            },
-            pitch: AxisPid {
-                p: Some(40),
-                d: Some(50),
-                d_min: Some(30), // D ≠ D-Min, has dynamic range
-                d_max: None,
-                ..Default::default()
-            },
-            d_max_gain: Some(100),
-            d_max_advance: Some(0),
-            simplified_d_max_gain: Some(0),
-            ..Default::default()
-        };
-        assert!(pid_data_gain.is_dmax_enabled());
+    #[test]
+    fn test_dynamic_d_every_axis_prints_both_ends_when_enabled() {
+        // Real BF 2026.12.0 log (LIONBEE): roll has a range (80 to 82), pitch has
+        // d_max equal to D (106), yaw has D 0 and d_max 0. Dynamic D is enabled by roll,
+        // so every axis with both ends known prints them in the same form.
+        let pid = parse_pid_metadata(&headers(
+            "Betaflight 2026.12.0 (11b0f998f) AT32F435G",
+            &[
+                ("rollPID", "47,76,80"),
+                ("pitchPID", "67,96,106"),
+                ("yawPID", "35,65,0"),
+                ("d_max", "82,106,0"),
+                ("d_max_gain", "0"),
+                ("d_max_advance", "35"),
+            ],
+        ));
+        assert!(pid.is_dmax_enabled());
+        let fw = &pid.firmware_type;
+        assert_eq!(
+            pid.roll.format_for_report(fw, true),
+            "P:47 I:76 D-Min:80 D-Max:82"
+        );
+        assert_eq!(
+            pid.pitch.format_for_report(fw, true),
+            "P:67 I:96 D-Min:106 D-Max:106"
+        );
+        assert_eq!(pid.yaw.format_for_report(fw, true), "P:35 I:65 D:0");
+        assert_eq!(pid.roll.format_for_title(fw, true), " - P:47 I:76 D:80/82");
+        assert_eq!(
+            pid.pitch.format_for_title(fw, true),
+            " - P:67 I:96 D:106/106"
+        );
+        assert_eq!(pid.yaw.format_for_title(fw, true), " - P:35 I:65 D:0");
+    }
 
-        // Test D-Max enabled when d_max_advance > 0 AND has dynamic range
-        let pid_data_advance = PidMetadata {
-            roll: AxisPid {
-                p: Some(40),
-                d: Some(50),
-                d_min: Some(30), // D ≠ D-Min, has dynamic range
-                d_max: None,
-                ..Default::default()
-            },
-            pitch: AxisPid {
-                p: Some(40),
-                d: Some(50),
-                d_min: Some(30), // D ≠ D-Min, has dynamic range
-                d_max: None,
-                ..Default::default()
-            },
-            d_max_gain: Some(0),
-            d_max_advance: Some(50),
-            simplified_d_max_gain: Some(0),
-            ..Default::default()
-        };
-        assert!(pid_data_advance.is_dmax_enabled());
+    #[test]
+    fn test_format_d_target() {
+        // Dynamic D on: both ends, a missing end prints N/A.
+        assert_eq!(
+            format_d_target(Some(108), Some(108), Some(108), true).as_deref(),
+            Some("D-Min≈108, D-Max≈108")
+        );
+        assert_eq!(
+            format_d_target(Some(83), Some(83), None, true).as_deref(),
+            Some("D-Min≈83, D-Max≈N/A")
+        );
+        // Dynamic D off, or no ends known on this axis: base D.
+        assert_eq!(
+            format_d_target(Some(83), Some(80), Some(82), false).as_deref(),
+            Some("D≈83")
+        );
+        assert_eq!(
+            format_d_target(Some(0), None, None, true).as_deref(),
+            Some("D≈0")
+        );
+        assert_eq!(format_d_target(None, None, None, true), None);
+    }
 
-        // Test D-Max enabled when simplified_d_max_gain > 0 AND has dynamic range
-        let pid_data_simplified = PidMetadata {
-            roll: AxisPid {
-                p: Some(40),
-                d: Some(50),
-                d_min: Some(30), // D ≠ D-Min, has dynamic range
-                d_max: None,
-                ..Default::default()
-            },
-            pitch: AxisPid {
-                p: Some(40),
-                d: Some(50),
-                d_min: Some(30), // D ≠ D-Min, has dynamic range
-                d_max: None,
-                ..Default::default()
-            },
-            d_max_gain: Some(0),
-            d_max_advance: Some(0),
-            simplified_d_max_gain: Some(75),
-            ..Default::default()
-        };
-        assert!(pid_data_simplified.is_dmax_enabled());
+    #[test]
+    fn test_dynamic_d_simplified_tuning_slider_off() {
+        // BF 4.5 simplified_tuning.c: with simplified_dmin_ratio 0, dminRatio is 1.0, so
+        // D and d_min come from the same expression and are equal. No range, single D.
+        let pid = parse_pid_metadata(&headers(
+            "Betaflight 4.5.0",
+            &[
+                ("rollPID", "47,76,40"),
+                ("pitchPID", "55,80,46"),
+                ("yawPID", "45,80,0"),
+                ("d_min", "40,46,0"),
+                ("d_max_gain", "37"),
+                ("d_max_advance", "20"),
+                ("simplified_pids_mode", "2"),
+                ("simplified_dmax_gain", "0"),
+            ],
+        ));
+        assert!(!pid.is_dmax_enabled());
+        let fw = &pid.firmware_type;
+        assert_eq!(
+            pid.roll.format_for_report(fw, pid.is_dmax_enabled()),
+            "P:47 I:76 D:40"
+        );
+        assert_eq!(
+            pid.roll.format_for_title(fw, pid.is_dmax_enabled()),
+            " - P:47 I:76 D:40"
+        );
 
-        // Test D-Max disabled when d_max_gain > 0 BUT no dynamic range (D = D-Min)
-        let pid_data_no_range = PidMetadata {
-            roll: AxisPid {
-                p: Some(40),
-                d: Some(50),
-                d_min: Some(50), // D = D-Min, NO dynamic range
-                d_max: None,
-                ..Default::default()
-            },
-            pitch: AxisPid {
-                p: Some(40),
-                d: Some(50),
-                d_min: Some(50), // D = D-Min, NO dynamic range
-                d_max: None,
-                ..Default::default()
-            },
-            d_max_gain: Some(100),
-            d_max_advance: Some(50),
-            simplified_d_max_gain: Some(0),
-            ..Default::default()
-        };
-        assert!(!pid_data_no_range.is_dmax_enabled());
+        // BF 2025.12 simplified_tuning.c: with simplified_d_max_gain 0, d_max equals D.
+        // Real log values (LIONBEE flight 15, simplified_pids_mode 2).
+        let pid = parse_pid_metadata(&headers(
+            "Betaflight 2026.12.0-alpha (29ae6a65e) AT32F435G",
+            &[
+                ("rollPID", "45,80,30"),
+                ("pitchPID", "47,84,34"),
+                ("yawPID", "45,80,0"),
+                ("d_max", "30,34,0"),
+                ("d_max_gain", "0"),
+                ("d_max_advance", "35"),
+                ("simplified_pids_mode", "2"),
+                ("simplified_d_max_gain", "0"),
+            ],
+        ));
+        assert!(!pid.is_dmax_enabled());
+        let fw = &pid.firmware_type;
+        assert_eq!(pid.roll.format_for_report(fw, false), "P:45 I:80 D:30");
+        assert_eq!(pid.pitch.format_for_report(fw, false), "P:47 I:84 D:34");
+        assert_eq!(pid.yaw.format_for_report(fw, false), "P:45 I:80 D:0");
+    }
 
-        // Test D-Max enabled with BF 4.6+ (d_max field exists, D-Min ≠ D-Max)
-        let pid_data_bf46 = PidMetadata {
-            roll: AxisPid {
-                p: Some(40),
-                d: Some(30),
-                d_min: Some(30),
-                d_max: Some(50), // D-Min ≠ D-Max, has dynamic range
-                ..Default::default()
-            },
-            pitch: AxisPid {
-                p: Some(40),
-                d: Some(30),
-                d_min: Some(30),
-                d_max: Some(50), // D-Min ≠ D-Max, has dynamic range
-                ..Default::default()
-            },
-            d_max_gain: Some(100),
-            d_max_advance: Some(50),
-            simplified_d_max_gain: Some(0),
-            ..Default::default()
-        };
-        assert!(pid_data_bf46.is_dmax_enabled());
+    #[test]
+    fn test_dynamic_d_end_on_wrong_side_of_base_d_is_clamped() {
+        // 2025.12+: d_max below D (float rounding) means no boost; the pair must not invert.
+        let pid = parse_pid_metadata(&headers(
+            "Betaflight 2025.12.0",
+            &[
+                ("rollPID", "47,76,80"),
+                ("pitchPID", "67,96,106"),
+                ("d_max", "90,105,0"),
+            ],
+        ));
+        assert_eq!((pid.pitch.d_min, pid.pitch.d_max), (Some(106), Some(106)));
+        assert!(pid.is_dmax_enabled()); // roll 80 to 90
+        assert_eq!(
+            pid.pitch.format_for_report(&pid.firmware_type, true),
+            "P:67 I:96 D-Min:106 D-Max:106"
+        );
+        // 4.0 to 4.5: d_min above D means the firmware does not use dynamic D on that axis.
+        let pid = parse_pid_metadata(&headers(
+            "Betaflight 4.4.0",
+            &[("rollPID", "51,55,47"), ("d_min", "50,0,0")],
+        ));
+        assert_eq!((pid.roll.d_min, pid.roll.d_max), (Some(47), Some(47)));
+        assert!(!pid.is_dmax_enabled());
+    }
 
-        // Test D-Max disabled with BF 4.6+ when D-Min = D-Max (no dynamic range)
-        let pid_data_bf46_no_range = PidMetadata {
-            roll: AxisPid {
-                p: Some(40),
-                d: Some(50),
-                d_min: Some(50),
-                d_max: Some(50), // D-Min = D-Max, NO dynamic range
-                ..Default::default()
-            },
-            pitch: AxisPid {
-                p: Some(40),
-                d: Some(50),
-                d_min: Some(50),
-                d_max: Some(50), // D-Min = D-Max, NO dynamic range
-                ..Default::default()
-            },
-            d_max_gain: Some(100),
-            d_max_advance: Some(50),
-            simplified_d_max_gain: Some(0),
-            ..Default::default()
-        };
-        assert!(!pid_data_bf46_no_range.is_dmax_enabled());
+    #[test]
+    fn test_dynamic_d_mixed_axes_follow_per_axis_rule() {
+        // BF 4.5: roll has a range (20 to 30); pitch has d_min 0, so the firmware keeps a
+        // single D on pitch. Title, report and recommendations must all show base D there.
+        let pid = parse_pid_metadata(&headers(
+            "Betaflight 4.5.0",
+            &[
+                ("rollPID", "40,50,30"),
+                ("pitchPID", "42,52,40"),
+                ("yawPID", "45,80,0"),
+                ("d_min", "20,0,0"),
+            ],
+        ));
+        let on = pid.is_dmax_enabled();
+        assert!(on);
+        let fw = &pid.firmware_type;
+        assert_eq!(pid.roll.format_for_title(fw, on), " - P:40 I:50 D:20/30");
+        assert_eq!(pid.pitch.format_for_title(fw, on), " - P:42 I:52 D:40");
+        assert_eq!(
+            pid.roll.format_for_report(fw, on),
+            "P:40 I:50 D-Min:20 D-Max:30"
+        );
+        assert_eq!(pid.pitch.format_for_report(fw, on), "P:42 I:52 D:40");
+        // Recommendation for pitch target P:D 1.0 -> D 42: single D, no D-Min 0.
+        assert_eq!(
+            pid.pitch.calculate_goal_d_with_range(1.0, on),
+            (Some(42), None, None)
+        );
+        // Roll scales both ends by the same factor as base D (30 -> 42 is x1.4).
+        assert_eq!(
+            pid.roll.calculate_goal_d_with_range(40.0 / 42.0, on),
+            (Some(42), Some(28), Some(42))
+        );
+    }
 
-        // Test D-Max enabled when multiple parameters > 0 AND has dynamic range
-        let pid_data_multiple = PidMetadata {
-            roll: AxisPid {
-                p: Some(40),
-                d: Some(50),
-                d_min: Some(30), // D ≠ D-Min, has dynamic range
-                d_max: None,
-                ..Default::default()
-            },
-            pitch: AxisPid {
-                p: Some(40),
-                d: Some(50),
-                d_min: Some(30), // D ≠ D-Min, has dynamic range
-                d_max: None,
-                ..Default::default()
-            },
-            d_max_gain: Some(100),
-            d_max_advance: Some(50),
-            simplified_d_max_gain: Some(75),
-            ..Default::default()
-        };
-        assert!(pid_data_multiple.is_dmax_enabled());
+    #[test]
+    fn test_dynamic_d_title_and_report_agree_when_base_d_is_zero() {
+        // BF master: pitch D is 0 with d_max above it. The firmware needs D > 0, so no range.
+        let pid = parse_pid_metadata(&headers(
+            "Betaflight 2026.12.0",
+            &[
+                ("rollPID", "40,40,20"),
+                ("pitchPID", "40,40,0"),
+                ("d_max", "30,40,0"),
+            ],
+        ));
+        let on = pid.is_dmax_enabled();
+        assert!(on); // roll
+        let fw = &pid.firmware_type;
+        assert_eq!(pid.pitch.format_for_title(fw, on), " - P:40 I:40 D:0");
+        assert_eq!(pid.pitch.format_for_report(fw, on), "P:40 I:40 D:0");
+    }
 
-        // Test D-Max enabled when only one parameter > 0 and others are None AND has dynamic range
-        let pid_data_mixed = PidMetadata {
-            roll: AxisPid {
-                p: Some(40),
-                d: Some(50),
-                d_min: Some(30), // D ≠ D-Min, has dynamic range
-                d_max: None,
-                ..Default::default()
-            },
-            pitch: AxisPid {
-                p: Some(40),
-                d: Some(50),
-                d_min: Some(30), // D ≠ D-Min, has dynamic range
-                d_max: None,
-                ..Default::default()
-            },
-            d_max_gain: None,
-            d_max_advance: Some(50),
-            simplified_d_max_gain: None,
+    #[test]
+    fn test_dynamic_d_on_yaw_only_enables_the_log_flag() {
+        // BF 4.5 applies the activation rule to yaw as well (d_min_yaw).
+        let pid = parse_pid_metadata(&headers(
+            "Betaflight 4.5.0",
+            &[
+                ("rollPID", "40,50,30"),
+                ("pitchPID", "42,52,40"),
+                ("yawPID", "45,80,25"),
+                ("d_min", "0,0,15"),
+            ],
+        ));
+        assert!(pid.is_dmax_enabled());
+        let fw = &pid.firmware_type;
+        assert_eq!(
+            pid.yaw.format_for_report(fw, true),
+            "P:45 I:80 D-Min:15 D-Max:25"
+        );
+        assert_eq!(pid.roll.format_for_report(fw, true), "P:40 I:50 D:30");
+    }
+
+    #[test]
+    fn test_inverted_pair_from_unexpected_headers_shows_base_d() {
+        // Both range headers present: layout is ambiguous, so no end is rewritten. An
+        // inverted pair must not print as a range.
+        let pid = parse_pid_metadata(&headers(
+            "Betaflight 4.5.0",
+            &[
+                ("rollPID", "40,50,30"),
+                ("d_min", "50,0,0"),
+                ("d_max", "35,0,0"),
+            ],
+        ));
+        assert_eq!(
+            pid.roll.format_for_report(&pid.firmware_type, true),
+            "P:40 I:50 D:30"
+        );
+        assert_eq!(pid.roll.d_range_for_display(true), None);
+    }
+
+    #[test]
+    fn test_malformed_pid_string_gives_no_ff_or_range() {
+        // A trailing empty token is a missing value, not a 4-value string with FF 0.
+        let pid = parse_pid_metadata(&headers("Betaflight 4.6.0", &[("rollPID", "57,66,58,0,")]));
+        assert_eq!(
+            (pid.roll.p, pid.roll.i, pid.roll.d),
+            (Some(57), Some(66), Some(58))
+        );
+        assert_eq!(
+            (pid.roll.ff, pid.roll.d_min, pid.roll.d_max),
+            (None, None, None)
+        );
+        // An invalid token in the middle does not shift later values into earlier slots.
+        let pid = parse_pid_metadata(&headers("Betaflight 4.4.0", &[("rollPID", "57,x,58")]));
+        assert_eq!(
+            (pid.roll.p, pid.roll.i, pid.roll.d),
+            (Some(57), None, Some(58))
+        );
+    }
+
+    #[test]
+    fn test_aggressive_recommendation_is_the_one_shared_source() {
+        // BF 4.5: roll has a range (20 to 30), pitch has d_min 0 and shows a single D.
+        let pid = parse_pid_metadata(&headers(
+            "Betaflight 4.5.0",
+            &[
+                ("rollPID", "40,50,30"),
+                ("pitchPID", "42,52,40"),
+                ("d_min", "20,0,0"),
+            ],
+        ));
+        let on = pid.is_dmax_enabled();
+        // Current P:D 1.0 times PD_RATIO_AGGRESSIVE_MULTIPLIER (0.65): P 40 needs D 40 / 0.65 = 62.
+        let roll = pid.roll.aggressive_recommendation(1.0, on);
+        assert!((roll.pd_ratio - 0.65).abs() < 1e-12);
+        assert_eq!(roll.d, Some(62));
+        assert_eq!((roll.d_min, roll.d_max), (Some(41), Some(62)));
+        // Same call on pitch (P 42): single D, no D-Min or D-Max.
+        let pitch = pid.pitch.aggressive_recommendation(1.0, on);
+        assert_eq!(pitch.d, Some(65));
+        assert_eq!((pitch.d_min, pitch.d_max), (None, None));
+        // It matches calculate_goal_d_with_range at the same ratio.
+        assert_eq!(
+            (roll.d, roll.d_min, roll.d_max),
+            pid.roll.calculate_goal_d_with_range(0.65, on)
+        );
+    }
+
+    #[test]
+    fn test_near_optimal_d_hint_follows_the_per_axis_rule() {
+        let pid = parse_pid_metadata(&headers(
+            "Betaflight 4.5.0",
+            &[
+                ("rollPID", "40,50,30"),
+                ("pitchPID", "42,52,40"),
+                ("d_min", "20,0,0"),
+            ],
+        ));
+        let on = pid.is_dmax_enabled();
+        // Roll has a range: both ends lowered by D_STEP_OPTIONAL (1).
+        assert_eq!(
+            pid.roll.near_optimal_d_hint(on).as_deref(),
+            Some("D-Min≈19, D-Max≈29 [optional D−1]")
+        );
+        // Pitch has d_min 0: single D lowered by 1, same as a log without dynamic D.
+        assert_eq!(
+            pid.pitch.near_optimal_d_hint(on).as_deref(),
+            Some("D≈39 [optional D−1]")
+        );
+        assert_eq!(AxisPid::default().near_optimal_d_hint(on), None);
+    }
+
+    #[test]
+    fn test_near_optimal_d_hint_never_lowers_a_range_end_to_zero() {
+        // BF 4.5 range D-Min 1 to D 20: D-Min 1 lowered by 1 would be 0, which switches
+        // dynamic D off, so the hint falls back to the single base D.
+        let pid = parse_pid_metadata(&headers(
+            "Betaflight 4.5.0",
+            &[("rollPID", "40,50,20"), ("d_min", "1,0,0")],
+        ));
+        assert!(pid.is_dmax_enabled());
+        assert_eq!(
+            pid.roll.near_optimal_d_hint(true).as_deref(),
+            Some("D≈19 [optional D−1]")
+        );
+        // Base D of 1 lowered by 1 is 0: no hint at all.
+        let one = AxisPid {
+            d: Some(1),
             ..Default::default()
         };
-        assert!(pid_data_mixed.is_dmax_enabled());
+        assert_eq!(one.near_optimal_d_hint(false), None);
+    }
+
+    #[test]
+    fn test_near_optimal_hint_never_collapses_an_active_range() {
+        // BF 4.5, D 2 is the upper end and d_min 1 the lower: lowering D to 1 would make the
+        // ends equal (d_min < D fails), so there is no hint, and the console and legend
+        // print the "none" line.
+        let pid = parse_pid_metadata(&headers(
+            "Betaflight 4.5.0",
+            &[("rollPID", "40,50,2"), ("d_min", "1,0,0")],
+        ));
+        assert!(pid.is_dmax_enabled());
+        assert_eq!(pid.roll.near_optimal_d_hint(true), None);
+        assert_eq!(
+            pid.roll.near_optimal_recommendation_line(true),
+            "Recommendation (none): No obvious tuning adjustments needed"
+        );
+        // BF 2025.12: D 2 is the lower end and d_max 3 the upper: both ends can drop by 1.
+        let pid = parse_pid_metadata(&headers(
+            "Betaflight 2025.12.0",
+            &[("rollPID", "40,50,2"), ("d_max", "3,0,0")],
+        ));
+        assert_eq!(
+            pid.roll.near_optimal_recommendation_line(true),
+            "Recommendation (conservative): D-Min≈1, D-Max≈2 [optional D−1]"
+        );
+    }
+
+    #[test]
+    fn test_goal_d_never_returns_an_inverted_range_for_a_zero_base() {
+        // P 40, D 20, range 1 to 20, target ratio 1000: the recommended base D rounds to 0.
+        let pid = parse_pid_metadata(&headers(
+            "Betaflight 4.5.0",
+            &[("rollPID", "40,50,20"), ("d_min", "1,0,0")],
+        ));
+        let (d, d_min, d_max) = pid.roll.calculate_goal_d_with_range(1000.0, true);
+        assert_eq!((d, d_min, d_max), (Some(0), None, None));
+    }
+
+    #[test]
+    fn test_recommended_d_min_never_rounds_to_zero() {
+        // P 40, D 20, d_min 1: a target D of 4 scales D-Min to 0.2, which must stay at 1.
+        let pid = parse_pid_metadata(&headers(
+            "Betaflight 4.5.0",
+            &[("rollPID", "40,50,20"), ("d_min", "1,0,0")],
+        ));
+        let (d, d_min, d_max) = pid.roll.calculate_goal_d_with_range(10.0, true);
+        assert_eq!((d, d_min, d_max), (Some(4), Some(1), Some(4)));
+    }
+
+    #[test]
+    fn test_title_and_report_agree_per_axis_for_parsed_headers() {
+        let sets: [&[(&str, &str)]; 4] = [
+            // range on roll, d_min 0 on pitch, yaw D 0
+            &[
+                ("rollPID", "40,50,30"),
+                ("pitchPID", "42,52,40"),
+                ("yawPID", "45,80,0"),
+                ("d_min", "20,0,0"),
+            ],
+            // 2025.12+: range on roll and pitch (equal), yaw D 0
+            &[
+                ("rollPID", "47,76,80"),
+                ("pitchPID", "67,96,106"),
+                ("yawPID", "35,65,0"),
+                ("d_max", "82,106,0"),
+            ],
+            // slider at 0: d_max equals D on every axis
+            &[
+                ("rollPID", "45,80,30"),
+                ("pitchPID", "47,84,34"),
+                ("yawPID", "45,80,0"),
+                ("d_max", "30,34,0"),
+            ],
+            // yaw-only range
+            &[
+                ("rollPID", "40,50,30"),
+                ("pitchPID", "42,52,40"),
+                ("yawPID", "45,80,25"),
+                ("d_min", "0,0,15"),
+            ],
+        ];
+        for extra in sets {
+            let pid = parse_pid_metadata(&headers("Betaflight 4.5.0", extra));
+            let on = pid.is_dmax_enabled();
+            for axis in [&pid.roll, &pid.pitch, &pid.yaw] {
+                let title = axis.format_for_title(&pid.firmware_type, on);
+                let report = axis.format_for_report(&pid.firmware_type, on);
+                match axis.d_range_for_display(on) {
+                    Some((min, max)) => {
+                        assert!(title.contains(&format!("D:{min}/{max}")), "{title}");
+                        assert!(
+                            report.contains(&format!("D-Min:{min} D-Max:{max}")),
+                            "{report}"
+                        );
+                    }
+                    None => {
+                        assert!(
+                            !title.contains('/') && !report.contains("D-Min"),
+                            "{title} | {report}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_dynamic_d_not_active_without_range() {
+        // BF 4.2.5 real log: d_min all zero means the firmware does not use dynamic D.
+        let pid = parse_pid_metadata(&headers(
+            "Betaflight 4.2.5 (afdac08b3) STM32F411",
+            &[
+                ("rollPID", "69,94,50"),
+                ("d_min", "0,0,0"),
+                ("d_min_gain", "37"),
+                ("d_min_advance", "20"),
+            ],
+        ));
+        assert!(!pid.is_dmax_enabled());
+        assert_eq!(
+            pid.roll
+                .format_for_report(&pid.firmware_type, pid.is_dmax_enabled()),
+            "P:69 I:94 D:50"
+        );
+        // 2025.12+: d_max equal to D means no boost range.
+        let pid = parse_pid_metadata(&headers(
+            "Betaflight 2025.12.0",
+            &[("rollPID", "38,81,35"), ("d_max", "35,0,0")],
+        ));
+        assert!(!pid.is_dmax_enabled());
+        // No D-Min/D-Max header at all.
+        let pid = parse_pid_metadata(&headers("Betaflight 4.4.0", &[("rollPID", "51,55,47")]));
+        assert!(!pid.is_dmax_enabled());
+        assert_eq!(
+            pid.roll
+                .format_for_report(&pid.firmware_type, pid.is_dmax_enabled()),
+            "P:51 I:55 D:47"
+        );
+    }
+
+    #[test]
+    fn test_dynamic_d_does_not_depend_on_boost_settings() {
+        // Zero gain and advance only remove the boost; the firmware still applies D-Min.
+        let pid = parse_pid_metadata(&headers(
+            "Betaflight 4.4.0",
+            &[
+                ("rollPID", "51,55,47"),
+                ("d_min", "40,0,0"),
+                ("d_max_gain", "0"),
+                ("d_max_advance", "0"),
+            ],
+        ));
+        assert!(pid.is_dmax_enabled());
     }
 }
