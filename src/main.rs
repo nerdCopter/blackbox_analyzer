@@ -181,7 +181,8 @@ struct AnalysisOptions {
 
 use crate::constants::{
     BBL_EXTENSION, BFL_EXTENSION, CSV_EXTENSION, DEFAULT_SETPOINT_THRESHOLD, EXCLUDE_END_S,
-    EXCLUDE_START_S, FRAME_LENGTH_S, HEADERS_CSV_SUFFIX, HEADER_CSV_SUFFIX, TRIM_START_DEFAULT_S,
+    EXCLUDE_START_S, FILE_COMPARE_CHUNK_BYTES, FIRST_OUTPUT_NAME_SUFFIX, FRAME_LENGTH_S,
+    HEADERS_CSV_SUFFIX, HEADER_CSV_SUFFIX, TRIM_START_DEFAULT_S,
 };
 
 // Specific plot function imports
@@ -235,8 +236,7 @@ impl Drop for CwdGuard {
 
 // Data input import
 use crate::data_input::bbl_reader::{
-    expand_bbl_to_scratch_csvs, export_base_stem, export_stem_matches_bbl, FLIGHT_EXPORT_FAILED,
-    FLIGHT_FILTERED,
+    expand_bbl_to_scratch_csvs, FLIGHT_EXPORT_FAILED, FLIGHT_FILTERED,
 };
 use crate::data_input::log_data::LogRowData;
 use crate::data_input::log_parser::{self, parse_log_file};
@@ -472,96 +472,78 @@ fn input_stem(file: &str) -> String {
         .unwrap_or_default()
 }
 
-/// Output-name prefix for a source folder: its sanitized name plus `_`, or empty for a folder
-/// with no meaningful name (`.`, root). The one rule `process_file` and the collision check share.
-fn dir_name_prefix(dir: &Path) -> String {
-    let Some(name) = dir.file_name().map(|n| n.to_string_lossy()) else {
-        return String::new();
+/// True when both files hold exactly the same bytes (false on any read error).
+fn files_identical(a: &Path, b: &Path) -> bool {
+    use std::io::Read;
+    let (Ok(mut fa), Ok(mut fb)) = (fs::File::open(a), fs::File::open(b)) else {
+        return false;
     };
-    if name.is_empty() || name == "." {
-        return String::new();
+    let (Ok(ma), Ok(mb)) = (fa.metadata(), fb.metadata()) else {
+        return false;
+    };
+    if ma.len() != mb.len() {
+        return false;
     }
-    let sanitized: String = name
-        .chars()
-        .map(|c| {
-            if c.is_alphanumeric() || c == '-' || c == '_' {
-                c
-            } else {
-                '_'
+    let mut remaining = ma.len();
+    let mut buf_a = vec![0u8; FILE_COMPARE_CHUNK_BYTES];
+    let mut buf_b = vec![0u8; FILE_COMPARE_CHUNK_BYTES];
+    while remaining > 0 {
+        let n = remaining.min(FILE_COMPARE_CHUNK_BYTES as u64) as usize;
+        if fa.read_exact(&mut buf_a[..n]).is_err()
+            || fb.read_exact(&mut buf_b[..n]).is_err()
+            || buf_a[..n] != buf_b[..n]
+        {
+            return false;
+        }
+        remaining -= n as u64;
+    }
+    true
+}
+
+/// What an input's output name turned out to be.
+#[derive(Debug, PartialEq)]
+enum NameClaim {
+    /// No other input uses this name in this output folder.
+    Free,
+    /// An earlier input with the same name holds the same bytes: the same log, skip it.
+    Duplicate(PathBuf),
+    /// An earlier input with the same name is a different log: use `{stem}_{n}`.
+    Suffixed(u32),
+}
+
+/// Output names taken so far, per output folder. A folder prefix is never used: two inputs get
+/// the same name only if they are the same log (skipped) or genuinely different logs that
+/// share a file name (the later one gets a numeric suffix).
+#[derive(Default)]
+struct OutputClaims {
+    taken: HashMap<(PathBuf, String), PathBuf>,
+}
+
+impl OutputClaims {
+    fn claim(&mut self, out_dir: &Path, stem: &str, csv: &Path) -> NameClaim {
+        let key = |name: &str| (out_dir.to_path_buf(), name.to_ascii_lowercase());
+        match self.taken.get(&key(stem)) {
+            None => {
+                self.taken.insert(key(stem), csv.to_path_buf());
+                NameClaim::Free
             }
-        })
-        .collect();
-    format!("{sanitized}_")
-}
-
-/// True when two inputs can write the same output name: equal stems, or a BBL against a CSV whose
-/// stem is one of its exports (`LOG.BBL` against `LOG.02.csv`; flight stems are unknown until the
-/// BBL is decoded). Two CSVs with different stems never collide.
-fn output_names_can_collide(file_a: &str, file_b: &str) -> bool {
-    let (stem_a, stem_b) = (
-        input_stem(file_a).to_ascii_lowercase(),
-        input_stem(file_b).to_ascii_lowercase(),
-    );
-    let is_bbl = |file: &str| {
-        Path::new(file)
-            .extension()
-            .is_some_and(|e| is_bbl_extension(&e.to_string_lossy()))
-    };
-    stem_a == stem_b
-        || (is_bbl(file_a) && export_stem_matches_bbl(&stem_b, &stem_a))
-        || (is_bbl(file_b) && export_stem_matches_bbl(&stem_a, &stem_b))
-}
-
-/// Inputs whose output name needs the source-folder prefix. Starts with every pair of inputs from
-/// different folders that can write the same name (`output_names_can_collide`), then adds any input whose final output name still equals another input's (for example an
-/// unprefixed `a_log` against `a/log` prefixed to `a_log`), until no two names are equal.
-fn files_needing_prefix(files: &[(&str, &Path)]) -> HashSet<String> {
-    let mut groups: HashMap<String, Vec<(&str, &Path)>> = HashMap::new();
-    for (file, dir) in files {
-        groups
-            .entry(export_base_stem(&input_stem(file)))
-            .or_default()
-            .push((file, dir));
-    }
-    let mut prefixed: HashSet<String> = HashSet::new();
-    for group in groups.values() {
-        for (i, (file_a, dir_a)) in group.iter().enumerate() {
-            for (file_b, dir_b) in &group[i + 1..] {
-                if dir_a != dir_b && output_names_can_collide(file_a, file_b) {
-                    prefixed.insert((*file_a).to_string());
-                    prefixed.insert((*file_b).to_string());
+            Some(first) if files_identical(first, csv) => NameClaim::Duplicate(first.clone()),
+            Some(_) => {
+                for n in FIRST_OUTPUT_NAME_SUFFIX.. {
+                    let name = format!("{stem}_{n}");
+                    match self.taken.get(&key(&name)) {
+                        None => {
+                            self.taken.insert(key(&name), csv.to_path_buf());
+                            return NameClaim::Suffixed(n);
+                        }
+                        Some(prev) if files_identical(prev, csv) => {
+                            return NameClaim::Duplicate(prev.clone());
+                        }
+                        Some(_) => {}
+                    }
                 }
+                unreachable!("the suffix range is unbounded")
             }
-        }
-    }
-    loop {
-        let mut by_root: HashMap<String, Vec<(&str, &Path)>> = HashMap::new();
-        for (file, dir) in files {
-            let prefix = if prefixed.contains(*file) {
-                dir_name_prefix(dir)
-            } else {
-                String::new()
-            };
-            by_root
-                .entry(format!("{prefix}{}", input_stem(file)).to_ascii_lowercase())
-                .or_default()
-                .push((file, dir));
-        }
-        let before = prefixed.len();
-        // Equal names from one folder and no prefix in play cannot be told apart by a folder
-        // prefix; skip those. A group holding a prefixed input changed because of the prefix.
-        let colliding: Vec<String> = by_root
-            .values()
-            .filter(|g| {
-                g.len() > 1
-                    && (g.iter().any(|(_, d)| *d != g[0].1)
-                        || g.iter().any(|(f, _)| prefixed.contains(*f)))
-            })
-            .flat_map(|g| g.iter().map(|(f, _)| (*f).to_string()))
-            .collect();
-        prefixed.extend(colliding);
-        if prefixed.len() == before {
-            return prefixed;
         }
     }
 }
@@ -855,12 +837,9 @@ fn print_usage_and_exit(program_name: &str) {
     eprintln!("            low-value (very short / low data density / minimal gyro activity).");
     eprintln!("  -K, --keep: Keep the exported .csv/.headers.csv files (source folder, or");
     eprintln!(
-        "              -O/--output-dir). A later --keep run reuses a matching, fresh set (CSV and"
+        "              -O/--output-dir). A later --keep run uses an existing export (CSV and"
     );
-    eprintln!(
-        "              .headers.csv not older than the .bbl) instead of decoding; otherwise it"
-    );
-    eprintln!("              decodes. -F/--force-export re-extracts.");
+    eprintln!("              .headers.csv) instead of decoding; -F/--force-export re-extracts.");
     eprintln!();
     eprintln!("--- PLOT TYPE SELECTION ---");
     eprintln!();
@@ -1117,9 +1096,8 @@ fn profile_aircraft_group(
 
 fn process_file(
     input_file_str: &str,
-    // `Some(dir)` adds a sanitized `dir`-derived prefix to the output root name (disambiguating
-    // same-named logs from different source folders); `None` skips the prefix entirely.
-    dir_prefix_source: Option<&Path>,
+    // `Some(n)` names the outputs `{stem}_{n}`: a different log that shares this file name.
+    name_suffix: Option<u32>,
     output_dir: Option<&Path>,
     plot_config: PlotConfig,
     analysis_opts: AnalysisOptions,
@@ -1140,9 +1118,9 @@ fn process_file(
         .file_stem()
         .unwrap_or_else(|| std::ffi::OsStr::new("unknown_filestem"))
         .to_string_lossy();
-    let mut root_name_string: String = {
-        let dir_prefix_to_add = dir_prefix_source.map(dir_name_prefix).unwrap_or_default();
-        format!("{dir_prefix_to_add}{file_stem_cow}")
+    let mut root_name_string: String = match name_suffix {
+        Some(n) => format!("{file_stem_cow}_{n}"),
+        None => file_stem_cow.to_string(),
     };
 
     // --- Data Reading and Header Status ---
@@ -2803,20 +2781,44 @@ fn main() -> Result<(), Box<dyn Error>> {
         show_legend = false;
     }
 
-    // Folder prefix only where output names would otherwise be equal in one shared output
-    // folder (`-O`); without `-O` each log writes beside its own source, so no prefix is needed.
-    let prefix_files = if output_dir.is_some() {
-        files_needing_prefix(
-            &input_files
-                .iter()
-                .filter_map(|f_str| {
-                    effective_source_dir(f_str, &bbl_origin_dirs).map(|dir| (f_str.as_str(), dir))
-                })
-                .collect::<Vec<_>>(),
-        )
-    } else {
-        HashSet::new()
+    // Output names are claimed per output folder: an input holding the same bytes as an earlier
+    // one is the same log and is dropped (before profiling, so it counts once); a different log
+    // with the same file name gets a numeric suffix. BBL placeholders claim when expanded.
+    let out_dir_of = |f: &str| -> PathBuf {
+        match output_dir.as_deref() {
+            Some(dir) => PathBuf::from(dir),
+            None => effective_source_dir(f, &bbl_origin_dirs)
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| PathBuf::from(".")),
+        }
     };
+    let mut claims = OutputClaims::default();
+    let mut name_suffix: HashMap<String, u32> = HashMap::new();
+    let input_files: Vec<String> = input_files
+        .into_iter()
+        .filter(|f| {
+            let is_bbl = Path::new(f)
+                .extension()
+                .is_some_and(|e| is_bbl_extension(&e.to_string_lossy()));
+            if is_bbl {
+                return true;
+            }
+            match claims.claim(&out_dir_of(f), &input_stem(f), Path::new(f)) {
+                NameClaim::Free => true,
+                NameClaim::Duplicate(first) => {
+                    print_discovery_skip_warning(&format!(
+                        "Note: Skipping {f}: same content as {}",
+                        first.display()
+                    ));
+                    false
+                }
+                NameClaim::Suffixed(n) => {
+                    name_suffix.insert(f.clone(), n);
+                    true
+                }
+            }
+        })
+        .collect();
 
     // Construct AnalysisOptions once before the loop; cloned per file at the process_file call
     // site below (not Copy — carries the raw --start/--end argument text as owned Strings).
@@ -2904,13 +2906,24 @@ fn main() -> Result<(), Box<dyn Error>> {
                                 None => origin_dir,
                                 Some(dir) => Some(Path::new(dir)),
                             };
-                            let dir_prefix_source = prefix_files
-                                .contains(input_file_str.as_str())
-                                .then_some(origin_dir)
-                                .flatten();
+                            let name_suffix = match claims.claim(
+                                actual_output_dir.unwrap_or(Path::new(".")),
+                                &input_stem(flight_csv_path),
+                                Path::new(flight_csv_path),
+                            ) {
+                                NameClaim::Free => None,
+                                NameClaim::Duplicate(first) => {
+                                    eprintln!(
+                                        "Note: Skipping {flight_csv_path}: same content as {}",
+                                        first.display()
+                                    );
+                                    continue;
+                                }
+                                NameClaim::Suffixed(n) => Some(n),
+                            };
                             if let Err(e) = process_file(
                                 flight_csv_path,
-                                dir_prefix_source,
+                                name_suffix,
                                 actual_output_dir,
                                 plot_config,
                                 analysis_opts.clone(),
@@ -2937,10 +2950,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 None => naming_source_dir,
                 Some(dir) => Some(Path::new(dir)),
             };
-            let dir_prefix_source = prefix_files
-                .contains(input_file_str.as_str())
-                .then_some(naming_source_dir)
-                .flatten();
+            let name_suffix = name_suffix.get(input_file_str.as_str()).copied();
             let pre_parsed = parsed_cache_iter.next();
             if !first_visit(input_file_str) {
                 eprintln!("Note: Skipping {input_file_str}: already analyzed this run");
@@ -2953,7 +2963,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             print_block_separator();
             if let Err(e) = process_file(
                 input_file_str,
-                dir_prefix_source,
+                name_suffix,
                 actual_output_dir,
                 plot_config,
                 analysis_opts.clone(),
@@ -3380,61 +3390,81 @@ mod arg_conversion_tests {
 }
 
 #[cfg(test)]
-mod dir_prefix_tests {
+mod output_name_tests {
     use super::*;
 
-    #[test]
-    fn unique_stems_across_folders_get_no_prefix() {
-        let (a, b) = (Path::new("LIONBEE"), Path::new("LIONBEE-UPs"));
-        let set = files_needing_prefix(&[("LIONBEE/x1.csv", a), ("LIONBEE-UPs/y2.csv", b)]);
-        assert!(set.is_empty());
+    fn temp_dir(tag: &str) -> PathBuf {
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let id = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("bbcsvr-{tag}-{}-{id}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("failed to create test dir");
+        dir
+    }
+
+    fn write(dir: &Path, name: &str, bytes: &[u8]) -> PathBuf {
+        let p = dir.join(name);
+        std::fs::write(&p, bytes).unwrap();
+        p
     }
 
     #[test]
-    fn same_stem_in_two_folders_is_prefixed_only_for_that_stem() {
-        let (a, b) = (Path::new("A"), Path::new("B"));
-        let set = files_needing_prefix(&[("A/log.csv", a), ("B/log.csv", b), ("B/other.csv", b)]);
-        assert_eq!(
-            set,
-            HashSet::from(["A/log.csv".to_string(), "B/log.csv".to_string()])
+    fn identical_files_with_the_same_name_are_one_log() {
+        let (a, b) = (temp_dir("claim-a"), temp_dir("claim-b"));
+        let (fa, fb) = (write(&a, "x.csv", b"same"), write(&b, "x.csv", b"same"));
+        let mut claims = OutputClaims::default();
+        let out = Path::new("out");
+        assert_eq!(claims.claim(out, "x", &fa), NameClaim::Free);
+        assert_eq!(claims.claim(out, "x", &fb), NameClaim::Duplicate(fa));
+        std::fs::remove_dir_all(&a).ok();
+        std::fs::remove_dir_all(&b).ok();
+    }
+
+    #[test]
+    fn different_logs_with_the_same_name_get_numeric_suffixes_never_a_folder_prefix() {
+        let d = temp_dir("claim-diff");
+        let (f1, f2, f3) = (
+            write(&d, "1.csv", b"one"),
+            write(&d, "2.csv", b"two"),
+            write(&d, "3.csv", b"three"),
         );
+        let mut claims = OutputClaims::default();
+        let out = Path::new("out");
+        assert_eq!(claims.claim(out, "LOG", &f1), NameClaim::Free);
+        assert_eq!(claims.claim(out, "log", &f2), NameClaim::Suffixed(2));
+        assert_eq!(claims.claim(out, "LOG", &f3), NameClaim::Suffixed(3));
+        // A repeat of the suffixed log is still recognized as that log.
+        assert_eq!(
+            claims.claim(out, "LOG", &f2),
+            NameClaim::Duplicate(f2.clone())
+        );
+        std::fs::remove_dir_all(&d).ok();
     }
 
     #[test]
-    fn same_stem_twice_in_one_folder_is_not_a_collision() {
-        let a = Path::new("A");
-        let set = files_needing_prefix(&[("A/log.csv", a), ("A/log.bbl", a)]);
-        assert!(set.is_empty());
+    fn the_same_name_in_different_output_folders_does_not_clash() {
+        let d = temp_dir("claim-dirs");
+        let (f1, f2) = (write(&d, "1.csv", b"one"), write(&d, "2.csv", b"two"));
+        let mut claims = OutputClaims::default();
+        assert_eq!(claims.claim(Path::new("a"), "x", &f1), NameClaim::Free);
+        assert_eq!(claims.claim(Path::new("b"), "x", &f2), NameClaim::Free);
+        std::fs::remove_dir_all(&d).ok();
     }
 
     #[test]
-    fn bbl_and_its_flight_csv_in_two_folders_both_get_the_prefix() {
-        let (a, b) = (Path::new("a"), Path::new("b"));
-        let set = files_needing_prefix(&[("a/LOG.BBL", a), ("b/LOG.01.csv", b)]);
-        assert_eq!(set.len(), 2);
-    }
-
-    #[test]
-    fn prefixed_name_equal_to_an_unprefixed_name_prefixes_both() {
-        // a/log and b/log become a_log and b_log; c/a_log would equal the first one.
-        let (a, b, c) = (Path::new("a"), Path::new("b"), Path::new("c"));
-        let set = files_needing_prefix(&[("a/log.csv", a), ("b/log.csv", b), ("c/a_log.csv", c)]);
-        assert!(set.contains("c/a_log.csv"));
-        assert!(set.contains("a/log.csv"));
-    }
-
-    #[test]
-    fn case_only_stem_difference_counts_as_equal_names() {
-        let (a, b) = (Path::new("a"), Path::new("b"));
-        let set = files_needing_prefix(&[("a/LOG.csv", a), ("b/log.csv", b)]);
-        assert_eq!(set.len(), 2);
-    }
-
-    #[test]
-    fn dir_name_prefix_sanitizes_and_skips_nameless_dirs() {
-        assert_eq!(dir_name_prefix(Path::new("x/LION BEE")), "LION_BEE_");
-        assert_eq!(dir_name_prefix(Path::new(".")), "");
-        assert_eq!(dir_name_prefix(Path::new("/")), "");
+    fn files_identical_checks_length_and_every_byte() {
+        let d = temp_dir("ident");
+        let big = vec![7u8; FILE_COMPARE_CHUNK_BYTES * 2 + 5];
+        let mut other = big.clone();
+        *other.last_mut().unwrap() = 8;
+        let (a, b, c) = (
+            write(&d, "a", &big),
+            write(&d, "b", &big),
+            write(&d, "c", &other),
+        );
+        assert!(files_identical(&a, &b));
+        assert!(!files_identical(&a, &c));
+        assert!(!files_identical(&a, &d.join("missing")));
+        std::fs::remove_dir_all(&d).ok();
     }
 
     #[test]
@@ -3447,26 +3477,20 @@ mod dir_prefix_tests {
     }
 
     #[test]
-    fn different_flight_numbers_in_two_folders_get_no_prefix() {
-        let (a, b) = (Path::new("a"), Path::new("b"));
-        let set = files_needing_prefix(&[("a/LOG.01.csv", a), ("b/LOG.02.csv", b)]);
-        assert!(set.is_empty());
-    }
-
-    #[test]
-    fn bbl_collides_with_a_csv_named_like_one_of_its_exports() {
-        let (a, b) = (Path::new("a"), Path::new("b"));
-        let set = files_needing_prefix(&[("a/LOG.BBL", a), ("b/LOG.02.csv", b)]);
-        assert_eq!(set.len(), 2);
-        let set = files_needing_prefix(&[("a/LOG.BBL", a), ("b/OTHER.02.csv", b)]);
-        assert!(set.is_empty());
+    fn repeated_paths_are_dropped_but_name_alike_csvs_are_kept() {
+        let files = vec![
+            "d/LOG.BBL".to_string(),
+            "d/LOG.01.csv".to_string(),
+            "d/LOG.csv".to_string(),
+            "d/LOG.01.csv".to_string(),
+        ];
+        let kept = drop_repeated_inputs(files);
+        assert_eq!(kept, vec!["d/LOG.BBL", "d/LOG.01.csv", "d/LOG.csv"]);
     }
 
     #[test]
     fn a_bbl_reached_twice_is_not_a_stem_collision() {
-        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let id = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!("bbcsvr-prescan-{}-{id}", std::process::id()));
+        let dir = temp_dir("prescan");
         let sub = dir.join("sub");
         std::fs::create_dir_all(&sub).expect("failed to create test dir");
         std::fs::write(dir.join("LOG.BBL"), b"a").unwrap();
@@ -3480,17 +3504,5 @@ mod dir_prefix_tests {
         let two = find_colliding_bbl_stems(&[file, folder], true);
         assert_eq!(two, HashSet::from(["log".to_string()]));
         std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn repeated_paths_are_dropped_but_name_alike_csvs_are_kept() {
-        let files = vec![
-            "d/LOG.BBL".to_string(),
-            "d/LOG.01.csv".to_string(),
-            "d/LOG.csv".to_string(),
-            "d/LOG.01.csv".to_string(),
-        ];
-        let kept = drop_repeated_inputs(files);
-        assert_eq!(kept, vec!["d/LOG.BBL", "d/LOG.01.csv", "d/LOG.csv"]);
     }
 }

@@ -492,6 +492,10 @@ pub const PARITY_DIVISOR: usize = 2;
 pub const BBL_DISAMBIGUATOR_HEX_WIDTH: usize = 6;
 /// Bitmask truncating a path hash to `BBL_DISAMBIGUATOR_HEX_WIDTH` hex digits (24 bits).
 pub const BBL_DISAMBIGUATOR_MASK: u64 = 0xFF_FFFF;
+/// Read size when comparing two input files byte for byte (`main.rs`, `files_identical`).
+pub const FILE_COMPARE_CHUNK_BYTES: usize = 64 * 1024;
+/// First numeric suffix given to a different log whose output name is already taken (`{stem}_2`).
+pub const FIRST_OUTPUT_NAME_SUFFIX: u32 = 2;
 /// Defensive cap on `rename_pair_unique`'s fallback counter (`bbl_reader.rs`) — not a realistic
 /// ceiling for a real collision, purely a guaranteed loop-termination bound.
 pub const RENAME_PAIR_MAX_ATTEMPTS: u32 = 10_000;

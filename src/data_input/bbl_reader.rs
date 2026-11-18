@@ -141,14 +141,6 @@ fn strip_flight_number(stem: &str) -> &str {
     }
 }
 
-/// Lowercased BBL stem that a kept export's CSV stem derives from, with the collision tag and
-/// the flight number removed: `LOG.02.ab12cd`, `LOG.02` and `LOG` all give `log`.
-pub fn export_base_stem(csv_stem: &str) -> String {
-    let lower = csv_stem.to_ascii_lowercase();
-    let (name, _) = split_collision_tag(&lower);
-    strip_flight_number(name).to_string()
-}
-
 /// Lowercased BBL stems a kept export's CSV stem can derive from, most specific first: the name
 /// without its collision tag (`LOG.02.csv` of a single-flight `LOG.02.BBL`), then that name
 /// without its flight number (`LOG.02.csv` of a multi-flight `LOG.BBL`).
@@ -164,22 +156,19 @@ fn export_stem_candidates(csv_stem: &str) -> Vec<String> {
 }
 
 /// True when `csv_stem` can be an export of a BBL whose lowercased stem is `bbl_stem`.
-pub fn export_stem_matches_bbl(csv_stem: &str, bbl_stem: &str) -> bool {
+fn export_stem_matches_bbl(csv_stem: &str, bbl_stem: &str) -> bool {
     export_stem_candidates(csv_stem)
         .iter()
         .any(|c| c == bbl_stem)
 }
 
-/// Kept exports of `bbl_path` already present in `export_dir`, in flight order, or `None` when
-/// the BBL must be decoded. A CSV counts when its name matches the BBL (`export_stem_matches_bbl`),
+/// Kept exports of `bbl_path` already present in `export_dir`, in flight order, or `Err` when the
+/// BBL must be decoded. A CSV counts when its name matches the BBL (`export_stem_matches_bbl`),
 /// its collision tag equals `expected_tag` (`Some` only when this BBL's stem collides with another
-/// input's, so another file's export is never taken; `None` means the name must carry no tag),
-/// its `.headers.csv` sidecar exists, and both files are not older than the BBL. Any matching CSV
-/// that fails a check returns `None`, so a partial or stale set is never mixed with fresh output.
-/// Filtered flights leave no file, so a reused set matches an unforced run.
-///
-/// `Err` carries why the set was refused: `None` when no export exists (the normal first run),
-/// `Some(reason)` when an export exists but failed a check — worth telling the user.
+/// input's; `None` means the name carries no tag), and its `.headers.csv` sidecar exists. A
+/// re-export beside a tagged pair is written as `.tag-N`; only the newest file per flight is kept.
+/// `Err(None)` means no export exists (the normal first run); `Err(Some(reason))` means one exists
+/// but cannot be used.
 fn find_reusable_exports(
     bbl_path: &Path,
     export_dir: &Path,
@@ -190,15 +179,6 @@ fn find_reusable_exports(
         .ok_or(None)?
         .to_string_lossy()
         .to_ascii_lowercase();
-    let bbl_mtime = std::fs::metadata(bbl_path)
-        .and_then(|m| m.modified())
-        .map_err(|_| None)?;
-    let not_older = |p: &Path| {
-        std::fs::metadata(p)
-            .ok()
-            .and_then(|m| m.modified().ok())
-            .is_some_and(|m| m >= bbl_mtime)
-    };
     // One export generation per flight: a re-export beside a tagged pair is written as
     // `.tag-N`, so keep only the newest file for each flight name.
     let mut newest: std::collections::HashMap<String, (std::time::SystemTime, PathBuf)> =
@@ -237,12 +217,9 @@ fn find_reusable_exports(
         if !headers.is_file() {
             return Err(Some("a kept CSV has no .headers.csv"));
         }
-        if !not_older(&path) || !not_older(&headers) {
-            return Err(Some("a kept export is older than the BBL"));
-        }
         let modified = std::fs::metadata(&path)
             .and_then(|m| m.modified())
-            .unwrap_or(bbl_mtime);
+            .unwrap_or(std::time::UNIX_EPOCH);
         let flight = split_collision_tag(&lower).0.to_string();
         match newest.get(&flight) {
             Some((seen, _)) if *seen >= modified => {}
@@ -494,18 +471,6 @@ mod tests {
     }
 
     #[test]
-    fn export_base_stem_strips_flight_number_and_collision_suffix() {
-        assert_eq!(export_base_stem("LOG"), "log");
-        assert_eq!(export_base_stem("LOG.02"), "log");
-        assert_eq!(export_base_stem("LOG.ab12cd"), "log");
-        assert_eq!(export_base_stem("LOG.02.ab12cd"), "log");
-        assert_eq!(export_base_stem("LOG.02.ab12cd-3"), "log");
-        // A non-hex or wrong-width tail is part of the name, not a suffix.
-        assert_eq!(export_base_stem("LOG.run"), "log.run");
-        assert_eq!(export_base_stem("LOG.abc"), "log.abc");
-    }
-
-    #[test]
     fn export_match_keeps_a_flight_number_that_belongs_to_the_bbl_name() {
         // LOG.02.BBL with one flight exports LOG.02.csv; LOG.BBL with 2 flights also does.
         assert!(export_stem_matches_bbl("LOG.02", "log.02"));
@@ -562,32 +527,29 @@ mod tests {
     }
 
     #[test]
-    fn reuse_refuses_stale_csv_stale_sidecar_and_missing_exports() {
-        let dir = temp_test_dir("reuse-stale");
+    fn an_existing_export_is_reused_even_when_older_than_the_bbl() {
+        // Rule: the CSV exists, so it is used; `-F` is the way to re-extract.
+        let dir = temp_test_dir("reuse-older");
         let bbl = write_bbl(&dir, 100);
         write_export(&dir, "LOG", 50);
         assert_eq!(
             find_reusable_exports(&bbl, &dir, None),
-            Err(Some("a kept export is older than the BBL")),
-            "stale CSV"
+            Ok(vec![dir.join("LOG.csv")])
         );
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
-        // Fresh CSV, but its sidecar predates the BBL.
-        set_mtime(&dir.join("LOG.csv"), 200);
+    #[test]
+    fn reuse_needs_the_headers_sidecar_and_reports_a_missing_export_quietly() {
+        let dir = temp_test_dir("reuse-sidecar");
+        let bbl = write_bbl(&dir, 0);
+        std::fs::write(dir.join("LOG.csv"), b"d").unwrap();
         assert_eq!(
             find_reusable_exports(&bbl, &dir, None),
-            Err(Some("a kept export is older than the BBL")),
-            "stale sidecar"
+            Err(Some("a kept CSV has no .headers.csv"))
         );
-        set_mtime(&dir.join("LOG.headers.csv"), 200);
-        assert!(find_reusable_exports(&bbl, &dir, None).is_ok());
-
         let empty = temp_test_dir("reuse-empty");
-        assert_eq!(
-            find_reusable_exports(&bbl, &empty, None),
-            Err(None),
-            "no exports"
-        );
+        assert_eq!(find_reusable_exports(&bbl, &empty, None), Err(None));
         std::fs::remove_dir_all(&dir).ok();
         std::fs::remove_dir_all(&empty).ok();
     }

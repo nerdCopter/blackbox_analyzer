@@ -47,8 +47,8 @@ Usage: ./blackbox_analyzer <input1> [<input2> ...] [OPTIONS]
   -F, --force-export: Export .bbl/.bfl flights bbl_parser would otherwise skip as low-value
                        (very short / low data density / minimal gyro activity).
   -K, --keep: Keep the exported .csv/.headers.csv files (source folder, or -O/--output-dir).
-               A later --keep run reuses a matching, fresh set (CSV and .headers.csv
-               not older than the .bbl) instead of decoding again; otherwise it decodes. -F re-extracts.
+               A later --keep run uses an existing export (CSV and .headers.csv) instead of
+               decoding again; -F re-extracts.
 
 === PLOT TYPE SELECTION ===
 
