@@ -1907,6 +1907,11 @@ mod tests {
             vec![(200.0, 10.0), (240.0, 20.0), (280.0, 30.0)]
         );
         assert_eq!(lines.len(), 2);
+        // The plot limit is inclusive: points at 270 and exactly 300 Hz form a run that ends at 300.
+        let edge =
+            rpm_harmonic_overlay_lines(&[Some(90.0), Some(100.0), Some(110.0)], &y, 3, 300.0, 2);
+        assert_eq!(edge[2].0, 3);
+        assert_eq!(edge[2].1, vec![(270.0, 10.0), (300.0, 20.0)]);
         // A higher minimum drops the three-point runs too.
         assert!(rpm_harmonic_overlay_lines(&medians, &y, 3, 300.0, 4).is_empty());
     }
