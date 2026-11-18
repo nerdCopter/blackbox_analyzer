@@ -17,9 +17,10 @@ use std::sync::{Mutex, OnceLock};
 
 use crate::constants::{
     AVG_CHAR_WIDTH_RATIO, FILTERED_D_TERM_MIN_THRESHOLD, FONT_SIZE_MESSAGE, FONT_SIZE_PEAK_LABEL,
-    HEATMAP_MIN_PSD_DB, LINE_WIDTH_LEGEND, MAX_PEAKS_TO_LABEL, PEAK_LABEL_BOTTOM_MARGIN_PX,
-    PEAK_LABEL_MIN_AMPLITUDE, PLOT_HEIGHT, PLOT_WIDTH, PSD_PEAK_LABEL_MIN_VALUE_DB,
-    RIGHT_ALIGN_THRESHOLD, RPM_HEATMAP_LINE_COLOR, RPM_HEATMAP_LINE_WIDTH, TRIANGLE_WIDTH_RATIO,
+    HEATMAP_LEGEND_BACKGROUND_OPACITY, HEATMAP_MIN_PSD_DB, LEGEND_BACKGROUND_OPACITY,
+    LINE_WIDTH_LEGEND, MAX_PEAKS_TO_LABEL, PEAK_LABEL_BOTTOM_MARGIN_PX, PEAK_LABEL_MIN_AMPLITUDE,
+    PLOT_HEIGHT, PLOT_WIDTH, PSD_PEAK_LABEL_MIN_VALUE_DB, RIGHT_ALIGN_THRESHOLD,
+    RPM_HEATMAP_LINE_COLOR, RPM_HEATMAP_LINE_WIDTH, TRIANGLE_WIDTH_RATIO,
 };
 use crate::font_config::{
     BUNDLED_FONT_BYTES, FONT_TUPLE_AXIS_LABEL, FONT_TUPLE_CHART_TITLE, FONT_TUPLE_LEGEND,
@@ -443,7 +444,7 @@ fn draw_single_axis_chart_with_config(
         chart
             .configure_series_labels()
             .position(SeriesLabelPosition::UpperRight)
-            .background_style(WHITE.mix(0.8))
+            .background_style(WHITE.mix(LEGEND_BACKGROUND_OPACITY))
             .border_style(BLACK)
             .label_font(FONT_TUPLE_LEGEND)
             .draw()?;
@@ -1023,7 +1024,7 @@ fn draw_single_heatmap_chart(
         chart
             .configure_series_labels()
             .position(SeriesLabelPosition::UpperRight)
-            .background_style(WHITE.mix(0.8))
+            .background_style(WHITE.mix(HEATMAP_LEGEND_BACKGROUND_OPACITY))
             .border_style(BLACK)
             .label_font(FONT_TUPLE_LEGEND)
             .draw()?;
