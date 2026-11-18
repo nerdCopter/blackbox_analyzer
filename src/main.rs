@@ -818,6 +818,7 @@ fn drop_duplicate_log_inputs(
             .canonicalize()
             .unwrap_or_else(|_| PathBuf::from(&f));
         if !seen.insert(canonical) {
+            print_discovery_skip_warning(&format!("Note: Skipping {f}: input already listed"));
             continue;
         }
         let path = Path::new(&f);
@@ -2735,7 +2736,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut seen_inputs: HashSet<PathBuf> = HashSet::new();
     input_paths.retain(|p| {
         let path = Path::new(p);
-        seen_inputs.insert(path.canonicalize().unwrap_or_else(|_| path.to_path_buf()))
+        let first = seen_inputs.insert(path.canonicalize().unwrap_or_else(|_| path.to_path_buf()));
+        if !first {
+            eprintln!("Note: Skipping {p}: input already listed");
+        }
+        first
     });
 
     // Expand input paths (files and directories) to a list of CSV files
@@ -2883,6 +2888,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                         let origin_dir = effective_source_dir(input_file_str, &bbl_origin_dirs);
                         for (flight_csv_path, _origin_dir) in &flights {
                             if !first_visit(flight_csv_path) {
+                                eprintln!(
+                                    "Note: Skipping {flight_csv_path}: already analyzed this run"
+                                );
                                 continue;
                             }
                             let actual_output_dir = match &output_dir {
@@ -2928,6 +2936,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 .flatten();
             let pre_parsed = parsed_cache_iter.next();
             if !first_visit(input_file_str) {
+                eprintln!("Note: Skipping {input_file_str}: already analyzed this run");
                 continue;
             }
 
