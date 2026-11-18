@@ -505,22 +505,45 @@ fn files_identical(a: &Path, b: &Path) -> bool {
 enum NameClaim {
     /// No other input uses this name in this output folder.
     Free,
-    /// An earlier input with the same name holds the same bytes: the same log, skip it.
+    /// An earlier input holds the same bytes: the same log, skip it.
     Duplicate(PathBuf),
     /// An earlier input with the same name is a different log: use `{stem}_{n}`.
     Suffixed(u32),
 }
 
-/// Output names taken so far, per output folder. A folder prefix is never used: two inputs get
-/// the same name only if they are the same log (skipped) or genuinely different logs that
-/// share a file name (the later one gets a numeric suffix).
+/// Output names taken so far, per output folder. A folder prefix is never used. An input holding
+/// the same bytes as an earlier one in the same output folder is the same log, whatever its
+/// name, and is skipped. Different logs that share a file name get a numeric suffix.
 #[derive(Default)]
 struct OutputClaims {
     taken: HashMap<(PathBuf, String), PathBuf>,
+    /// Claimed inputs by output folder and byte length: only equal-length files are compared.
+    by_len: HashMap<(PathBuf, u64), Vec<PathBuf>>,
 }
 
 impl OutputClaims {
     fn claim(&mut self, out_dir: &Path, stem: &str, csv: &Path) -> NameClaim {
+        let len = fs::metadata(csv).map(|m| m.len()).ok();
+        if let Some(len) = len {
+            let same_log = self
+                .by_len
+                .get(&(out_dir.to_path_buf(), len))
+                .and_then(|earlier| earlier.iter().find(|p| files_identical(p, csv)));
+            if let Some(first) = same_log {
+                return NameClaim::Duplicate(first.clone());
+            }
+        }
+        let claimed = self.claim_name(out_dir, stem, csv);
+        if let (Some(len), true) = (len, !matches!(claimed, NameClaim::Duplicate(_))) {
+            self.by_len
+                .entry((out_dir.to_path_buf(), len))
+                .or_default()
+                .push(csv.to_path_buf());
+        }
+        claimed
+    }
+
+    fn claim_name(&mut self, out_dir: &Path, stem: &str, csv: &Path) -> NameClaim {
         let key = |name: &str| (out_dir.to_path_buf(), name.to_ascii_lowercase());
         match self.taken.get(&key(stem)) {
             None => {
@@ -3437,6 +3460,24 @@ mod output_name_tests {
             claims.claim(out, "LOG", &f2),
             NameClaim::Duplicate(f2.clone())
         );
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn identical_bytes_under_different_names_are_one_log() {
+        let d = temp_dir("claim-names");
+        let (f1, f2, f3) = (
+            write(&d, "a.csv", b"same flight"),
+            write(&d, "b.csv", b"same flight"),
+            write(&d, "c.csv", b"other flight"),
+        );
+        let mut claims = OutputClaims::default();
+        let out = Path::new("out");
+        assert_eq!(claims.claim(out, "a", &f1), NameClaim::Free);
+        assert_eq!(claims.claim(out, "b", &f2), NameClaim::Duplicate(f1));
+        assert_eq!(claims.claim(out, "c", &f3), NameClaim::Free);
+        // The same bytes in another output folder are not a clash there.
+        assert_eq!(claims.claim(Path::new("o2"), "b", &f2), NameClaim::Free);
         std::fs::remove_dir_all(&d).ok();
     }
 
