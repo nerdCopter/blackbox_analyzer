@@ -1,6 +1,8 @@
 // src/plot_functions/mod.rs
 
+use crate::data_analysis::filter_response::{self, RpmFilterConfig};
 use crate::data_input::log_data::LogRowData;
+use crate::plot_framework::HeatmapOverlayLine;
 
 pub mod motor_desync;
 pub mod peak_detection;
@@ -23,6 +25,35 @@ pub mod plot_step_response;
 pub mod plot_throttle_freq_heatmap;
 
 // Helper function for formatting debug suffix in plot labels
+/// RPM filter harmonic lines for a throttle-frequency heatmap, labeled `RPM Filter H<n>` for the
+/// legend. Empty without eRPM, `motor_poles` or a Betaflight RPM filter config.
+pub fn rpm_heatmap_overlay_lines(
+    log_data: &[LogRowData],
+    rpm_filter: Option<&RpmFilterConfig>,
+    throttle_min: f64,
+    throttle_max: f64,
+    throttle_centers: &[f64],
+    x_max: f64,
+) -> Vec<HeatmapOverlayLine> {
+    let Some(config) = rpm_filter else {
+        return Vec::new();
+    };
+    filter_response::rpm_throttle_overlay_lines(
+        log_data,
+        config,
+        throttle_min,
+        throttle_max,
+        throttle_centers,
+        x_max,
+    )
+    .into_iter()
+    .map(|(harmonic, points)| HeatmapOverlayLine {
+        label: format!("RPM Filter H{harmonic}"),
+        points,
+    })
+    .collect()
+}
+
 pub fn format_debug_suffix(
     base_label: &str,
     using_debug_fallback: bool,

@@ -9,7 +9,7 @@ use crate::constants::{
     RPM_FILTER_CURVE_START_FLOOR_HZ, RPM_FILTER_CURVE_START_FRACTION,
     RPM_FILTER_DEFAULT_GYRO_RATE_HZ, RPM_FILTER_ERPM_PER_LSB, RPM_FILTER_MAX_HZ_RATE_FRACTION,
     RPM_FILTER_MICROSECONDS_PER_SECOND, RPM_FILTER_MIN_MOTOR_POLES, RPM_FILTER_POLES_PER_PAIR,
-    RPM_FILTER_SECONDS_PER_MINUTE, RPM_HEATMAP_MIN_BIN_SAMPLES,
+    RPM_FILTER_SECONDS_PER_MINUTE, RPM_HEATMAP_MIN_BIN_SAMPLES, RPM_HEATMAP_MIN_LINE_POINTS,
 };
 use crate::data_input::log_data::LogRowData;
 
@@ -1622,19 +1622,21 @@ pub fn rpm_fundamental_hz_by_throttle_bin(
 
 /// RPM filter harmonic lines for the heatmap: harmonic `h` is drawn at `h` x the per-bin median
 /// motor Hz (x) against the bin's throttle (y). A line breaks where a bin has no median or the
-/// harmonic leaves the plot (`x > x_max`); runs under two points are dropped.
+/// harmonic leaves the plot (`x > x_max`); runs under `min_points` points are dropped. Each run is tagged
+/// with its harmonic number.
 fn rpm_harmonic_overlay_lines(
     median_hz_by_bin: &[Option<f64>],
     throttle_centers: &[f64],
     harmonics: u32,
     x_max: f64,
-) -> Vec<Vec<(f64, f64)>> {
+    min_points: usize,
+) -> Vec<(u32, Vec<(f64, f64)>)> {
     let mut lines = Vec::new();
     for harmonic in 1..=harmonics {
         let mut run: Vec<(f64, f64)> = Vec::new();
         let mut finish = |run: &mut Vec<(f64, f64)>| {
-            if run.len() >= 2 {
-                lines.push(std::mem::take(run));
+            if run.len() >= min_points {
+                lines.push((harmonic, std::mem::take(run)));
             } else {
                 run.clear();
             }
@@ -1659,7 +1661,7 @@ pub fn rpm_throttle_overlay_lines(
     throttle_max: f64,
     throttle_centers: &[f64],
     x_max: f64,
-) -> Vec<Vec<(f64, f64)>> {
+) -> Vec<(u32, Vec<(f64, f64)>)> {
     let Some(poles) = config.motor_poles else {
         return Vec::new();
     };
@@ -1671,7 +1673,13 @@ pub fn rpm_throttle_overlay_lines(
         throttle_max,
         RPM_HEATMAP_MIN_BIN_SAMPLES,
     );
-    rpm_harmonic_overlay_lines(&medians, throttle_centers, config.harmonics, x_max)
+    rpm_harmonic_overlay_lines(
+        &medians,
+        throttle_centers,
+        config.harmonics,
+        x_max,
+        RPM_HEATMAP_MIN_LINE_POINTS,
+    )
 }
 
 /// Console and report lines for the RPM filter motor frequencies as `(label, text)`.
@@ -1876,19 +1884,29 @@ mod tests {
     fn harmonics_are_multiples_of_median_and_clipped() {
         let medians = [Some(100.0), Some(120.0), Some(140.0)];
         let y = [10.0, 20.0, 30.0];
-        let lines = rpm_harmonic_overlay_lines(&medians, &y, 3, 300.0);
+        let lines = rpm_harmonic_overlay_lines(&medians, &y, 3, 300.0, 2);
         // H1 and H2 stay on plot; H3 has one on-plot point (300 at bin 0), so it is dropped.
-        assert_eq!(lines[0], vec![(100.0, 10.0), (120.0, 20.0), (140.0, 30.0)]);
-        assert_eq!(lines[1], vec![(200.0, 10.0), (240.0, 20.0), (280.0, 30.0)]);
+        assert_eq!(lines[0].0, 1);
+        assert_eq!(lines[1].0, 2);
+        assert_eq!(
+            lines[0].1,
+            vec![(100.0, 10.0), (120.0, 20.0), (140.0, 30.0)]
+        );
+        assert_eq!(
+            lines[1].1,
+            vec![(200.0, 10.0), (240.0, 20.0), (280.0, 30.0)]
+        );
         assert_eq!(lines.len(), 2);
+        // A higher minimum drops the three-point runs too.
+        assert!(rpm_harmonic_overlay_lines(&medians, &y, 3, 300.0, 4).is_empty());
     }
 
     #[test]
     fn missing_bin_splits_the_line() {
         let medians = [Some(100.0), None, Some(110.0), Some(120.0)];
         let y = [1.0, 2.0, 3.0, 4.0];
-        let lines = rpm_harmonic_overlay_lines(&medians, &y, 1, 500.0);
-        assert_eq!(lines, vec![vec![(110.0, 3.0), (120.0, 4.0)]]);
+        let lines = rpm_harmonic_overlay_lines(&medians, &y, 1, 500.0, 2);
+        assert_eq!(lines, vec![(1, vec![(110.0, 3.0), (120.0, 4.0)])]);
     }
 
     #[test]

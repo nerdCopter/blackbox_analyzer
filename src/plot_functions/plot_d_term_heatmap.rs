@@ -11,7 +11,7 @@ use crate::constants::{
 use crate::data_analysis::calc_step_response;
 use crate::data_analysis::derivative::calculate_derivative;
 use crate::data_analysis::fft_utils;
-use crate::data_analysis::filter_response::{self, RpmFilterConfig};
+use crate::data_analysis::filter_response::RpmFilterConfig;
 use crate::data_input::log_data::LogRowData;
 use crate::plot_framework::{
     draw_dual_heatmap_plot, is_axis_heatmap_spectrum_data_valid, AxisHeatmapSpectrum, HeatmapData,
@@ -116,18 +116,14 @@ pub fn plot_d_term_heatmap(
         .collect();
 
     // RPM harmonics from logged eRPM; shared by every axis and both columns.
-    let rpm_overlay_lines = rpm_filter
-        .map(|cfg| {
-            filter_response::rpm_throttle_overlay_lines(
-                log_data,
-                cfg,
-                THROTTLE_Y_MIN_VALUE,
-                THROTTLE_Y_MAX_VALUE,
-                &throttle_y_bins,
-                max_freq_to_plot,
-            )
-        })
-        .unwrap_or_default();
+    let rpm_overlay_lines = crate::plot_functions::rpm_heatmap_overlay_lines(
+        log_data,
+        rpm_filter,
+        THROTTLE_Y_MIN_VALUE,
+        THROTTLE_Y_MAX_VALUE,
+        &throttle_y_bins,
+        max_freq_to_plot,
+    );
 
     // Store axis spectrum data
     let mut axis_heatmap_spectrums: Vec<AxisHeatmapSpectrum> = Vec::new();

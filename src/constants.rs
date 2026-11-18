@@ -525,4 +525,6 @@ pub const RPM_FILTER_CURVE_START_FLOOR_HZ: f64 = 1.0; // Lowest curve start, Hz 
 pub const RPM_FILTER_CURVE_MIN_ATTENUATION: f64 = 0.05; // RPM curves are drawn only where the notch attenuates by at least this fraction (0.05 = 5%)
 pub const RPM_FILTER_MICROSECONDS_PER_SECOND: f64 = 1_000_000.0; // blackbox looptime header is in microseconds
 pub const RPM_HEATMAP_MIN_BIN_SAMPLES: usize = 20; // Throttle bins with fewer eRPM samples get no RPM harmonic point on the heatmap
+pub const RPM_HEATMAP_LINE_COLOR: (u8, u8, u8) = (235, 30, 30); // Red: opposite the viridis heatmap's blue-green-yellow range so the harmonic lines stand out
+pub const RPM_HEATMAP_MIN_LINE_POINTS: usize = 5; // A heatmap RPM harmonic run shorter than this (a stub where the harmonic barely enters the plot) is not drawn or listed
 pub const RPM_HEATMAP_LINE_WIDTH: u32 = 2; // Stroke width of the RPM harmonic lines on the throttle-frequency heatmap
