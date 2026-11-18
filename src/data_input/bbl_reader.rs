@@ -9,7 +9,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 
 use crate::constants::{
-    BBL_DISAMBIGUATOR_HEX_WIDTH, BBL_DISAMBIGUATOR_MASK, RENAME_PAIR_MAX_ATTEMPTS,
+    BBL_DISAMBIGUATOR_HEX_WIDTH, BBL_DISAMBIGUATOR_MASK, CSV_EXTENSION, HEADERS_CSV_SUFFIX,
+    RENAME_PAIR_MAX_ATTEMPTS,
 };
 use crate::types::BblExpansionResult;
 
@@ -111,6 +112,119 @@ fn rename_pair_unique(
     }
 }
 
+/// Splits a lowercased export stem into its name part and its collision tag: a trailing
+/// `.{BBL_DISAMBIGUATOR_HEX_WIDTH} hex digits`, optionally followed by the `-N` fallback counter
+/// (`rename_pair_unique`). `log.02.ab12cd-3` gives (`log.02`, `ab12cd`).
+fn split_collision_tag(stem: &str) -> (&str, Option<&str>) {
+    if let Some((head, tail)) = stem.rsplit_once('.') {
+        let (hex, counter) = match tail.split_once('-') {
+            Some((hex, n)) => (hex, Some(n)),
+            None => (tail, None),
+        };
+        let counter_ok =
+            counter.is_none_or(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()));
+        if hex.len() == BBL_DISAMBIGUATOR_HEX_WIDTH
+            && hex.chars().all(|c| c.is_ascii_hexdigit())
+            && counter_ok
+        {
+            return (head, Some(hex));
+        }
+    }
+    (stem, None)
+}
+
+/// Drops a trailing `.NN` flight number (digits only) from a lowercased stem.
+fn strip_flight_number(stem: &str) -> &str {
+    match stem.rsplit_once('.') {
+        Some((head, tail)) if !tail.is_empty() && tail.chars().all(|c| c.is_ascii_digit()) => head,
+        _ => stem,
+    }
+}
+
+/// Lowercased BBL stem that a kept export's CSV stem derives from, with the collision tag and
+/// the flight number removed: `LOG.02.ab12cd`, `LOG.02` and `LOG` all give `log`.
+pub fn export_base_stem(csv_stem: &str) -> String {
+    let lower = csv_stem.to_ascii_lowercase();
+    let (name, _) = split_collision_tag(&lower);
+    strip_flight_number(name).to_string()
+}
+
+/// Lowercased BBL stems a kept export's CSV stem can derive from, most specific first: the name
+/// without its collision tag (`LOG.02.csv` of a single-flight `LOG.02.BBL`), then that name
+/// without its flight number (`LOG.02.csv` of a multi-flight `LOG.BBL`).
+pub fn export_stem_candidates(csv_stem: &str) -> Vec<String> {
+    let lower = csv_stem.to_ascii_lowercase();
+    let (name, _) = split_collision_tag(&lower);
+    let base = strip_flight_number(name);
+    let mut out = vec![name.to_string()];
+    if base != name {
+        out.push(base.to_string());
+    }
+    out
+}
+
+/// True when `csv_stem` can be an export of a BBL whose lowercased stem is `bbl_stem`.
+pub fn export_stem_matches_bbl(csv_stem: &str, bbl_stem: &str) -> bool {
+    export_stem_candidates(csv_stem)
+        .iter()
+        .any(|c| c == bbl_stem)
+}
+
+/// Kept exports of `bbl_path` already present in `export_dir`, in flight order, or `None` when
+/// the BBL must be decoded. A CSV counts when its name matches the BBL (`export_stem_matches_bbl`),
+/// its collision tag equals `expected_tag` (`Some` only when this BBL's stem collides with another
+/// input's, so another file's export is never taken; `None` means the name must carry no tag),
+/// its `.headers.csv` sidecar exists, and both files are not older than the BBL. Any matching CSV
+/// that fails a check returns `None`, so a partial or stale set is never mixed with fresh output.
+/// Filtered flights leave no file, so a reused set matches an unforced run.
+fn find_reusable_exports(
+    bbl_path: &Path,
+    export_dir: &Path,
+    expected_tag: Option<&str>,
+) -> Option<Vec<PathBuf>> {
+    let bbl_stem = bbl_path.file_stem()?.to_string_lossy().to_ascii_lowercase();
+    let bbl_mtime = std::fs::metadata(bbl_path).ok()?.modified().ok()?;
+    let not_older = |p: &Path| {
+        std::fs::metadata(p)
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .is_some_and(|m| m >= bbl_mtime)
+    };
+    let mut found: Vec<PathBuf> = Vec::new();
+    // A bare "LOG.BBL" has an empty parent; read_dir rejects "" where "." works.
+    let export_dir = if export_dir.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        export_dir
+    };
+    for entry in std::fs::read_dir(export_dir).ok()?.flatten() {
+        let path = entry.path();
+        let name = path.file_name()?.to_string_lossy().to_ascii_lowercase();
+        let is_csv = path
+            .extension()
+            .is_some_and(|e| e.to_string_lossy().eq_ignore_ascii_case(CSV_EXTENSION));
+        if !is_csv || name.ends_with(HEADERS_CSV_SUFFIX) {
+            continue;
+        }
+        let stem = path.file_stem()?.to_string_lossy().into_owned();
+        if !export_stem_matches_bbl(&stem, &bbl_stem) {
+            continue;
+        }
+        let lower = stem.to_ascii_lowercase();
+        let tag = split_collision_tag(&lower).1;
+        if tag != expected_tag.map(str::to_ascii_lowercase).as_deref() {
+            continue;
+        }
+        let headers = path.with_file_name(format!("{stem}{HEADERS_CSV_SUFFIX}"));
+        if !headers.is_file() || !not_older(&path) || !not_older(&headers) {
+            return None;
+        }
+        found.push(path);
+    }
+    found.sort();
+    (!found.is_empty()).then_some(found)
+}
+
 /// Decodes a `.bbl`/`.BBL` file via the `bbl_parser` crate and exports each embedded flight to a
 /// scratch CSV/`.headers.csv` pair in the OS temp directory, reusing `bbl_parser`'s own CSV
 /// export (its documented, stable output format) instead of depending on `DecodedFrame.data`'s
@@ -174,6 +288,33 @@ pub fn expand_bbl_to_scratch_csvs(
             .unwrap_or_else(|| origin_dir.clone()),
         (None, false) => unreachable!("scratch_guard is only None when keep is true"),
     };
+
+    // IT 227: under --keep, reuse the exports a previous run left in `export_dir` instead of
+    // decoding again. `-F`/`--force-export` is the re-extract switch (it can add flights an
+    // unforced export filtered), so it never reuses.
+    if keep && !force_export {
+        let stem_collides = bbl_path
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_ascii_lowercase())
+            .is_some_and(|s| colliding_stems.contains(&s));
+        let expected_tag = stem_collides.then(|| path_disambiguator(bbl_path));
+        if let Some(existing) =
+            find_reusable_exports(bbl_path, &export_dir, expected_tag.as_deref())
+        {
+            print_block_separator();
+            println!(
+                "--- Reusing {} kept CSV(s) of {} in {} (use -F/--force-export to re-extract) ---",
+                existing.len(),
+                bbl_path.display(),
+                export_dir.display()
+            );
+            let results = existing
+                .into_iter()
+                .map(|p| (p.to_string_lossy().to_string(), origin_dir.clone()))
+                .collect();
+            return Ok((results, None));
+        }
+    }
 
     let export_options = ExportOptions {
         csv: true,
@@ -303,6 +444,121 @@ pub fn expand_bbl_to_scratch_csvs(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn temp_test_dir(tag: &str) -> PathBuf {
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let id = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("bbcsvr-{tag}-{}-{id}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("failed to create test dir");
+        dir
+    }
+
+    #[test]
+    fn export_base_stem_strips_flight_number_and_collision_suffix() {
+        assert_eq!(export_base_stem("LOG"), "log");
+        assert_eq!(export_base_stem("LOG.02"), "log");
+        assert_eq!(export_base_stem("LOG.ab12cd"), "log");
+        assert_eq!(export_base_stem("LOG.02.ab12cd"), "log");
+        assert_eq!(export_base_stem("LOG.02.ab12cd-3"), "log");
+        // A non-hex or wrong-width tail is part of the name, not a suffix.
+        assert_eq!(export_base_stem("LOG.run"), "log.run");
+        assert_eq!(export_base_stem("LOG.abc"), "log.abc");
+    }
+
+    #[test]
+    fn export_match_keeps_a_flight_number_that_belongs_to_the_bbl_name() {
+        // LOG.02.BBL with one flight exports LOG.02.csv; LOG.BBL with 2 flights also does.
+        assert!(export_stem_matches_bbl("LOG.02", "log.02"));
+        assert!(export_stem_matches_bbl("LOG.02", "log"));
+        assert!(export_stem_matches_bbl("LOG.02.ab12cd", "log.02"));
+        assert!(!export_stem_matches_bbl("OTHER.02", "log"));
+    }
+
+    /// Test epoch plus `secs`: explicit, far-apart modification times, so the freshness checks do
+    /// not depend on the filesystem's timestamp resolution.
+    fn set_mtime(path: &Path, secs: u64) {
+        let t = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000 + secs);
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(path)
+            .and_then(|f| f.set_modified(t))
+            .expect("failed to set test mtime");
+    }
+
+    /// Writes `{stem}.csv` and `{stem}.headers.csv` with both mtimes at `secs`.
+    fn write_export(dir: &Path, stem: &str, secs: u64) {
+        let csv = dir.join(format!("{stem}.csv"));
+        let headers = dir.join(format!("{stem}.headers.csv"));
+        std::fs::write(&csv, b"d").unwrap();
+        std::fs::write(&headers, b"h").unwrap();
+        set_mtime(&csv, secs);
+        set_mtime(&headers, secs);
+    }
+
+    fn write_bbl(dir: &Path, secs: u64) -> PathBuf {
+        let bbl = dir.join("LOG.BBL");
+        std::fs::write(&bbl, b"bbl").unwrap();
+        set_mtime(&bbl, secs);
+        bbl
+    }
+
+    #[test]
+    fn reuse_finds_flights_in_order_and_requires_headers() {
+        let dir = temp_test_dir("reuse");
+        let bbl = write_bbl(&dir, 0);
+        write_export(&dir, "LOG.02", 100);
+        write_export(&dir, "LOG.01", 100);
+        write_export(&dir, "OTHER.01", 100);
+        let found = find_reusable_exports(&bbl, &dir, None).expect("complete set must be reused");
+        assert_eq!(found, vec![dir.join("LOG.01.csv"), dir.join("LOG.02.csv")]);
+
+        // One flight lacking its headers sidecar invalidates the whole set.
+        std::fs::remove_file(dir.join("LOG.02.headers.csv")).unwrap();
+        assert!(find_reusable_exports(&bbl, &dir, None).is_none());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn reuse_refuses_stale_csv_stale_sidecar_and_missing_exports() {
+        let dir = temp_test_dir("reuse-stale");
+        let bbl = write_bbl(&dir, 100);
+        write_export(&dir, "LOG", 50);
+        assert!(
+            find_reusable_exports(&bbl, &dir, None).is_none(),
+            "stale CSV"
+        );
+
+        // Fresh CSV, but its sidecar predates the BBL.
+        set_mtime(&dir.join("LOG.csv"), 200);
+        assert!(
+            find_reusable_exports(&bbl, &dir, None).is_none(),
+            "stale sidecar"
+        );
+        set_mtime(&dir.join("LOG.headers.csv"), 200);
+        assert!(find_reusable_exports(&bbl, &dir, None).is_some());
+
+        let empty = temp_test_dir("reuse-empty");
+        assert!(
+            find_reusable_exports(&bbl, &empty, None).is_none(),
+            "no exports"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(&empty).ok();
+    }
+
+    #[test]
+    fn reuse_takes_only_the_exports_carrying_this_bbls_collision_tag() {
+        let dir = temp_test_dir("reuse-tag");
+        let bbl = write_bbl(&dir, 0);
+        write_export(&dir, "LOG.ab12cd", 100);
+        write_export(&dir, "LOG.ef34ab", 100);
+        let found = find_reusable_exports(&bbl, &dir, Some("ab12cd")).unwrap();
+        assert_eq!(found, vec![dir.join("LOG.ab12cd.csv")]);
+        // A colliding stem must not take an untagged export, nor a non-colliding one a tagged one.
+        assert!(find_reusable_exports(&bbl, &dir, Some("999999")).is_none());
+        assert!(find_reusable_exports(&bbl, &dir, None).is_none());
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     #[test]
     fn nonexistent_file_returns_err_not_panic() {

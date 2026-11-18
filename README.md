@@ -46,7 +46,9 @@ Usage: ./blackbox_analyzer <input1> [<input2> ...] [OPTIONS]
   -R, --recursive: Recursively find CSV/BBL/BFL files in subdirectories.
   -F, --force-export: Export .bbl/.bfl flights bbl_parser would otherwise skip as low-value
                        (very short / low data density / minimal gyro activity).
-  -K, --keep: Keep the exported .csv/.headers.csv files (source folder, or -O/--output-dir)
+  -K, --keep: Keep the exported .csv/.headers.csv files (source folder, or -O/--output-dir).
+               A later --keep run reuses a complete, fresh set (CSV and .headers.csv
+               newer than the .bbl) instead of decoding again; otherwise it decodes. -F re-extracts.
 
 === PLOT TYPE SELECTION ===
 
