@@ -2133,6 +2133,7 @@ INFO: Skipping Step Response input data filtering for {input_file_str}: {reason}
             sample_rate,
             using_debug_fallback,
             debug_mode_label,
+            rpm_filter.as_ref(),
         )?;
     }
 

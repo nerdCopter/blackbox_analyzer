@@ -209,7 +209,7 @@ With `--extended`, all plots below are generated. The default (`--core`) generat
 - **`*_Gyro_PSD_comparative.png`** — Gyro power spectral density in dB scale with peak detection
 - **`*_D_Term_Spectrums_comparative.png`** — D-term frequency-domain amplitude spectrums with intelligent thresholding
 - **`*_D_Term_PSD_comparative.png`** — D-term power spectral density with intelligent D-term activity detection
-- **`*_D_Term_Heatmap_comparative.png`** — D-term energy distribution across throttle levels and frequencies
+- **`*_D_Term_Heatmap_comparative.png`** — D-term energy distribution across throttle levels and frequencies. Carries the same RPM harmonic lines as the throttle-frequency heatmap (same conditions)
 - **`*_Gyro_PSD_Spectrogram_comparative.png`** — Gyro spectrogram (PSD vs. time) using Short-Time Fourier Transform
 - **`*_Throttle_Freq_Heatmap_comparative.png`** — System noise characteristics across throttle levels and frequencies. On Betaflight logs with `eRPM[]` and a header `motor_poles`, steel-blue lines mark RPM filter harmonics H1 to H(`rpm_filter_harmonics`): per throttle bin (same binning as the heatmap), the pooled median motor frequency times the harmonic number. Motor-driven noise follows these diagonals; a fixed resonance forms a vertical streak that crosses them. Bins with fewer than `RPM_HEATMAP_MIN_BIN_SAMPLES` eRPM samples break the line, and harmonics above the plot range are clipped. No lines without eRPM, `motor_poles` or Betaflight (EmuFlight has no RPM filter)
 - **`*_Motor_vs_eRPM_stacked.png`** — Commanded output vs. eRPM per motor, normalized, with Motor Desync Detection event markers

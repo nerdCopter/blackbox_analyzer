@@ -11,6 +11,7 @@ use crate::constants::{
 use crate::data_analysis::calc_step_response;
 use crate::data_analysis::derivative::calculate_derivative;
 use crate::data_analysis::fft_utils;
+use crate::data_analysis::filter_response::{self, RpmFilterConfig};
 use crate::data_input::log_data::LogRowData;
 use crate::plot_framework::{
     draw_dual_heatmap_plot, is_axis_heatmap_spectrum_data_valid, AxisHeatmapSpectrum, HeatmapData,
@@ -41,6 +42,7 @@ pub fn plot_d_term_heatmap(
     sample_rate: Option<f64>,
     _using_debug_fallback: bool,
     _debug_mode_name: Option<&str>,
+    rpm_filter: Option<&RpmFilterConfig>,
 ) -> Result<(), Box<dyn Error>> {
     let output_file = format!("{root_name}_D_Term_Heatmap_comparative.png");
     let plot_type_name = "D-Term Throttle-Frequency Heatmap";
@@ -112,6 +114,20 @@ pub fn plot_d_term_heatmap(
     let throttle_y_bins: Vec<f64> = (0..THROTTLE_Y_BINS_COUNT)
         .map(|i| THROTTLE_Y_MIN_VALUE + (i as f64 + 0.5) * throttle_bin_size) // Center of the bin
         .collect();
+
+    // RPM harmonics from logged eRPM; shared by every axis and both columns.
+    let rpm_overlay_lines = rpm_filter
+        .map(|cfg| {
+            filter_response::rpm_throttle_overlay_lines(
+                log_data,
+                cfg,
+                THROTTLE_Y_MIN_VALUE,
+                THROTTLE_Y_MAX_VALUE,
+                &throttle_y_bins,
+                max_freq_to_plot,
+            )
+        })
+        .unwrap_or_default();
 
     // Store axis spectrum data
     let mut axis_heatmap_spectrums: Vec<AxisHeatmapSpectrum> = Vec::new();
@@ -396,7 +412,7 @@ pub fn plot_d_term_heatmap(
                 x_label: "Frequency (Hz)".to_string(),
                 y_label: "Throttle %".to_string(),
                 max_db: common_max_db,
-                overlay_lines: Vec::new(),
+                overlay_lines: rpm_overlay_lines.clone(),
             })
         } else {
             println!("  No valid unfiltered D-term data for {axis_name} axis.");
@@ -418,7 +434,7 @@ pub fn plot_d_term_heatmap(
                 x_label: "Frequency (Hz)".to_string(),
                 y_label: "Throttle %".to_string(),
                 max_db: common_max_db,
-                overlay_lines: Vec::new(),
+                overlay_lines: rpm_overlay_lines.clone(),
             })
         } else {
             println!("  No valid filtered D-term data for {axis_name} axis.");
