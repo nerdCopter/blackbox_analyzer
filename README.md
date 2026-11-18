@@ -42,6 +42,8 @@ Usage: ./blackbox_analyzer <input1> [<input2> ...] [OPTIONS]
 
   <inputX>: CSV, BBL, or BFL files, directories, or wildcards (*.csv, *.bbl, *.bfl). Header
             files auto-excluded. A multi-flight .bbl/.bfl can produce one report per eligible flight.
+            An input with the same bytes as an earlier one is skipped; a different log with the
+            same file name gets a `_2` suffix. Output names never get a folder prefix.
   -O, --output-dir <directory>: Output directory (default: source folder).
   -R, --recursive: Recursively find CSV/BBL/BFL files in subdirectories.
   -F, --force-export: Export .bbl/.bfl flights bbl_parser would otherwise skip as low-value

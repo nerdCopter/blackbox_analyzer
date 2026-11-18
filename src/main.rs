@@ -854,6 +854,10 @@ fn print_usage_and_exit(program_name: &str) {
         "  <inputX>: CSV, BBL, or BFL files, directories, or wildcards (*.csv, *.bbl, *.bfl). Header"
     );
     eprintln!("            files auto-excluded. A multi-flight .bbl/.bfl can produce one report per eligible flight.");
+    eprintln!("            An input with the same bytes as an earlier one is skipped; a different log with the");
+    eprintln!(
+        "            same file name gets a `_2` suffix. Output names never get a folder prefix."
+    );
     eprintln!("  -O, --output-dir <directory>: Output directory (default: source folder).");
     eprintln!("  -R, --recursive: Recursively find CSV/BBL/BFL files in subdirectories.");
     eprintln!("  -F, --force-export: Export .bbl/.bfl flights bbl_parser would otherwise skip as");
