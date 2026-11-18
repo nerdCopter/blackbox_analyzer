@@ -1003,7 +1003,6 @@ fn draw_single_heatmap_chart(
         RPM_HEATMAP_LINE_COLOR.1,
         RPM_HEATMAP_LINE_COLOR.2,
     );
-    // Harmonics rise with throttle, so the upper-left corner is free of lines; the legend goes there.
     let mut legend_labels_seen: Vec<&str> = Vec::new();
     for line in overlay_lines {
         let series = chart.draw_series(LineSeries::new(
@@ -1023,7 +1022,7 @@ fn draw_single_heatmap_chart(
     if !legend_labels_seen.is_empty() {
         chart
             .configure_series_labels()
-            .position(SeriesLabelPosition::UpperLeft)
+            .position(SeriesLabelPosition::UpperRight)
             .background_style(WHITE.mix(0.8))
             .border_style(BLACK)
             .label_font(FONT_TUPLE_LEGEND)
