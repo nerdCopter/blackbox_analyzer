@@ -2332,6 +2332,43 @@ mod tests {
     }
 
     #[test]
+    fn test_extract_gyro_rate_inav_looptime() {
+        // INAV writes looptime as the PID period: 500 us (logs 4.0 to 9.0), 1000 us and the
+        // 2000 us default are real values and must give their own rate, not the 8 kHz fallback
+        for (us, hz) in [("500", 2000.0), ("1000", 1000.0), ("2000", 500.0)] {
+            let m = hdr(&[
+                ("Firmware revision", "INAV 9.0.0 (a7932b92) FLYWOOF722PRO"),
+                ("looptime", us),
+            ]);
+            assert_eq!(extract_gyro_rate(Some(&m)), Some(hz), "looptime {us}");
+        }
+    }
+
+    #[test]
+    fn test_gyro_rate_from_looptime_bounds() {
+        let rate = |v: &str| gyro_rate_from_looptime(Some(&hdr(&[("looptime", v)])));
+        // Edges: the two bound rates are accepted (10000 us = 100 Hz), one step outside is not
+        assert_eq!(rate("10000"), Some(GYRO_RATE_MIN_HZ));
+        assert_eq!(rate("10001"), None);
+        assert!(rate("31").is_some());
+        assert_eq!(rate("30"), None); // 33333 Hz, above a 32 kHz gyro
+                                      // Non-finite and degenerate text never produces a rate
+        for bad in [
+            "NaN", "nan", "inf", "-inf", "1e-300", "1e300", "0", "-0", "-1", " ",
+        ] {
+            assert_eq!(rate(bad), None, "looptime {bad:?}");
+        }
+        // Whitespace around a valid value is accepted
+        assert_eq!(rate(" 250 "), Some(4000.0));
+        // Key match is exact: a different key never counts
+        assert_eq!(
+            gyro_rate_from_looptime(Some(&hdr(&[("pid_process_denom", "250")]))),
+            None
+        );
+        assert_eq!(gyro_rate_from_looptime(None), None);
+    }
+
+    #[test]
     fn test_extract_gyro_rate_sync_denom_not_applied_twice() {
         // EmuFlight writes looptime = gyro period * gyro_sync_denom: 250 us is already 4 kHz
         let m = hdr(&[("looptime", "250"), ("gyro_sync_denom", "2")]);
@@ -2368,6 +2405,33 @@ mod tests {
     fn test_rpm_filter_rate_shares_looptime_parse() {
         let m = hdr(&[("looptime", "250"), ("pid_process_denom", "2")]);
         assert_eq!(extract_rpm_filter_rate(Some(&m)), 2000.0);
+    }
+
+    #[test]
+    fn test_rpm_filter_rate_divisor_edges() {
+        let rate = |denom: &str| {
+            extract_rpm_filter_rate(Some(&hdr(&[
+                ("looptime", "125"),
+                ("pid_process_denom", denom),
+            ])))
+        };
+        assert_eq!(rate("1"), 8000.0);
+        assert_eq!(rate("4"), 2000.0);
+        assert_eq!(rate("8"), 1000.0);
+        // Divisor below 1, zero, negative, NaN and garbage fall back to 1 (no divide by zero)
+        for bad in ["0", "0.5", "-2", "NaN", "abc", ""] {
+            assert_eq!(rate(bad), 8000.0, "pid_process_denom {bad:?}");
+        }
+        // No usable looptime: default gyro rate, still divided
+        let m = hdr(&[("looptime", "abc"), ("pid_process_denom", "2")]);
+        assert_eq!(
+            extract_rpm_filter_rate(Some(&m)),
+            RPM_FILTER_DEFAULT_GYRO_RATE_HZ / 2.0
+        );
+        assert_eq!(
+            extract_rpm_filter_rate(None),
+            RPM_FILTER_DEFAULT_GYRO_RATE_HZ
+        );
     }
 
     #[test]
