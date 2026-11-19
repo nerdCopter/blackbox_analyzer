@@ -180,7 +180,7 @@ All analysis parameters, thresholds, plot dimensions, and algorithmic constants 
     * Formula: per-stage cutoff = configured cutoff × correction factor
     * Applies to all firmware (Betaflight, EmuFlight, INAV) using PT2/PT3/PT4 filters
     * IMUF configurations include version information when available (e.g., "IMUF v256")
-* **Gyro Rate Detection:** Comprehensive parsing of gyro sampling rates from various header formats (`gyroSampleRateHz`, `looptime`, `gyro_sync_denom`) with case-insensitive matching and proper division-based denominator calculation.
+* **Gyro Rate Detection:** `extract_gyro_rate` (`src/data_analysis/filter_response.rs`) reads an explicit rate header (`gyroSampleRateHz` and similar) first, then the `looptime` header (µs → Hz), then an 8 kHz default for known firmware. Key matching is case-insensitive. `gyro_sync_denom` is not read: firmware already writes `looptime` scaled by it, so applying it again would double-count.
 * **Mathematical Implementation:**
     * **PT1 (1st order)**: $H(s) = 1/(1 + s/\omega_c)$ - Standard single-pole lowpass
     * **PT2 (2nd order)**: $H(s) = 1/(1 + \sqrt{2}\cdot s/\omega_c + (s/\omega_c)^2)$ - Butterworth response yielding -3dB at cutoff
