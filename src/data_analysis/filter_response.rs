@@ -4,12 +4,13 @@ use std::collections::HashMap;
 
 use crate::axis_names::AXIS_NAMES;
 use crate::constants::{
-    PARITY_DIVISOR, RATIO_TO_PERCENT, RPM_FILTER_BAND_HIGH_PERCENTILE,
-    RPM_FILTER_BAND_LOW_PERCENTILE, RPM_FILTER_CURVE_MIN_ATTENUATION,
-    RPM_FILTER_CURVE_START_FLOOR_HZ, RPM_FILTER_CURVE_START_FRACTION,
-    RPM_FILTER_DEFAULT_GYRO_RATE_HZ, RPM_FILTER_ERPM_PER_LSB, RPM_FILTER_MAX_HZ_RATE_FRACTION,
-    RPM_FILTER_MICROSECONDS_PER_SECOND, RPM_FILTER_MIN_MOTOR_POLES, RPM_FILTER_POLES_PER_PAIR,
-    RPM_FILTER_SECONDS_PER_MINUTE, RPM_HEATMAP_MIN_BIN_SAMPLES, RPM_HEATMAP_MIN_LINE_POINTS,
+    GYRO_RATE_MAX_HZ, GYRO_RATE_MIN_HZ, PARITY_DIVISOR, RATIO_TO_PERCENT,
+    RPM_FILTER_BAND_HIGH_PERCENTILE, RPM_FILTER_BAND_LOW_PERCENTILE,
+    RPM_FILTER_CURVE_MIN_ATTENUATION, RPM_FILTER_CURVE_START_FLOOR_HZ,
+    RPM_FILTER_CURVE_START_FRACTION, RPM_FILTER_DEFAULT_GYRO_RATE_HZ, RPM_FILTER_ERPM_PER_LSB,
+    RPM_FILTER_MAX_HZ_RATE_FRACTION, RPM_FILTER_MICROSECONDS_PER_SECOND,
+    RPM_FILTER_MIN_MOTOR_POLES, RPM_FILTER_POLES_PER_PAIR, RPM_FILTER_SECONDS_PER_MINUTE,
+    RPM_HEATMAP_MIN_BIN_SAMPLES, RPM_HEATMAP_MIN_LINE_POINTS,
 };
 use crate::data_input::log_data::LogRowData;
 
@@ -479,6 +480,22 @@ pub fn check_gyro_dynamic_lpf_usage(config: &AllFilterConfigs) -> (bool, f64, f6
     (false, 0.0, 0.0)
 }
 
+/// Gyro rate (Hz) from the `looptime` header (microseconds; key matched ignoring ASCII case, as before). `None` when the header is
+/// absent, not a number, not positive, or gives a rate outside the supported gyro range.
+/// Firmware writes `looptime` as the gyro period already scaled by `gyro_sync_denom`
+/// (EmuFlight `gyro.targetLooptime`; Betaflight 3.5 same; Betaflight 4.2+ `gyro.sampleLooptime`
+/// with a fixed `gyro_sync_denom` of 1), so the denominator is not applied again.
+/// `pid_process_denom` is a divisor, never a period.
+fn gyro_rate_from_looptime(header_metadata: Option<&[(String, String)]>) -> Option<f64> {
+    header_metadata?
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("looptime"))
+        .and_then(|(_, v)| v.trim().parse::<f64>().ok())
+        .filter(|us| *us > 0.0)
+        .map(|us| RPM_FILTER_MICROSECONDS_PER_SECOND / us)
+        .filter(|rate| (GYRO_RATE_MIN_HZ..=GYRO_RATE_MAX_HZ).contains(rate))
+}
+
 /// Extract gyro rate from header metadata for proper Nyquist calculation
 /// Filters operate at gyro rate, not logging rate
 pub fn extract_gyro_rate(header_metadata: Option<&[(String, String)]>) -> Option<f64> {
@@ -494,44 +511,16 @@ pub fn extract_gyro_rate(header_metadata: Option<&[(String, String)]>) -> Option
             {
                 // Try to parse the gyro rate
                 if let Ok(rate) = value.parse::<f64>() {
-                    if rate > 1000.0 && rate <= 32000.0 {
-                        // Reasonable gyro rate range
+                    if (GYRO_RATE_MIN_HZ..=GYRO_RATE_MAX_HZ).contains(&rate) {
                         return Some(rate);
                     }
                 }
             }
         }
 
-        // Look for gyro sync denominator to calculate rate
-        let mut base_rate = 8000.0; // Default PID loop rate
-        let mut sync_denom = 1.0;
-
-        for (key, value) in metadata {
-            let key_l = key.to_ascii_lowercase();
-            if key_l.contains("gyro_sync_denom") || key_l.contains("gyrosyncdenom") {
-                if let Ok(denom) = value.parse::<f64>() {
-                    if denom > 0.0 && denom <= 32.0 {
-                        sync_denom = denom;
-                    }
-                }
-            }
-            // Some logs have explicit PID loop rate
-            if key_l.contains("looptime") || key_l.contains("pid_process_denom") {
-                if let Ok(val) = value.parse::<f64>() {
-                    if val > 0.0 && val < 1000.0 {
-                        // looptime in microseconds
-                        base_rate = 1000000.0 / val;
-                    } else if val > 1000.0 && val <= 32000.0 {
-                        // direct frequency
-                        base_rate = val;
-                    }
-                }
-            }
-        }
-
-        let calculated_rate = base_rate / sync_denom;
-        if calculated_rate > 1000.0 && calculated_rate <= 32000.0 {
-            return Some(calculated_rate);
+        // `looptime` header (microseconds) is the gyro sample period
+        if let Some(rate) = gyro_rate_from_looptime(header_metadata) {
+            return Some(rate);
         }
 
         // Fallback: assume 8kHz for modern firmware
@@ -1780,10 +1769,8 @@ pub fn extract_rpm_filter_rate(header_metadata: Option<&[(String, String)]>) -> 
             .find(|(k, _)| k == key)
             .and_then(|(_, v)| v.trim().parse::<f64>().ok())
     };
-    let gyro_rate = get("looptime")
-        .filter(|us| *us > 0.0)
-        .map(|us| RPM_FILTER_MICROSECONDS_PER_SECOND / us)
-        .unwrap_or(RPM_FILTER_DEFAULT_GYRO_RATE_HZ);
+    let gyro_rate =
+        gyro_rate_from_looptime(header_metadata).unwrap_or(RPM_FILTER_DEFAULT_GYRO_RATE_HZ);
     let denom = get("pid_process_denom")
         .filter(|d| *d >= 1.0)
         .unwrap_or(1.0);
@@ -2315,14 +2302,164 @@ mod tests {
         assert!(r_10x < 0.01);
     }
 
+    fn hdr(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
     #[test]
-    fn test_extract_gyro_rate_with_sync_denom() {
-        let headers = vec![
-            ("looptime".to_string(), "125".to_string()), // 1e6 / 125 = 8000 Hz
-            ("gyro_sync_denom".to_string(), "2".to_string()), // -> 4000 Hz
-        ];
-        let rate = extract_gyro_rate(Some(&headers));
-        assert_eq!(rate, Some(4000.0));
+    fn test_extract_gyro_rate_from_looptime() {
+        // Rate = 1e6 / looptime; pid_process_denom is a divisor and never changes it
+        for denom in ["1", "2", "4"] {
+            let m = hdr(&[
+                ("Firmware revision", "Betaflight 4.5.1"),
+                ("looptime", "250"),
+                ("gyro_sync_denom", "1"),
+                ("pid_process_denom", denom),
+            ]);
+            assert_eq!(extract_gyro_rate(Some(&m)), Some(4000.0));
+        }
+        let m = hdr(&[("looptime", "125"), ("pid_process_denom", "2")]);
+        assert_eq!(extract_gyro_rate(Some(&m)), Some(8000.0));
+        let m = hdr(&[("looptime", "31"), ("pid_process_denom", "1")]);
+        let rate = extract_gyro_rate(Some(&m)).unwrap();
+        assert!((rate - 1_000_000.0 / 31.0).abs() < 1e-9);
+        // 1 kHz (EmuFlight with hardware LPF) is inside the accepted range
+        let m = hdr(&[("looptime", "1000")]);
+        assert_eq!(extract_gyro_rate(Some(&m)), Some(1000.0));
+    }
+
+    #[test]
+    fn test_extract_gyro_rate_inav_looptime() {
+        // INAV writes looptime as the PID period: 500 us (logs 4.0 to 9.0), 1000 us and the
+        // 2000 us default are real values and must give their own rate, not the 8 kHz fallback
+        for (us, hz) in [("500", 2000.0), ("1000", 1000.0), ("2000", 500.0)] {
+            let m = hdr(&[
+                ("Firmware revision", "INAV 9.0.0 (a7932b92) FLYWOOF722PRO"),
+                ("looptime", us),
+            ]);
+            assert_eq!(extract_gyro_rate(Some(&m)), Some(hz), "looptime {us}");
+        }
+    }
+
+    #[test]
+    fn test_gyro_rate_from_looptime_bounds() {
+        let rate = |v: &str| gyro_rate_from_looptime(Some(&hdr(&[("looptime", v)])));
+        // Edges: the two bound rates are accepted (10000 us = 100 Hz), one step outside is not
+        assert_eq!(rate("10000"), Some(GYRO_RATE_MIN_HZ));
+        assert_eq!(rate("10001"), None);
+        assert!(rate("31").is_some());
+        assert_eq!(rate("30"), None); // 33333 Hz, above a 32 kHz gyro
+                                      // Non-finite and degenerate text never produces a rate
+        for bad in [
+            "NaN", "nan", "inf", "-inf", "1e-300", "1e300", "0", "-0", "-1", " ",
+        ] {
+            assert_eq!(rate(bad), None, "looptime {bad:?}");
+        }
+        // Upper bound edge from the spec (32500 Hz = 30.769 us): just inside, just outside
+        assert!(rate("30.8").is_some());
+        assert_eq!(rate("30.7"), None);
+        // Subnormal period: the division overflows to infinity, which is out of range
+        assert_eq!(rate("1e-320"), None);
+        // Whitespace around a valid value is accepted
+        assert_eq!(rate(" 250 "), Some(4000.0));
+        // Key case does not matter, as in the code this replaced
+        assert_eq!(
+            gyro_rate_from_looptime(Some(&hdr(&[("LoopTime", "250")]))),
+            Some(4000.0)
+        );
+        assert_eq!(
+            gyro_rate_from_looptime(Some(&hdr(&[("LOOPTIME", "250")]))),
+            Some(4000.0)
+        );
+        // Key match is otherwise exact: a different key never counts
+        assert_eq!(
+            gyro_rate_from_looptime(Some(&hdr(&[("pid_process_denom", "250")]))),
+            None
+        );
+        assert_eq!(gyro_rate_from_looptime(None), None);
+    }
+
+    #[test]
+    fn test_extract_gyro_rate_explicit_key_bounds() {
+        // Explicit rate keys use the same inclusive bounds; outside them the looptime applies
+        let rate =
+            |hz: &str| extract_gyro_rate(Some(&hdr(&[("gyro_rate_hz", hz), ("looptime", "250")])));
+        assert_eq!(rate("100"), Some(100.0));
+        assert_eq!(rate("32500"), Some(32500.0));
+        assert_eq!(rate("99"), Some(4000.0));
+        assert_eq!(rate("32501"), Some(4000.0));
+    }
+
+    #[test]
+    fn test_extract_gyro_rate_sync_denom_not_applied_twice() {
+        // EmuFlight writes looptime = gyro period * gyro_sync_denom: 250 us is already 4 kHz
+        let m = hdr(&[("looptime", "250"), ("gyro_sync_denom", "2")]);
+        assert_eq!(extract_gyro_rate(Some(&m)), Some(4000.0));
+    }
+
+    #[test]
+    fn test_extract_gyro_rate_fallbacks() {
+        // Explicit rate key wins
+        let m = hdr(&[("gyro_rate_hz", "6400"), ("looptime", "125")]);
+        assert_eq!(extract_gyro_rate(Some(&m)), Some(6400.0));
+        // pid_process_denom alone is not a rate: firmware default
+        let m = hdr(&[
+            ("Firmware revision", "Betaflight 4.5.1"),
+            ("pid_process_denom", "2"),
+        ]);
+        assert_eq!(extract_gyro_rate(Some(&m)), Some(8000.0));
+        // Missing, zero, negative, garbage and out-of-range looptime: firmware default, no panic
+        for bad in ["0", "-125", "abc", "", "1", "2000000"] {
+            let m = hdr(&[("Firmware revision", "EmuFlight 0.4.3"), ("looptime", bad)]);
+            assert_eq!(
+                extract_gyro_rate(Some(&m)),
+                Some(8000.0),
+                "looptime {bad:?}"
+            );
+        }
+        // Unknown firmware and no usable header: None, caller default applies
+        let m = hdr(&[("looptime", "0")]);
+        assert_eq!(extract_gyro_rate(Some(&m)), None);
+        assert_eq!(extract_gyro_rate(None), None);
+    }
+
+    #[test]
+    fn test_rpm_filter_rate_shares_looptime_parse() {
+        let m = hdr(&[("looptime", "250"), ("pid_process_denom", "2")]);
+        assert_eq!(extract_rpm_filter_rate(Some(&m)), 2000.0);
+    }
+
+    #[test]
+    fn test_rpm_filter_rate_divisor_edges() {
+        let rate = |denom: &str| {
+            extract_rpm_filter_rate(Some(&hdr(&[
+                ("looptime", "125"),
+                ("pid_process_denom", denom),
+            ])))
+        };
+        assert_eq!(rate("1"), 8000.0);
+        assert_eq!(rate("4"), 2000.0);
+        assert_eq!(rate("8"), 1000.0);
+        // Divisor below 1, zero, negative, NaN and garbage fall back to 1 (no divide by zero)
+        for bad in ["0", "0.5", "-2", "NaN", "abc", ""] {
+            assert_eq!(rate(bad), 8000.0, "pid_process_denom {bad:?}");
+        }
+        // Very large finite divisor: tiny positive rate, no panic
+        let big = rate("1e9");
+        assert!(big.is_finite() && big > 0.0);
+        // No usable looptime: default gyro rate, still divided
+        let m = hdr(&[("looptime", "abc"), ("pid_process_denom", "2")]);
+        assert_eq!(
+            extract_rpm_filter_rate(Some(&m)),
+            RPM_FILTER_DEFAULT_GYRO_RATE_HZ / 2.0
+        );
+        assert_eq!(
+            extract_rpm_filter_rate(None),
+            RPM_FILTER_DEFAULT_GYRO_RATE_HZ
+        );
     }
 
     #[test]
