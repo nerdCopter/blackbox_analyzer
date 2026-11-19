@@ -472,8 +472,27 @@ fn input_stem(file: &str) -> String {
         .unwrap_or_default()
 }
 
-/// True when both files hold exactly the same bytes (false on any read error).
+/// The `.headers.csv` sidecar the parser reads beside a log CSV.
+fn headers_sidecar(csv: &Path) -> PathBuf {
+    let stem = csv.file_stem().unwrap_or_default().to_string_lossy();
+    csv.with_file_name(format!("{stem}{HEADERS_CSV_SUFFIX}"))
+}
+
+/// True when both logs are the same: equal CSV bytes and equal sidecars (both missing counts as
+/// equal). A copy whose sidecar differs carries different metadata (PIDs, craft) and is kept.
 fn files_identical(a: &Path, b: &Path) -> bool {
+    same_bytes(a, b) && {
+        let (ha, hb) = (headers_sidecar(a), headers_sidecar(b));
+        match (ha.is_file(), hb.is_file()) {
+            (false, false) => true,
+            (true, true) => same_bytes(&ha, &hb),
+            _ => false,
+        }
+    }
+}
+
+/// True when both files hold exactly the same bytes (false on any read error).
+fn same_bytes(a: &Path, b: &Path) -> bool {
     use std::io::Read;
     let (Ok(mut fa), Ok(mut fb)) = (fs::File::open(a), fs::File::open(b)) else {
         return false;
@@ -3536,6 +3555,25 @@ mod output_name_tests {
         assert_eq!(claims.claim(Path::new("a"), "x", &f1), NameClaim::Free);
         assert_eq!(claims.claim(Path::new("b"), "x", &f2), NameClaim::Free);
         std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn identical_csvs_with_different_sidecars_are_different_logs() {
+        let (a, b) = (temp_dir("side-a"), temp_dir("side-b"));
+        let (fa, fb) = (write(&a, "x.csv", b"data"), write(&b, "x.csv", b"data"));
+        assert!(files_identical(&fa, &fb), "no sidecars: equal");
+        write(&a, "x.headers.csv", b"pid=1");
+        assert!(!files_identical(&fa, &fb), "one sidecar: different");
+        assert!(!files_identical(&fb, &fa), "either order");
+        write(&b, "x.headers.csv", b"pid=2");
+        assert!(
+            !files_identical(&fa, &fb),
+            "conflicting sidecars: different"
+        );
+        write(&b, "x.headers.csv", b"pid=1");
+        assert!(files_identical(&fa, &fb), "same sidecars: equal");
+        std::fs::remove_dir_all(&a).ok();
+        std::fs::remove_dir_all(&b).ok();
     }
 
     #[test]
