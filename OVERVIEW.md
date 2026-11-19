@@ -60,10 +60,10 @@ All analysis parameters, thresholds, plot dimensions, and algorithmic constants 
                     * Optionally (`ENABLE_NORMALIZED_STEADY_STATE_MEAN_CHECK`), the mean of the steady-state portion is also checked against `NORMALIZED_STEADY_STATE_MEAN_MIN` and `NORMALIZED_STEADY_STATE_MEAN_MAX`.
                     * Only windows passing QC are kept.
                 * **Launch / landing / collision handling:**
-                    * **Fixed edge trim:** the first `EXCLUDE_START_S` and last `EXCLUDE_END_S` (3 s each) of every log are dropped before windowing. This is a fixed time, not a detection.
-                    * **Generic per-window filters only:** the Movement Threshold and the steady-state QC (above) reject windows that are idle or whose response is abnormal. A collision, hard landing or launch bounce is removed only if it trips one of these, so the effect is indirect.
-                    * **No dedicated detection:** launch, landing and collision are not detected (throttle, armed state and crash events are not read). A crash that still passes QC stays in the average.
-                    * **Manual trim:** use `--start`/`--end` (see "Time-Window Trim" above) to cut such segments out by hand.
+                    * **Fixed edge trim:** the first `EXCLUDE_START_S` and last `EXCLUDE_END_S` (3 s each) of the analyzed interval are dropped before windowing. If `--start`/`--end` is given, the interval is the trimmed one, not the whole log. This is a fixed time, not a detection.
+                    * **Generic per-window filters only:** the Movement Threshold and the steady-state QC (above) reject windows that are idle or whose response is abnormal. A collision, hard landing or launch bounce is removed only when its windows trip one of these, so the effect is indirect. An event spans overlapping windows, and some may pass.
+                    * **No dedicated detection:** the step response does not use throttle, armed state or crash events to find launch, landing or collisions. A crash that still passes QC stays in the average.
+                    * **Manual trim:** `--start`/`--end` keep one contiguous interval (see "Time-Window Trim" above), so they can cut off an event at either end but not remove one in the middle.
                 * The function returns:
                     1.  A time vector for the step response plot (`response_time`).
                     2.  A 2D array (`valid_stacked_responses`) containing all step response windows that passed QC.
