@@ -59,6 +59,11 @@ All analysis parameters, thresholds, plot dimensions, and algorithmic constants 
                     * Each (potentially Y-corrected) step response window undergoes QC. The minimum and maximum values of its steady-state portion are checked against `NORMALIZED_STEADY_STATE_MIN_VAL` and `NORMALIZED_STEADY_STATE_MAX_VAL`.
                     * Optionally (`ENABLE_NORMALIZED_STEADY_STATE_MEAN_CHECK`), the mean of the steady-state portion is also checked against `NORMALIZED_STEADY_STATE_MEAN_MIN` and `NORMALIZED_STEADY_STATE_MEAN_MAX`.
                     * Only windows passing QC are kept.
+                * **Launch / landing / collision handling:**
+                    * **Fixed edge trim:** the first `EXCLUDE_START_S` and last `EXCLUDE_END_S` (3 s each) of every log are dropped before windowing. This is a fixed time, not a detection.
+                    * **Generic per-window filters only:** the Movement Threshold and the steady-state QC (above) reject windows that are idle or whose response is abnormal. A collision, hard landing or launch bounce is removed only if it trips one of these, so the effect is indirect.
+                    * **No dedicated detection:** launch, landing and collision are not detected (throttle, armed state and crash events are not read). A crash that still passes QC stays in the average.
+                    * **Manual trim:** use `--start`/`--end` (see "Time-Window Trim" above) to cut such segments out by hand.
                 * The function returns:
                     1.  A time vector for the step response plot (`response_time`).
                     2.  A 2D array (`valid_stacked_responses`) containing all step response windows that passed QC.
