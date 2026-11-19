@@ -61,7 +61,7 @@ All analysis parameters, thresholds, plot dimensions, and algorithmic constants 
                     * Only windows passing QC are kept.
                 * **Launch / landing / collision handling:**
                     * **Fixed edge trim:** the first `EXCLUDE_START_S` and last `EXCLUDE_END_S` (3 s each) of the analyzed interval are dropped before windowing. If `--start`/`--end` is given, the interval is the trimmed one, not the whole log. This is a fixed time, not a detection.
-                    * **Generic per-window filters only:** the Movement Threshold and the steady-state QC (above) can reject windows affected by an event. Other processing (incomplete windows, failed normalization) can also drop data, so the effect on any one event is indirect. An event spans overlapping windows, and some may pass.
+                    * **Generic per-window filters only:** the Movement Threshold and the steady-state QC (above) can reject windows affected by an event. Other processing (incomplete windows, failed normalization) can also drop data, so the effect on any one event is indirect. An event may affect multiple overlapping windows, and some may pass.
                     * **No dedicated detection:** the step response does not use throttle, armed state or crash events to find launch, landing or collisions. A crash-affected window can therefore contribute to the average if it passes QC.
                     * **Manual trim:** `--start`/`--end` keep one contiguous interval (see "Time-Window Trim" above), so they can cut off an event at either end but not remove one in the middle.
                 * The function returns:
