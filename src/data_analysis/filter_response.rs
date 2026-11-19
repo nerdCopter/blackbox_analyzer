@@ -480,7 +480,7 @@ pub fn check_gyro_dynamic_lpf_usage(config: &AllFilterConfigs) -> (bool, f64, f6
     (false, 0.0, 0.0)
 }
 
-/// Gyro rate (Hz) from the exact `looptime` header (microseconds). `None` when the header is
+/// Gyro rate (Hz) from the `looptime` header (microseconds; key matched ignoring ASCII case, as before). `None` when the header is
 /// absent, not a number, not positive, or gives a rate outside the supported gyro range.
 /// Firmware writes `looptime` as the gyro period already scaled by `gyro_sync_denom`
 /// (EmuFlight `gyro.targetLooptime`; Betaflight 3.5 same; Betaflight 4.2+ `gyro.sampleLooptime`
@@ -489,7 +489,7 @@ pub fn check_gyro_dynamic_lpf_usage(config: &AllFilterConfigs) -> (bool, f64, f6
 fn gyro_rate_from_looptime(header_metadata: Option<&[(String, String)]>) -> Option<f64> {
     header_metadata?
         .iter()
-        .find(|(k, _)| k == "looptime")
+        .find(|(k, _)| k.eq_ignore_ascii_case("looptime"))
         .and_then(|(_, v)| v.trim().parse::<f64>().ok())
         .filter(|us| *us > 0.0)
         .map(|us| RPM_FILTER_MICROSECONDS_PER_SECOND / us)
@@ -2365,7 +2365,16 @@ mod tests {
         assert_eq!(rate("1e-320"), None);
         // Whitespace around a valid value is accepted
         assert_eq!(rate(" 250 "), Some(4000.0));
-        // Key match is exact: a different key never counts
+        // Key case does not matter, as in the code this replaced
+        assert_eq!(
+            gyro_rate_from_looptime(Some(&hdr(&[("LoopTime", "250")]))),
+            Some(4000.0)
+        );
+        assert_eq!(
+            gyro_rate_from_looptime(Some(&hdr(&[("LOOPTIME", "250")]))),
+            Some(4000.0)
+        );
+        // Key match is otherwise exact: a different key never counts
         assert_eq!(
             gyro_rate_from_looptime(Some(&hdr(&[("pid_process_denom", "250")]))),
             None
