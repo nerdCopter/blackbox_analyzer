@@ -198,6 +198,9 @@ pub fn plot_step_response(
                             return None;
                         }
 
+                        // Start-at-zero reference is the raw first sample: a centered window
+                        // at index 0 would average later samples into it.
+                        let raw_first_val = avg_resp[0];
                         let smoothed_resp = calc_step_response::moving_average_smooth_f64(
                             &avg_resp,
                             smoothing_window,
@@ -209,8 +212,7 @@ pub fn plot_step_response(
                         // Shift the response to start at 0.0
                         let mut shifted_response = smoothed_resp;
                         if !shifted_response.is_empty() {
-                            let first_val = shifted_response[0];
-                            shifted_response.mapv_inplace(|v| v - first_val);
+                            shifted_response.mapv_inplace(|v| v - raw_first_val);
                         } else {
                             return None; // Should not happen if smoothed_resp wasn't empty
                         }

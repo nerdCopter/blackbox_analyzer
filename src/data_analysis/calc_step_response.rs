@@ -1,7 +1,6 @@
 // src/data_analysis/calc_step_response.rs
 
 use ndarray::{s, Array1, Array2};
-use std::collections::VecDeque;
 use std::error::Error;
 
 use crate::types::StepResponseResult;
@@ -194,58 +193,52 @@ fn cumulative_sum(data: &Array1<f32>) -> Array1<f32> {
     cumulative
 }
 
-/// Applies a moving average filter to smooth a 1D array of f32. (Same as before)
+/// Applies a centered (zero-phase) moving average to a 1D array of f32.
+/// The window spans `window_size` samples around each point (shorter at the edges), so the
+/// output has no group delay. A trailing window would delay the gyro by (window_size-1)/2
+/// samples and shift the whole step response later in time.
 pub fn moving_average_smooth_f32(data: &Array1<f32>, window_size: usize) -> Array1<f32> {
     if window_size <= 1 || data.is_empty() {
         return data.to_owned();
     }
-    let mut smoothed_data = Array1::<f32>::zeros(data.len());
-    let mut current_sum: f32 = 0.0;
-    let mut history: VecDeque<f32> = VecDeque::with_capacity(window_size);
-    for i in 0..data.len() {
-        let val = data[i];
-        history.push_back(val);
-        current_sum += val;
-        if history.len() > window_size {
-            if let Some(old_val) = history.pop_front() {
-                current_sum -= old_val;
-            }
-        }
-        let current_window_len = history.len() as f32;
-        if current_window_len > 0.0 {
-            smoothed_data[i] = current_sum / current_window_len;
-        } else {
-            smoothed_data[i] = 0.0;
-        }
+    let n = data.len();
+    let before = window_size / 2;
+    let after = window_size - 1 - before;
+    let mut prefix = Vec::with_capacity(n + 1);
+    let mut acc = 0.0f64;
+    prefix.push(acc);
+    for &v in data.iter() {
+        acc += v as f64;
+        prefix.push(acc);
     }
-    smoothed_data
+    Array1::from_shape_fn(n, |i| {
+        let lo = i.saturating_sub(before);
+        let hi = (i + after + 1).min(n);
+        ((prefix[hi] - prefix[lo]) / (hi - lo) as f64) as f32
+    })
 }
 
-/// Applies a moving average filter to smooth a 1D array of f64. (Same as before)
+/// Applies a centered (zero-phase) moving average to a 1D array of f64.
+/// Same windowing as `moving_average_smooth_f32`: no group delay, shorter window at the edges.
 pub fn moving_average_smooth_f64(data: &Array1<f64>, window_size: usize) -> Array1<f64> {
     if window_size <= 1 || data.is_empty() {
         return data.to_owned();
     }
-    let mut smoothed_data = Array1::<f64>::zeros(data.len());
-    let mut current_sum: f64 = 0.0;
-    let mut history: VecDeque<f64> = VecDeque::with_capacity(window_size);
-    for i in 0..data.len() {
-        let val = data[i];
-        history.push_back(val);
-        current_sum += val;
-        if history.len() > window_size {
-            if let Some(old_val) = history.pop_front() {
-                current_sum -= old_val;
-            }
-        }
-        let current_window_len = history.len() as f64;
-        if current_window_len > 0.0 {
-            smoothed_data[i] = current_sum / current_window_len;
-        } else {
-            smoothed_data[i] = 0.0;
-        }
+    let n = data.len();
+    let before = window_size / 2;
+    let after = window_size - 1 - before;
+    let mut prefix = Vec::with_capacity(n + 1);
+    let mut acc = 0.0f64;
+    prefix.push(acc);
+    for &v in data.iter() {
+        acc += v;
+        prefix.push(acc);
     }
-    smoothed_data
+    Array1::from_shape_fn(n, |i| {
+        let lo = i.saturating_sub(before);
+        let hi = (i + after + 1).min(n);
+        (prefix[hi] - prefix[lo]) / (hi - lo) as f64
+    })
 }
 
 /// Computes weighted average of multiple step responses for final result.
@@ -484,7 +477,8 @@ pub fn calculate_step_response(
             .unwrap_or(0.0)
     });
     let valid_window_max_setpoints = Array1::from(window_max_setpoints_qc);
-    let response_time = Array1::linspace(0.0, RESPONSE_LENGTH_S, response_length_samples);
+    // Sample i is at i / sample_rate seconds (same time axis as PIDtoolbox: t = 0 : 1/lograte).
+    let response_time = Array1::from_shape_fn(response_length_samples, |i| i as f64 / sample_rate);
 
     Ok((
         response_time,
@@ -597,3 +591,69 @@ pub fn find_peak_value(response_data: &Array1<f64>) -> Option<f64> {
 }
 
 // src/data_analysis/calc_step_response.rs
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const TEST_SAMPLE_RATE: f64 = 1000.0;
+
+    #[test]
+    fn smoothing_has_no_group_delay() {
+        // A step must cross 50% at the same place before and after smoothing.
+        let step = Array1::from_shape_fn(200, |i| if i < 100 { 0.0f32 } else { 1.0 });
+        let smoothed = moving_average_smooth_f32(&step, 15);
+        let crossing = |a: &Array1<f32>| {
+            let i = a.iter().position(|&v| v >= 0.5).unwrap();
+            (i - 1) as f64 + (0.5 - a[i - 1] as f64) / (a[i] - a[i - 1]) as f64
+        };
+        assert!((crossing(&smoothed) - crossing(&step)).abs() < 0.6);
+    }
+
+    #[test]
+    fn smoothing_f64_matches_f32_and_has_no_delay() {
+        let step = Array1::from_shape_fn(200, |i| if i < 100 { 0.0f64 } else { 1.0 });
+        let s64 = moving_average_smooth_f64(&step, 15);
+        let s32 = moving_average_smooth_f32(&step.mapv(|v| v as f32), 15);
+        for i in 0..200 {
+            assert!((s64[i] - s32[i] as f64).abs() < 1e-6);
+        }
+        // Symmetric around the edge: value at the last 0 and first 1 sum to 1.
+        assert!((s64[99] + s64[100] - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn smoothing_edges_and_passthrough() {
+        let d = Array1::from(vec![1.0f32, 2.0, 3.0, 4.0, 5.0]);
+        assert_eq!(moving_average_smooth_f32(&d, 1), d);
+        let s = moving_average_smooth_f32(&d, 3);
+        assert_eq!(s.to_vec(), vec![1.5, 2.0, 3.0, 4.0, 4.5]);
+        let even = moving_average_smooth_f32(&d, 2); // window = [i-1, i]
+        assert_eq!(even.to_vec(), vec![1.0, 1.5, 2.5, 3.5, 4.5]);
+    }
+
+    #[test]
+    fn response_time_axis_is_sample_index_over_rate() {
+        // Identity plant: gyro follows setpoint, so every window passes QC.
+        let n = (TEST_SAMPLE_RATE * 6.0) as usize;
+        let mut x = 0.0f32;
+        let setpoint: Array1<f32> = Array1::from_shape_fn(n, |i| {
+            if i % 400 == 0 {
+                x = if x > 0.0 { -150.0 } else { 150.0 };
+            }
+            x
+        });
+        let time = Array1::from_shape_fn(n, |i| i as f64 / TEST_SAMPLE_RATE);
+        let (t, resp, _) =
+            calculate_step_response(&time, &setpoint, &setpoint, TEST_SAMPLE_RATE).unwrap();
+        assert!(resp.shape()[0] > 0);
+        assert_eq!(
+            t.len(),
+            (RESPONSE_LENGTH_S * TEST_SAMPLE_RATE).ceil() as usize
+        );
+        assert_eq!(t[0], 0.0);
+        for i in 0..t.len() {
+            assert!((t[i] - i as f64 / TEST_SAMPLE_RATE).abs() < 1e-12);
+        }
+    }
+}
