@@ -2358,6 +2358,11 @@ mod tests {
         ] {
             assert_eq!(rate(bad), None, "looptime {bad:?}");
         }
+        // Upper bound edge from the spec (32500 Hz = 30.769 us): just inside, just outside
+        assert!(rate("30.8").is_some());
+        assert_eq!(rate("30.7"), None);
+        // Subnormal period: the division overflows to infinity, which is out of range
+        assert_eq!(rate("1e-320"), None);
         // Whitespace around a valid value is accepted
         assert_eq!(rate(" 250 "), Some(4000.0));
         // Key match is exact: a different key never counts
@@ -2366,6 +2371,17 @@ mod tests {
             None
         );
         assert_eq!(gyro_rate_from_looptime(None), None);
+    }
+
+    #[test]
+    fn test_extract_gyro_rate_explicit_key_bounds() {
+        // Explicit rate keys use the same inclusive bounds; outside them the looptime applies
+        let rate =
+            |hz: &str| extract_gyro_rate(Some(&hdr(&[("gyro_rate_hz", hz), ("looptime", "250")])));
+        assert_eq!(rate("100"), Some(100.0));
+        assert_eq!(rate("32500"), Some(32500.0));
+        assert_eq!(rate("99"), Some(4000.0));
+        assert_eq!(rate("32501"), Some(4000.0));
     }
 
     #[test]
@@ -2422,6 +2438,9 @@ mod tests {
         for bad in ["0", "0.5", "-2", "NaN", "abc", ""] {
             assert_eq!(rate(bad), 8000.0, "pid_process_denom {bad:?}");
         }
+        // Very large finite divisor: tiny positive rate, no panic
+        let big = rate("1e9");
+        assert!(big.is_finite() && big > 0.0);
         // No usable looptime: default gyro rate, still divided
         let m = hdr(&[("looptime", "abc"), ("pid_process_denom", "2")]);
         assert_eq!(
