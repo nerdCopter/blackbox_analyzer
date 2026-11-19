@@ -12,6 +12,7 @@ mod plot_functions;
 mod report;
 mod types;
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::env;
 use std::error::Error;
@@ -180,7 +181,8 @@ struct AnalysisOptions {
 
 use crate::constants::{
     BBL_EXTENSION, BFL_EXTENSION, CSV_EXTENSION, DEFAULT_SETPOINT_THRESHOLD, EXCLUDE_END_S,
-    EXCLUDE_START_S, FRAME_LENGTH_S, HEADERS_CSV_SUFFIX, HEADER_CSV_SUFFIX, TRIM_START_DEFAULT_S,
+    EXCLUDE_START_S, FILE_COMPARE_CHUNK_BYTES, FIRST_OUTPUT_NAME_SUFFIX, FRAME_LENGTH_S,
+    HEADERS_CSV_SUFFIX, HEADER_CSV_SUFFIX, TRIM_START_DEFAULT_S,
 };
 
 // Specific plot function imports
@@ -272,6 +274,18 @@ struct BblExpansionOptions<'a> {
     /// file). Consulted by `expand_bbl_to_scratch_csvs` to decide whether a retained export needs
     /// a disambiguating suffix; see `find_colliding_bbl_stems`.
     colliding_stems: &'a HashSet<String>,
+    /// Canonical paths of the `.bbl` files already expanded this run. A BBL named twice (for
+    /// example the file and its folder) would otherwise export into two scratch directories and
+    /// count as two flights. Only consulted when `eager` is true.
+    expanded_bbls: &'a RefCell<HashSet<PathBuf>>,
+}
+
+/// True the first time `bbl_path` (canonicalized) is claimed in `seen`, false for a repeat.
+fn claim_bbl_expansion(seen: &RefCell<HashSet<PathBuf>>, bbl_path: &Path) -> bool {
+    let canonical = bbl_path
+        .canonicalize()
+        .unwrap_or_else(|_| bbl_path.to_path_buf());
+    seen.borrow_mut().insert(canonical)
 }
 
 /// True for a `.bbl`/`.BBL` or `.bfl`/`.BFL` extension (case-insensitive). Both extensions name
@@ -331,7 +345,9 @@ fn collect_bbl_stems(
             .extension()
             .is_some_and(|ext| is_bbl_extension(&ext.to_string_lossy()))
         {
-            if let Some(stem) = path.file_stem() {
+            // The same file reached twice (named directly and through its folder) is one BBL.
+            let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+            if let Some(stem) = path.file_stem().filter(|_| visited.insert(canonical)) {
                 *stem_counts
                     .entry(stem.to_string_lossy().to_ascii_lowercase())
                     .or_insert(0) += 1;
@@ -448,6 +464,157 @@ fn expand_input_paths(
     (csv_files, total_skipped, bbl_origin_dirs, scratch_dirs)
 }
 
+/// File stem of an input path, as used for output root names.
+fn input_stem(file: &str) -> String {
+    Path::new(file)
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+/// The `.headers.csv` sidecar the parser reads beside a log CSV.
+fn headers_sidecar(csv: &Path) -> PathBuf {
+    let stem = csv.file_stem().unwrap_or_default().to_string_lossy();
+    csv.with_file_name(format!("{stem}{HEADERS_CSV_SUFFIX}"))
+}
+
+/// True when both logs are the same: equal CSV bytes and equal sidecars (both missing counts as
+/// equal). A copy whose sidecar differs carries different metadata (PIDs, craft) and is kept.
+fn files_identical(a: &Path, b: &Path) -> bool {
+    same_bytes(a, b) && {
+        let (ha, hb) = (headers_sidecar(a), headers_sidecar(b));
+        match (ha.is_file(), hb.is_file()) {
+            (false, false) => true,
+            (true, true) => same_bytes(&ha, &hb),
+            _ => false,
+        }
+    }
+}
+
+/// True when both files hold exactly the same bytes (false on any read error).
+fn same_bytes(a: &Path, b: &Path) -> bool {
+    use std::io::Read;
+    let (Ok(mut fa), Ok(mut fb)) = (fs::File::open(a), fs::File::open(b)) else {
+        return false;
+    };
+    let (Ok(ma), Ok(mb)) = (fa.metadata(), fb.metadata()) else {
+        return false;
+    };
+    if ma.len() != mb.len() {
+        return false;
+    }
+    let mut remaining = ma.len();
+    let mut buf_a = vec![0u8; FILE_COMPARE_CHUNK_BYTES];
+    let mut buf_b = vec![0u8; FILE_COMPARE_CHUNK_BYTES];
+    while remaining > 0 {
+        let n = remaining.min(FILE_COMPARE_CHUNK_BYTES as u64) as usize;
+        if fa.read_exact(&mut buf_a[..n]).is_err()
+            || fb.read_exact(&mut buf_b[..n]).is_err()
+            || buf_a[..n] != buf_b[..n]
+        {
+            return false;
+        }
+        remaining -= n as u64;
+    }
+    true
+}
+
+/// What an input's output name turned out to be.
+#[derive(Debug, PartialEq)]
+enum NameClaim {
+    /// No other input uses this name in this output folder.
+    Free,
+    /// An earlier input holds the same bytes: the same log, skip it.
+    Duplicate(PathBuf),
+    /// An earlier input with the same name is a different log: use `{stem}_{n}`.
+    Suffixed(u32),
+}
+
+/// Output names taken so far, per output folder. A folder prefix is never used. An input holding
+/// the same bytes as an earlier one in the same output folder is the same log, whatever its
+/// name, and is skipped. Different logs that share a file name get a numeric suffix.
+#[derive(Default)]
+struct OutputClaims {
+    /// Result already given to a claimed file, so claiming the same file again is idempotent.
+    by_path: HashMap<PathBuf, Option<u32>>,
+    taken: HashMap<(PathBuf, String), PathBuf>,
+    /// Claimed inputs by output folder and byte length: only equal-length files are compared.
+    by_len: HashMap<(PathBuf, u64), Vec<PathBuf>>,
+}
+
+impl OutputClaims {
+    fn claim(&mut self, out_dir: &Path, stem: &str, csv: &Path) -> NameClaim {
+        let out_dir = &out_dir
+            .canonicalize()
+            .unwrap_or_else(|_| out_dir.to_path_buf());
+        let csv_key = csv.canonicalize().unwrap_or_else(|_| csv.to_path_buf());
+        match self.by_path.get(&csv_key) {
+            Some(None) => return NameClaim::Free,
+            Some(Some(n)) => return NameClaim::Suffixed(*n),
+            None => {}
+        }
+        let claimed = self.claim_new(out_dir, stem, csv);
+        match &claimed {
+            NameClaim::Free => {
+                self.by_path.insert(csv_key, None);
+            }
+            NameClaim::Suffixed(n) => {
+                self.by_path.insert(csv_key, Some(*n));
+            }
+            NameClaim::Duplicate(_) => {}
+        }
+        claimed
+    }
+
+    fn claim_new(&mut self, out_dir: &Path, stem: &str, csv: &Path) -> NameClaim {
+        let len = fs::metadata(csv).map(|m| m.len()).ok();
+        if let Some(len) = len {
+            let same_log = self
+                .by_len
+                .get(&(out_dir.to_path_buf(), len))
+                .and_then(|earlier| earlier.iter().find(|p| files_identical(p, csv)));
+            if let Some(first) = same_log {
+                return NameClaim::Duplicate(first.clone());
+            }
+        }
+        let claimed = self.claim_name(out_dir, stem, csv);
+        if let (Some(len), true) = (len, !matches!(claimed, NameClaim::Duplicate(_))) {
+            self.by_len
+                .entry((out_dir.to_path_buf(), len))
+                .or_default()
+                .push(csv.to_path_buf());
+        }
+        claimed
+    }
+
+    fn claim_name(&mut self, out_dir: &Path, stem: &str, csv: &Path) -> NameClaim {
+        let key = |name: &str| (out_dir.to_path_buf(), name.to_ascii_lowercase());
+        match self.taken.get(&key(stem)) {
+            None => {
+                self.taken.insert(key(stem), csv.to_path_buf());
+                NameClaim::Free
+            }
+            Some(first) if files_identical(first, csv) => NameClaim::Duplicate(first.clone()),
+            Some(_) => {
+                for n in FIRST_OUTPUT_NAME_SUFFIX.. {
+                    let name = format!("{stem}_{n}");
+                    match self.taken.get(&key(&name)) {
+                        None => {
+                            self.taken.insert(key(&name), csv.to_path_buf());
+                            return NameClaim::Suffixed(n);
+                        }
+                        Some(prev) if files_identical(prev, csv) => {
+                            return NameClaim::Duplicate(prev.clone());
+                        }
+                        Some(_) => {}
+                    }
+                }
+                unreachable!("the suffix range is unbounded")
+            }
+        }
+    }
+}
+
 /// Returns the real source directory to associate with an already-expanded input path, for both
 /// `--output-dir` defaulting and output-filename directory-prefix disambiguation: the original
 /// `.bbl`'s own parent directory when `input_file_str` is a BBL-derived scratch CSV path, or
@@ -493,6 +660,14 @@ fn expand_one_bbl_file(
 ) {
     if !bbl_opts.eager {
         csv_files.push(bbl_path.to_string_lossy().to_string());
+        return;
+    }
+
+    if !claim_bbl_expansion(bbl_opts.expanded_bbls, bbl_path) {
+        print_discovery_skip_warning(&format!(
+            "Note: Skipping {}: input already listed",
+            bbl_path.display()
+        ));
         return;
     }
 
@@ -693,6 +868,24 @@ fn find_csv_files_in_dir_impl(
     Ok((csv_files, skipped_count, bbl_origin_dirs, scratch_dirs))
 }
 
+/// Removes a repeated input path (compared canonically) so one file is analyzed once. A CSV is
+/// never dropped for resembling a BBL's export: a name match is not proof of the same log.
+fn drop_repeated_inputs(files: Vec<String>) -> Vec<String> {
+    let mut seen: HashSet<PathBuf> = HashSet::new();
+    let mut kept = Vec::with_capacity(files.len());
+    for f in files {
+        let canonical = Path::new(&f)
+            .canonicalize()
+            .unwrap_or_else(|_| PathBuf::from(&f));
+        if seen.insert(canonical) {
+            kept.push(f);
+        } else {
+            print_discovery_skip_warning(&format!("Note: Skipping {f}: input already listed"));
+        }
+    }
+    kept
+}
+
 fn print_usage_and_exit(program_name: &str) {
     eprintln!(
         "Analyze Betaflight/EmuFlight Blackbox logs (BBL, BFL, or CSV); render plots and a report."
@@ -705,12 +898,19 @@ fn print_usage_and_exit(program_name: &str) {
         "  <inputX>: CSV, BBL, or BFL files, directories, or wildcards (*.csv, *.bbl, *.bfl). Header"
     );
     eprintln!("            files auto-excluded. A multi-flight .bbl/.bfl can produce one report per eligible flight.");
+    eprintln!("            An input with the same bytes as an earlier one is skipped; a different log with the");
+    eprintln!(
+        "            same file name gets a `_2` suffix. Output names never get a folder prefix."
+    );
     eprintln!("  -O, --output-dir <directory>: Output directory (default: source folder).");
     eprintln!("  -R, --recursive: Recursively find CSV/BBL/BFL files in subdirectories.");
     eprintln!("  -F, --force-export: Export .bbl/.bfl flights bbl_parser would otherwise skip as");
     eprintln!("            low-value (very short / low data density / minimal gyro activity).");
     eprintln!("  -K, --keep: Keep the exported .csv/.headers.csv files (source folder, or");
-    eprintln!("              -O/--output-dir)");
+    eprintln!(
+        "              -O/--output-dir). A later --keep run uses an existing export (CSV and"
+    );
+    eprintln!("              .headers.csv) instead of decoding; -F/--force-export re-extracts.");
     eprintln!();
     eprintln!("--- PLOT TYPE SELECTION ---");
     eprintln!();
@@ -967,9 +1167,8 @@ fn profile_aircraft_group(
 
 fn process_file(
     input_file_str: &str,
-    // `Some(dir)` adds a sanitized `dir`-derived prefix to the output root name (disambiguating
-    // same-named logs from different source folders); `None` skips the prefix entirely.
-    dir_prefix_source: Option<&Path>,
+    // `Some(n)` names the outputs `{stem}_{n}`: a different log that shares this file name.
+    name_suffix: Option<u32>,
     output_dir: Option<&Path>,
     plot_config: PlotConfig,
     analysis_opts: AnalysisOptions,
@@ -990,28 +1189,9 @@ fn process_file(
         .file_stem()
         .unwrap_or_else(|| std::ffi::OsStr::new("unknown_filestem"))
         .to_string_lossy();
-    let mut root_name_string: String = {
-        let mut dir_prefix_to_add = String::new();
-        if let Some(parent_dir) = dir_prefix_source {
-            if let Some(dir_os_str) = parent_dir.file_name() {
-                let dir_name_part = dir_os_str.to_string_lossy();
-                // Add prefix only if parent dir name is meaningful (not empty, not current dir indicator like ".")
-                if !dir_name_part.is_empty() && dir_name_part != "." {
-                    let sanitized_dir = dir_name_part
-                        .chars()
-                        .map(|c| {
-                            if c.is_alphanumeric() || c == '-' || c == '_' {
-                                c
-                            } else {
-                                '_'
-                            }
-                        })
-                        .collect::<String>();
-                    dir_prefix_to_add = format!("{sanitized_dir}_");
-                }
-            }
-        }
-        format!("{dir_prefix_to_add}{file_stem_cow}")
+    let mut root_name_string: String = match name_suffix {
+        Some(n) => format!("{file_stem_cow}_{n}"),
+        None => file_stem_cow.to_string(),
     };
 
     // --- Data Reading and Header Status ---
@@ -2602,6 +2782,17 @@ fn main() -> Result<(), Box<dyn Error>> {
         print_usage_and_exit(program_name);
     }
 
+    // The same source named twice would export and process one log twice.
+    let mut seen_inputs: HashSet<PathBuf> = HashSet::new();
+    input_paths.retain(|p| {
+        let path = Path::new(p);
+        let first = seen_inputs.insert(path.canonicalize().unwrap_or_else(|_| path.to_path_buf()));
+        if !first {
+            eprintln!("Note: Skipping {p}: input already listed");
+        }
+        first
+    });
+
     // Expand input paths (files and directories) to a list of CSV files
     // Only scanned under --keep: scratch/tempdir mode (the default) is always collision-free
     // per file, so this walk would be pure overhead for the common case.
@@ -2610,6 +2801,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     } else {
         HashSet::new()
     };
+    let expanded_bbls = RefCell::new(HashSet::new());
     let bbl_opts = BblExpansionOptions {
         force_export: bbl_force_export,
         keep: keep_bbl_csv,
@@ -2620,9 +2812,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         // time.
         eager: estimate_optimal_p,
         colliding_stems: &colliding_bbl_stems,
+        expanded_bbls: &expanded_bbls,
     };
     let (input_files, skipped_subdirs, bbl_origin_dirs, bbl_scratch_dirs) =
         expand_input_paths(&input_paths, recursive, bbl_opts, debug_mode);
+    let input_files = drop_repeated_inputs(input_files);
 
     // Print summary of skipped subdirectories when not using recursive mode
     if !recursive && skipped_subdirs > 0 {
@@ -2658,18 +2852,51 @@ fn main() -> Result<(), Box<dyn Error>> {
         show_legend = false;
     }
 
-    let mut use_dir_prefix_for_root_name = false;
-    if input_files.len() > 1 {
-        let parent_dirs_set: HashSet<PathBuf> = input_files
-            .iter()
-            .filter_map(|f_str| {
-                effective_source_dir(f_str, &bbl_origin_dirs).map(|p| p.to_path_buf())
-            })
-            .collect();
-        if parent_dirs_set.len() > 1 {
-            use_dir_prefix_for_root_name = true;
+    // Output names are claimed per output folder: an input holding the same bytes as an earlier
+    // one is the same log and is dropped (before profiling, so it counts once); a different log
+    // with the same file name gets a numeric suffix. BBL placeholders claim when expanded.
+    // Create `-O` before claiming names so its canonical path is the same for every claim
+    // (process_file creates it anyway).
+    if let Some(dir) = output_dir.as_deref() {
+        if let Err(e) = fs::create_dir_all(dir) {
+            eprintln!("⚠️  Cannot create output directory {dir}: {e}");
         }
     }
+    let out_dir_of = |f: &str| -> PathBuf {
+        match output_dir.as_deref() {
+            Some(dir) => PathBuf::from(dir),
+            None => effective_source_dir(f, &bbl_origin_dirs)
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| PathBuf::from(".")),
+        }
+    };
+    let mut claims = OutputClaims::default();
+    let mut name_suffix: HashMap<String, u32> = HashMap::new();
+    let input_files: Vec<String> = input_files
+        .into_iter()
+        .filter(|f| {
+            let is_bbl = Path::new(f)
+                .extension()
+                .is_some_and(|e| is_bbl_extension(&e.to_string_lossy()));
+            if is_bbl {
+                return true;
+            }
+            match claims.claim(&out_dir_of(f), &input_stem(f), Path::new(f)) {
+                NameClaim::Free => true,
+                NameClaim::Duplicate(first) => {
+                    print_discovery_skip_warning(&format!(
+                        "Note: Skipping {f}: same content as {}",
+                        first.display()
+                    ));
+                    false
+                }
+                NameClaim::Suffixed(n) => {
+                    name_suffix.insert(f.clone(), n);
+                    true
+                }
+            }
+        })
+        .collect();
 
     // Construct AnalysisOptions once before the loop; cloned per file at the process_file call
     // site below (not Copy — carries the raw --start/--end argument text as owned Strings).
@@ -2692,6 +2919,13 @@ fn main() -> Result<(), Box<dyn Error>> {
         group_files_by_aircraft(&input_files, debug_mode, analysis_opts.estimate_optimal_p);
 
     let mut overall_success = true;
+    // Canonical paths already analyzed this run: a deferred BBL's export can be the same file as a
+    // plain CSV input (for example both name the kept export in the -O folder).
+    let mut processed_paths: HashSet<PathBuf> = HashSet::new();
+    let mut first_visit = |file: &str| {
+        let path = Path::new(file);
+        processed_paths.insert(path.canonicalize().unwrap_or_else(|_| path.to_path_buf()))
+    };
     for (craft_key, group_files) in &grouped_files {
         // Phase 1: torque-inertia profiling across all files in the group.
         // Reuses each file's parse result in Phase 2 below instead of re-parsing.
@@ -2740,15 +2974,34 @@ fn main() -> Result<(), Box<dyn Error>> {
                         // "." here, not an empty path, or downstream directory use breaks.
                         let origin_dir = effective_source_dir(input_file_str, &bbl_origin_dirs);
                         for (flight_csv_path, _origin_dir) in &flights {
+                            if !first_visit(flight_csv_path) {
+                                eprintln!(
+                                    "Note: Skipping {flight_csv_path}: already analyzed this run"
+                                );
+                                continue;
+                            }
                             let actual_output_dir = match &output_dir {
                                 None => origin_dir,
                                 Some(dir) => Some(Path::new(dir)),
                             };
-                            let dir_prefix_source =
-                                use_dir_prefix_for_root_name.then_some(origin_dir).flatten();
+                            let name_suffix = match claims.claim(
+                                actual_output_dir.unwrap_or(Path::new(".")),
+                                &input_stem(flight_csv_path),
+                                Path::new(flight_csv_path),
+                            ) {
+                                NameClaim::Free => None,
+                                NameClaim::Duplicate(first) => {
+                                    eprintln!(
+                                        "Note: Skipping {flight_csv_path}: same content as {}",
+                                        first.display()
+                                    );
+                                    continue;
+                                }
+                                NameClaim::Suffixed(n) => Some(n),
+                            };
                             if let Err(e) = process_file(
                                 flight_csv_path,
-                                dir_prefix_source,
+                                name_suffix,
                                 actual_output_dir,
                                 plot_config,
                                 analysis_opts.clone(),
@@ -2775,10 +3028,12 @@ fn main() -> Result<(), Box<dyn Error>> {
                 None => naming_source_dir,
                 Some(dir) => Some(Path::new(dir)),
             };
-            let dir_prefix_source = use_dir_prefix_for_root_name
-                .then_some(naming_source_dir)
-                .flatten();
+            let name_suffix = name_suffix.get(input_file_str.as_str()).copied();
             let pre_parsed = parsed_cache_iter.next();
+            if !first_visit(input_file_str) {
+                eprintln!("Note: Skipping {input_file_str}: already analyzed this run");
+                continue;
+            }
 
             // Restores the file-to-file blank line process_file itself no longer prints — this
             // branch (plain .csv input, or an already-expanded eager .bbl file) has no preceding
@@ -2786,7 +3041,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             print_block_separator();
             if let Err(e) = process_file(
                 input_file_str,
-                dir_prefix_source,
+                name_suffix,
                 actual_output_dir,
                 plot_config,
                 analysis_opts.clone(),
@@ -3015,6 +3270,7 @@ mod bbl_input_expansion_tests {
                 keep_base_dir: None,
                 eager: true,
                 colliding_stems: &empty_collisions,
+                expanded_bbls: &RefCell::new(HashSet::new()),
             };
 
             expand_one_bbl_file(
@@ -3053,6 +3309,7 @@ mod bbl_input_expansion_tests {
             keep_base_dir: None,
             eager: false,
             colliding_stems: &empty_collisions,
+            expanded_bbls: &RefCell::new(HashSet::new()),
         };
 
         expand_one_bbl_file(
@@ -3085,6 +3342,7 @@ mod bbl_input_expansion_tests {
                 keep_base_dir: None,
                 eager: false,
                 colliding_stems: &empty_collisions,
+                expanded_bbls: &RefCell::new(HashSet::new()),
             };
             let (csv_files, _skipped_subdirs, bbl_origin_dirs, scratch_dirs) = expand_input_paths(
                 &[path.to_string_lossy().to_string()],
@@ -3116,6 +3374,7 @@ mod bbl_input_expansion_tests {
             keep_base_dir: None,
             eager: true,
             colliding_stems: &empty_collisions,
+            expanded_bbls: &RefCell::new(HashSet::new()),
         };
         let (csv_files, _skipped_subdirs, bbl_origin_dirs, _scratch_dirs) = expand_input_paths(
             &[path.to_string_lossy().to_string()],
@@ -3205,5 +3464,171 @@ mod arg_conversion_tests {
         let c = convert_os_args(vec![invalid_os(b"pr\xffog"), OsString::from("a.csv")]);
         assert_eq!(c.args.len(), 2);
         assert!(c.invalid.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod output_name_tests {
+    use super::*;
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let id = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("bbcsvr-{tag}-{}-{id}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("failed to create test dir");
+        dir
+    }
+
+    fn write(dir: &Path, name: &str, bytes: &[u8]) -> PathBuf {
+        let p = dir.join(name);
+        std::fs::write(&p, bytes).unwrap();
+        p
+    }
+
+    #[test]
+    fn identical_files_with_the_same_name_are_one_log() {
+        let (a, b) = (temp_dir("claim-a"), temp_dir("claim-b"));
+        let (fa, fb) = (write(&a, "x.csv", b"same"), write(&b, "x.csv", b"same"));
+        let mut claims = OutputClaims::default();
+        let out = Path::new("out");
+        assert_eq!(claims.claim(out, "x", &fa), NameClaim::Free);
+        assert_eq!(claims.claim(out, "x", &fb), NameClaim::Duplicate(fa));
+        std::fs::remove_dir_all(&a).ok();
+        std::fs::remove_dir_all(&b).ok();
+    }
+
+    #[test]
+    fn different_logs_with_the_same_name_get_numeric_suffixes_never_a_folder_prefix() {
+        let d = temp_dir("claim-diff");
+        let (f1, f2, f3) = (
+            write(&d, "1.csv", b"one"),
+            write(&d, "2.csv", b"two"),
+            write(&d, "3.csv", b"three"),
+        );
+        let mut claims = OutputClaims::default();
+        let out = Path::new("out");
+        assert_eq!(claims.claim(out, "LOG", &f1), NameClaim::Free);
+        assert_eq!(claims.claim(out, "log", &f2), NameClaim::Suffixed(2));
+        assert_eq!(claims.claim(out, "LOG", &f3), NameClaim::Suffixed(3));
+        // Claiming the same file again returns its earlier result.
+        assert_eq!(claims.claim(out, "LOG", &f2), NameClaim::Suffixed(2));
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn claiming_the_same_file_twice_gives_the_same_result() {
+        // A BBL's reused export is the same path as an already-claimed kept CSV input.
+        let d = temp_dir("claim-same");
+        let (f1, f2) = (write(&d, "a.csv", b"one"), write(&d, "b.csv", b"two"));
+        let mut claims = OutputClaims::default();
+        let out = Path::new("out");
+        assert_eq!(claims.claim(out, "x", &f1), NameClaim::Free);
+        assert_eq!(claims.claim(out, "x", &f2), NameClaim::Suffixed(2));
+        assert_eq!(claims.claim(out, "x", &f1), NameClaim::Free);
+        assert_eq!(claims.claim(out, "x", &f2), NameClaim::Suffixed(2));
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn identical_bytes_under_different_names_are_one_log() {
+        let d = temp_dir("claim-names");
+        let (f1, f2, f3) = (
+            write(&d, "a.csv", b"same flight"),
+            write(&d, "b.csv", b"same flight"),
+            write(&d, "c.csv", b"other flight"),
+        );
+        let mut claims = OutputClaims::default();
+        let out = Path::new("out");
+        assert_eq!(claims.claim(out, "a", &f1), NameClaim::Free);
+        assert_eq!(claims.claim(out, "b", &f2), NameClaim::Duplicate(f1));
+        assert_eq!(claims.claim(out, "c", &f3), NameClaim::Free);
+        // The same bytes in another output folder are not a clash there.
+        assert_eq!(claims.claim(Path::new("o2"), "b", &f2), NameClaim::Free);
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn the_same_name_in_different_output_folders_does_not_clash() {
+        let d = temp_dir("claim-dirs");
+        let (f1, f2) = (write(&d, "1.csv", b"one"), write(&d, "2.csv", b"two"));
+        let mut claims = OutputClaims::default();
+        assert_eq!(claims.claim(Path::new("a"), "x", &f1), NameClaim::Free);
+        assert_eq!(claims.claim(Path::new("b"), "x", &f2), NameClaim::Free);
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn identical_csvs_with_different_sidecars_are_different_logs() {
+        let (a, b) = (temp_dir("side-a"), temp_dir("side-b"));
+        let (fa, fb) = (write(&a, "x.csv", b"data"), write(&b, "x.csv", b"data"));
+        assert!(files_identical(&fa, &fb), "no sidecars: equal");
+        write(&a, "x.headers.csv", b"pid=1");
+        assert!(!files_identical(&fa, &fb), "one sidecar: different");
+        assert!(!files_identical(&fb, &fa), "either order");
+        write(&b, "x.headers.csv", b"pid=2");
+        assert!(
+            !files_identical(&fa, &fb),
+            "conflicting sidecars: different"
+        );
+        write(&b, "x.headers.csv", b"pid=1");
+        assert!(files_identical(&fa, &fb), "same sidecars: equal");
+        std::fs::remove_dir_all(&a).ok();
+        std::fs::remove_dir_all(&b).ok();
+    }
+
+    #[test]
+    fn files_identical_checks_length_and_every_byte() {
+        let d = temp_dir("ident");
+        let big = vec![7u8; FILE_COMPARE_CHUNK_BYTES * 2 + 5];
+        let mut other = big.clone();
+        *other.last_mut().unwrap() = 8;
+        let (a, b, c) = (
+            write(&d, "a", &big),
+            write(&d, "b", &big),
+            write(&d, "c", &other),
+        );
+        assert!(files_identical(&a, &b));
+        assert!(!files_identical(&a, &c));
+        assert!(!files_identical(&a, &d.join("missing")));
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn a_repeated_bbl_is_claimed_once() {
+        let seen = RefCell::new(HashSet::new());
+        let p = Path::new("d/LOG.BBL");
+        assert!(claim_bbl_expansion(&seen, p));
+        assert!(!claim_bbl_expansion(&seen, p));
+        assert!(claim_bbl_expansion(&seen, Path::new("d/OTHER.BBL")));
+    }
+
+    #[test]
+    fn repeated_paths_are_dropped_but_name_alike_csvs_are_kept() {
+        let files = vec![
+            "d/LOG.BBL".to_string(),
+            "d/LOG.01.csv".to_string(),
+            "d/LOG.csv".to_string(),
+            "d/LOG.01.csv".to_string(),
+        ];
+        let kept = drop_repeated_inputs(files);
+        assert_eq!(kept, vec!["d/LOG.BBL", "d/LOG.01.csv", "d/LOG.csv"]);
+    }
+
+    #[test]
+    fn a_bbl_reached_twice_is_not_a_stem_collision() {
+        let dir = temp_dir("prescan");
+        let sub = dir.join("sub");
+        std::fs::create_dir_all(&sub).expect("failed to create test dir");
+        std::fs::write(dir.join("LOG.BBL"), b"a").unwrap();
+        let file = dir.join("LOG.BBL").to_string_lossy().into_owned();
+        let folder = dir.to_string_lossy().into_owned();
+
+        let once = find_colliding_bbl_stems(&[file.clone(), folder.clone()], false);
+        assert!(once.is_empty(), "same file named twice is one BBL");
+
+        std::fs::write(sub.join("LOG.bbl"), b"b").unwrap();
+        let two = find_colliding_bbl_stems(&[file, folder], true);
+        assert_eq!(two, HashSet::from(["log".to_string()]));
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
