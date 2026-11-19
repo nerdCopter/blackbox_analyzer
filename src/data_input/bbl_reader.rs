@@ -165,10 +165,10 @@ fn export_stem_matches_bbl(csv_stem: &str, bbl_stem: &str) -> bool {
 /// Kept exports of `bbl_path` already present in `export_dir`, in flight order, or `Err` when the
 /// BBL must be decoded. A CSV counts when its name matches the BBL (`export_stem_matches_bbl`),
 /// its collision tag equals `expected_tag` (`Some` only when this BBL's stem collides with another
-/// input's; `None` means the name carries no tag), and its `.headers.csv` sidecar exists. A
-/// re-export beside a tagged pair is written as `.tag-N`; only the newest file per flight is kept.
-/// `Err(None)` means no export exists (the normal first run); `Err(Some(reason))` means one exists
-/// but cannot be used.
+/// input's; `None` means the name carries no tag). An existing CSV is used as it is, with or
+/// without a sidecar; only `-F` overwrites. A re-export beside a tagged pair is written as `.tag-N`; only the newest file per flight is kept.
+/// `Err(None)` means no export exists (the normal first run); `Err(Some(reason))` means the
+/// folder could not be read completely.
 fn find_reusable_exports(
     bbl_path: &Path,
     export_dir: &Path,
@@ -214,10 +214,6 @@ fn find_reusable_exports(
         let tag = split_collision_tag(&lower).1;
         if tag != expected_tag.map(str::to_ascii_lowercase).as_deref() {
             continue;
-        }
-        let headers = path.with_file_name(format!("{stem}{HEADERS_CSV_SUFFIX}"));
-        if !headers.is_file() {
-            return Err(Some("a kept CSV has no .headers.csv"));
         }
         let modified = std::fs::metadata(&path)
             .and_then(|m| m.modified())
@@ -510,7 +506,7 @@ mod tests {
     }
 
     #[test]
-    fn reuse_finds_flights_in_order_and_requires_headers() {
+    fn reuse_finds_flights_in_order() {
         let dir = temp_test_dir("reuse");
         let bbl = write_bbl(&dir, 0);
         write_export(&dir, "LOG.02", 100);
@@ -518,13 +514,6 @@ mod tests {
         write_export(&dir, "OTHER.01", 100);
         let found = find_reusable_exports(&bbl, &dir, None).expect("complete set must be reused");
         assert_eq!(found, vec![dir.join("LOG.01.csv"), dir.join("LOG.02.csv")]);
-
-        // One flight lacking its headers sidecar invalidates the whole set.
-        std::fs::remove_file(dir.join("LOG.02.headers.csv")).unwrap();
-        assert_eq!(
-            find_reusable_exports(&bbl, &dir, None),
-            Err(Some("a kept CSV has no .headers.csv"))
-        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -542,13 +531,14 @@ mod tests {
     }
 
     #[test]
-    fn reuse_needs_the_headers_sidecar_and_reports_a_missing_export_quietly() {
+    fn an_existing_csv_is_used_without_a_sidecar_and_a_missing_export_is_quiet() {
+        // An existing CSV is never overwritten by a decode; only `-F` re-extracts.
         let dir = temp_test_dir("reuse-sidecar");
         let bbl = write_bbl(&dir, 0);
         std::fs::write(dir.join("LOG.csv"), b"d").unwrap();
         assert_eq!(
             find_reusable_exports(&bbl, &dir, None),
-            Err(Some("a kept CSV has no .headers.csv"))
+            Ok(vec![dir.join("LOG.csv")])
         );
         let empty = temp_test_dir("reuse-empty");
         assert_eq!(find_reusable_exports(&bbl, &empty, None), Err(None));
