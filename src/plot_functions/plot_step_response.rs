@@ -10,10 +10,10 @@ use crate::constants::{
     COLOR_OPTIMAL_P_SKIP, COLOR_OPTIMAL_P_TEXT, COLOR_OPTIMAL_P_WARNING,
     COLOR_STEP_RESPONSE_COMBINED, COLOR_STEP_RESPONSE_HIGH_SP, COLOR_STEP_RESPONSE_LOW_SP,
     FINAL_NORMALIZED_STEADY_STATE_TOLERANCE, LINE_WIDTH_PLOT,
-    LOW_AUTHORITY_SETPOINT_THRESHOLD_DEG_S, POST_AVERAGING_SMOOTHING_WINDOW, RESPONSE_LENGTH_S,
-    STEADY_STATE_END_S, STEADY_STATE_START_S,
+    LOW_AUTHORITY_SETPOINT_THRESHOLD_DEG_S, RESPONSE_LENGTH_S, STEADY_STATE_END_S,
+    STEADY_STATE_START_S,
 };
-use crate::data_analysis::calc_step_response; // For average_responses and moving_average_smooth_f64
+use crate::data_analysis::calc_step_response; // For average_responses
 use crate::data_analysis::calc_step_response::{compute_setpoint_authority, SetpointAuthority};
 use crate::data_analysis::optimal_p_estimation::{OptimalPAnalysis, PRecommendation};
 use crate::data_input::pid_metadata::{format_d_target, PidMetadata};
@@ -97,7 +97,6 @@ pub fn plot_step_response(
     let step_response_plot_duration_s = RESPONSE_LENGTH_S;
     let steady_state_start_s_const = STEADY_STATE_START_S; // from constants
     let steady_state_end_s_const = STEADY_STATE_END_S; // from constants
-    let post_averaging_smoothing_window = POST_AVERAGING_SMOOTHING_WINDOW; // from constants
     let color_high_sp: RGBColor = *COLOR_STEP_RESPONSE_HIGH_SP;
     let color_combined: RGBColor = *COLOR_STEP_RESPONSE_COMBINED;
     let color_low_sp: RGBColor = *COLOR_STEP_RESPONSE_LOW_SP;
@@ -181,8 +180,7 @@ pub fn plot_step_response(
                                     stacked_resp: &Array2<f32>,
                                     resp_len_samples_local: usize, // Use a local variable for clarity
                                     ss_start_idx_local: usize,
-                                    ss_end_idx_local: usize,
-                                    smoothing_window: usize|
+                                    ss_end_idx_local: usize|
              -> Option<Array1<f64>> {
                 // Return type simplified to just the response array
                 if !mask.iter().any(|&w| w > 0.0) {
@@ -198,25 +196,13 @@ pub fn plot_step_response(
                             return None;
                         }
 
-                        let smoothed_resp = calc_step_response::moving_average_smooth_f64(
-                            &avg_resp,
-                            smoothing_window,
-                        );
-                        if smoothed_resp.is_empty() {
-                            return None;
-                        }
-
                         // Shift the response to start at 0.0
-                        let mut shifted_response = smoothed_resp;
-                        if !shifted_response.is_empty() {
-                            let first_val = shifted_response[0];
-                            shifted_response.mapv_inplace(|v| v - first_val);
-                        } else {
-                            return None; // Should not happen if smoothed_resp wasn't empty
-                        }
+                        let mut shifted_response = avg_resp;
+                        let first_val = shifted_response[0];
+                        shifted_response.mapv_inplace(|v| v - first_val);
 
                         // This steady_state_segment is from the averaged, Y-corrected (upstream),
-                        // smoothed, and shifted response. Its mean is used for a final normalization refinement.
+                        // and shifted response. Its mean is used for a final normalization refinement.
                         let steady_state_segment =
                             shifted_response.slice(s![ss_start_idx_local..ss_end_idx_local]);
                         if steady_state_segment.is_empty() {
@@ -268,7 +254,6 @@ pub fn plot_step_response(
                 response_length_samples,
                 current_ss_start_idx,
                 current_ss_end_idx,
-                post_averaging_smoothing_window,
             );
 
             if display.show_legend {
@@ -278,7 +263,6 @@ pub fn plot_step_response(
                     response_length_samples,
                     current_ss_start_idx,
                     current_ss_end_idx,
-                    post_averaging_smoothing_window,
                 );
                 let final_high_response = process_response(
                     &high_mask,
@@ -286,7 +270,6 @@ pub fn plot_step_response(
                     response_length_samples,
                     current_ss_start_idx,
                     current_ss_end_idx,
-                    post_averaging_smoothing_window,
                 );
 
                 if let Some(resp) = final_low_response {
@@ -305,7 +288,7 @@ pub fn plot_step_response(
                             .map(|(&t, &v)| (t, v))
                             .collect(),
                         label: format!(
-                            "< {} deg/s (Smoothed Peak: {peak_str}, Td: {latency_str})",
+                            "< {} deg/s (Peak: {peak_str}, Td: {latency_str})",
                             display.setpoint_threshold
                         ),
                         color: color_low_sp,
@@ -328,7 +311,7 @@ pub fn plot_step_response(
                             .map(|(&t, &v)| (t, v))
                             .collect(),
                         label: format!(
-                            "\u{2265} {} deg/s (Smoothed Peak: {peak_str}, Td: {latency_str})",
+                            "\u{2265} {} deg/s (Peak: {peak_str}, Td: {latency_str})",
                             display.setpoint_threshold
                         ),
                         color: color_high_sp,
@@ -350,7 +333,7 @@ pub fn plot_step_response(
                             .zip(resp.iter())
                             .map(|(&t, &v)| (t, v))
                             .collect(),
-                        label: format!("Combined (Smoothed Peak: {peak_str}, Td: {latency_str})"), // average of all Y-corrected & QC'd responses, post-smoothed
+                        label: format!("Combined (Peak: {peak_str}, Td: {latency_str})"), // average of all Y-corrected & QC'd responses
                         color: color_combined,
                         stroke_width: line_stroke_plot,
                     });
@@ -372,9 +355,7 @@ pub fn plot_step_response(
                             .zip(resp.iter())
                             .map(|(&t, &v)| (t, v))
                             .collect(),
-                        label: format!(
-                            "Step-Response Avg (Smoothed Peak: {peak_str}, Td: {latency_str})"
-                        ), // average of all Y-corrected & QC'd responses, post-smoothed
+                        label: format!("Step-Response Avg (Peak: {peak_str}, Td: {latency_str})"), // average of all Y-corrected & QC'd responses
                         color: color_combined,
                         stroke_width: line_stroke_plot,
                     });
@@ -746,7 +727,14 @@ pub fn plot_step_response(
             // half_range = range * 0.55 gives a total span of 1.1*range (10% total expansion)
             // which corresponds to ≈5% padding on each side of the center.
             let half_range = range * 0.55;
-            (mid - half_range, mid + half_range)
+            // A step response starts at 0.0. When no trace goes below 0, put the axis floor at 0
+            // so the plot origin is (0, 0), as in PIDtoolbox.
+            let lower = if global_resp_min >= 0.0 {
+                0.0
+            } else {
+                mid - half_range
+            };
+            (lower, mid + half_range)
         } else {
             // Default range if no valid data
             eprintln!("⚠️  No finite step response data found. Using default range.");

@@ -48,10 +48,10 @@ All analysis parameters, thresholds, plot dimensions, and algorithmic constants 
         * **Step Response Calculation (`src/data_analysis/calc_step_response.rs:calculate_step_response`):**
             * This is the core of the step response analysis. It implements **non-parametric system identification** using Wiener deconvolution rather than traditional first-order or second-order curve fitting. This approach directly extracts the system's actual step response without assuming a specific mathematical model, allowing it to capture complex, higher-order dynamics and non-linearities.
             * For each axis (Roll, Pitch, Yaw):
-                * It takes the prepared time, setpoint, and (optionally smoothed via `INITIAL_GYRO_SMOOTHING_WINDOW`) gyro data arrays and the sample rate.
+                * It takes the prepared time, setpoint, and filtered gyro data arrays (no extra smoothing is applied) and the sample rate.
                 * **Windowing:** The input signals (setpoint and gyro) are segmented into overlapping windows (`winstacker_contiguous`) of `FRAME_LENGTH_S` duration — intentionally longer than the displayed `RESPONSE_LENGTH_S` to improve frequency-domain resolution for the Wiener deconvolution; only the first `RESPONSE_LENGTH_S` of each estimated step response is retained for display and analysis. A Tukey window (`tukeywin` with `TUKEY_ALPHA`) is applied to each segment to reduce spectral leakage.
                 * **Movement Threshold:** Windows are discarded if the maximum absolute setpoint value within them is below `MOVEMENT_THRESHOLD_DEG_S`.
-                * **Deconvolution:** For each valid window, Wiener deconvolution (`wiener_deconvolution_window`) is performed between the windowed setpoint (input) and gyro (output) signals in the frequency domain. This estimates the impulse response of the system. A regularization term (`0.0001`) helps stabilize the deconvolution.
+                * **Deconvolution:** For each valid window, Wiener deconvolution (`wiener_deconvolution_window`) is performed between the windowed setpoint (input) and gyro (output) signals in the frequency domain. This estimates the impulse response of the system. A regularization term (`WIENER_REGULARIZATION`, `0.0001`) stabilizes the deconvolution; both spectra are first scaled by 1/n (window length), as in PIDtoolbox, so the term acts as `0.0001 * n^2` on unscaled FFTs. Without that scaling the term is negligible and the estimate is noisy and too fast.
                 * **Impulse to Step Response:** The resulting impulse response is converted to a step response by cumulative summation (`cumulative_sum`). This step response is then truncated to `RESPONSE_LENGTH_S`.
                 * **Y-Correction (Normalization):**
                     * If `APPLY_INDIVIDUAL_RESPONSE_Y_CORRECTION` is true, each individual step response window is normalized. The mean of its steady-state portion (defined by `STEADY_STATE_START_S` and `STEADY_STATE_END_S`) is calculated. If this mean is significant (abs > `Y_CORRECTION_MIN_UNNORMALIZED_MEAN_ABS`), the entire response window is divided by this mean, aiming to make its steady-state value approach 1.0.
@@ -73,13 +73,13 @@ All analysis parameters, thresholds, plot dimensions, and algorithmic constants 
                 * Separates the QC'd responses into "low" and "high" setpoint groups based on the `setpoint_threshold` if the `--dps` parameter (and thus `show_legend`) is provided.
                 * **Averaging & Final Normalization (`plot_functions::plot_step_response::process_response`):**
                     * The QC'd responses (either low, high, or combined) are averaged using `calc_step_response::average_responses`.
-                    * The averaged response is smoothed using a moving average (`calc_step_response::moving_average_smooth_f64`) with `POST_AVERAGING_SMOOTHING_WINDOW`.
-                    * The smoothed response is shifted to start at 0.0. The time axis is `i / sample_rate`, as in PIDtoolbox.
-                    * A **final normalization** step is performed: the mean of the steady-state portion of this *averaged, smoothed, and shifted* response is calculated. The entire response is then divided by this mean to ensure the plotted average response aims for a steady-state of 1.0.
+                    * The averaged response is not smoothed. A trailing or centered moving average would delay or blur the rise, and PIDtoolbox plots the raw average.
+                    * The response is shifted to start at 0.0. The time axis is `i / sample_rate`, as in PIDtoolbox.
+                    * A **final normalization** step is performed: the mean of the steady-state portion of this *averaged and shifted* response is calculated. The entire response is then divided by this mean to ensure the plotted average response aims for a steady-state of 1.0.
                     * The final response is only plotted if its steady-state mean (after this final normalization) is within `FINAL_NORMALIZED_STEADY_STATE_TOLERANCE` of 1.0.
                 * Calculates peak value and delay time (Td) for each plotted average response using `calc_step_response::find_peak_value` and `calc_step_response::calculate_delay_time`.
                     * **Delay Time (Td) Calculation:** The delay time is calculated as the time for the step response to reach 50% of its final value. Linear interpolation is used for precise determination of the 50% threshold crossing. A fixed offset of -1ms is applied to the calculated time (in milliseconds) before converting to seconds, and the result is constrained to be non-negative.
-                * Generates and saves the step response plot.
+                * Generates and saves the step response plot. The y-axis floor is 0 when no trace goes below 0, so the origin is (0, 0).
         * **P:D Ratio Recommendations (`src/main.rs`):**
             * Based on step response peak analysis, the system provides tuning recommendations:
                 * **Important:** Peak value is measured as the first maximum after the response crosses the setpoint (1.0). The initial transient dip (visible in first ~30ms) is normal system behavior and not used for tuning recommendations.
@@ -336,9 +336,10 @@ Physics-derived P gain optimization using a Torque-Inertia Profiler that measure
 This implementation provides detailed and configurable analysis of flight controller performance. The modular design and centralized configuration system make it adaptable for various analysis requirements.
 
 #### Compared to PIDtoolbox/Matlab (`PTstepcalc.m`)
-    * **Deconvolution Method:** Both use Wiener deconvolution with a regularization term.
+    * **Deconvolution Method:** Both use Wiener deconvolution with a regularization term on spectra scaled by 1/n (window length).
     * **Windowing:** This implementation uses Tukey (`TUKEY_ALPHA`) on input/output before FFT; Matlab uses Hann.
-    * **Smoothing:** This implementation has optional initial gyro smoothing (`INITIAL_GYRO_SMOOTHING_WINDOW`) and mandatory post-average smoothing (`POST_AVERAGING_SMOOTHING_WINDOW`). Matlab smooths raw gyro input upfront.
+    * **Smoothing:** Neither implementation smooths the averaged response, and this implementation applies no gyro smoothing. Matlab can smooth the raw gyro (centered lowess) when the user selects it; its default is off.
+    * **Time axis:** This implementation uses the log's mean sample rate (`1e6 / mean(dt)`). Matlab uses `round(1000/median(diff(time_us)) * 10) / 10` kHz, rounded to 0.1 kHz. A 1.88 kHz log is plotted at 1.9 kHz, so Matlab's axis is about 1% compressed (features appear ~1 ms earlier per 100 ms).
     * **Normalization/Y-Correction:**
         * This implementation: Optional individual response Y-correction (normalize by own steady-state mean, `APPLY_INDIVIDUAL_RESPONSE_Y_CORRECTION`, `Y_CORRECTION_MIN_UNNORMALIZED_MEAN_ABS`) followed by final normalization of the averaged response to target 1.0 (within `FINAL_NORMALIZED_STEADY_STATE_TOLERANCE`).
         * Matlab: Optional Y-correction on individual responses by calculating an offset to make the mean 1.0.
@@ -346,10 +347,10 @@ This implementation provides detailed and configurable analysis of flight contro
     * **Output:** This implementation can plot low/high/combined responses based on `setpoint_threshold` if `--dps` is provided with a value. Matlab stacks all valid responses.
 
 #### Compared to PlasmaTree/Python (`PID-Analyzer.py`)
-    * **Deconvolution Method:** PlasmaTree also uses Wiener deconvolution with a signal-to-noise ratio (`sn`) term in the denominator, derived from a `cutfreq` parameter and smoothed, effectively acting as frequency-dependent regularization. This implementation uses a simpler constant regularization term (`0.0001`).
+    * **Deconvolution Method:** PlasmaTree also uses Wiener deconvolution with a signal-to-noise ratio (`sn`) term in the denominator, derived from a `cutfreq` parameter and smoothed, effectively acting as frequency-dependent regularization. This implementation uses a simpler constant regularization term (`WIENER_REGULARIZATION`, `0.0001`) on spectra scaled by 1/n, as Matlab does, so it acts as `0.0001 * n^2` on unscaled FFTs.
     * **Windowing:** PlasmaTree uses a Hanning window by default (or Tukey) applied to input and output segments before deconvolution. This implementation uses a Tukey window.
     * **Input for Deconvolution:** PlasmaTree calculates an `input` signal by reconstructing the setpoint as seen by the PID loop. This implementation directly uses the logged setpoint values.
-    * **Smoothing:** PlasmaTree does not include initial gyro smoothing like this implementation's `INITIAL_GYRO_SMOOTHING_WINDOW`. For the final averaged response, PlasmaTree uses a 2D histogram and Gaussian smoothing to find the "mode" response, different from this implementation's direct moving average on the time-domain averaged response.
+    * **Smoothing:** PlasmaTree uses a 2D histogram and Gaussian smoothing to find the "mode" response, different from this implementation's direct average of the time-domain responses.
     * **Normalization/Y-Correction:**
         * This implementation: Individual responses can be normalized to their steady-state mean, followed by final normalization of the averaged response.
         * PlasmaTree: Uses `weighted_mode_avr` to find the most common trace shape from response collections, which inherently handles variations without explicit Y-correction.
