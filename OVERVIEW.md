@@ -48,7 +48,7 @@ All analysis parameters, thresholds, plot dimensions, and algorithmic constants 
         * **Step Response Calculation (`src/data_analysis/calc_step_response.rs:calculate_step_response`):**
             * This is the core of the step response analysis. It implements **non-parametric system identification** using Wiener deconvolution rather than traditional first-order or second-order curve fitting. This approach directly extracts the system's actual step response without assuming a specific mathematical model, allowing it to capture complex, higher-order dynamics and non-linearities.
             * For each axis (Roll, Pitch, Yaw):
-                * It takes the prepared time, setpoint, and (optionally smoothed via `INITIAL_GYRO_SMOOTHING_WINDOW`, a centered zero-phase moving average) gyro data arrays and the sample rate.
+                * It takes the prepared time, setpoint, and (optionally smoothed via `INITIAL_GYRO_SMOOTHING_WINDOW`) gyro data arrays and the sample rate.
                 * **Windowing:** The input signals (setpoint and gyro) are segmented into overlapping windows (`winstacker_contiguous`) of `FRAME_LENGTH_S` duration — intentionally longer than the displayed `RESPONSE_LENGTH_S` to improve frequency-domain resolution for the Wiener deconvolution; only the first `RESPONSE_LENGTH_S` of each estimated step response is retained for display and analysis. A Tukey window (`tukeywin` with `TUKEY_ALPHA`) is applied to each segment to reduce spectral leakage.
                 * **Movement Threshold:** Windows are discarded if the maximum absolute setpoint value within them is below `MOVEMENT_THRESHOLD_DEG_S`.
                 * **Deconvolution:** For each valid window, Wiener deconvolution (`wiener_deconvolution_window`) is performed between the windowed setpoint (input) and gyro (output) signals in the frequency domain. This estimates the impulse response of the system. A regularization term (`0.0001`) helps stabilize the deconvolution.
@@ -73,8 +73,8 @@ All analysis parameters, thresholds, plot dimensions, and algorithmic constants 
                 * Separates the QC'd responses into "low" and "high" setpoint groups based on the `setpoint_threshold` if the `--dps` parameter (and thus `show_legend`) is provided.
                 * **Averaging & Final Normalization (`plot_functions::plot_step_response::process_response`):**
                     * The QC'd responses (either low, high, or combined) are averaged using `calc_step_response::average_responses`.
-                    * The averaged response is smoothed using a moving average (`calc_step_response::moving_average_smooth_f64`) with `POST_AVERAGING_SMOOTHING_WINDOW`. Both smoothers are centered (zero-phase): a trailing window would delay the curve by (window-1)/2 samples and inflate Td.
-                    * The smoothed response is shifted so the raw (unsmoothed) first sample is 0.0. The time axis is `i / sample_rate`, as in PIDtoolbox.
+                    * The averaged response is smoothed using a moving average (`calc_step_response::moving_average_smooth_f64`) with `POST_AVERAGING_SMOOTHING_WINDOW`.
+                    * The smoothed response is shifted to start at 0.0. The time axis is `i / sample_rate`, as in PIDtoolbox.
                     * A **final normalization** step is performed: the mean of the steady-state portion of this *averaged, smoothed, and shifted* response is calculated. The entire response is then divided by this mean to ensure the plotted average response aims for a steady-state of 1.0.
                     * The final response is only plotted if its steady-state mean (after this final normalization) is within `FINAL_NORMALIZED_STEADY_STATE_TOLERANCE` of 1.0.
                 * Calculates peak value and delay time (Td) for each plotted average response using `calc_step_response::find_peak_value` and `calc_step_response::calculate_delay_time`.
@@ -338,7 +338,7 @@ This implementation provides detailed and configurable analysis of flight contro
 #### Compared to PIDtoolbox/Matlab (`PTstepcalc.m`)
     * **Deconvolution Method:** Both use Wiener deconvolution with a regularization term.
     * **Windowing:** This implementation uses Tukey (`TUKEY_ALPHA`) on input/output before FFT; Matlab uses Hann.
-    * **Smoothing:** This implementation has optional initial gyro smoothing (`INITIAL_GYRO_SMOOTHING_WINDOW`) and mandatory post-average smoothing (`POST_AVERAGING_SMOOTHING_WINDOW`). Both smoothers are centered (zero-phase), so they add no delay. Matlab smooths the raw gyro upfront with centered lowess (default off) and does not smooth the averaged response.
+    * **Smoothing:** This implementation has optional initial gyro smoothing (`INITIAL_GYRO_SMOOTHING_WINDOW`) and mandatory post-average smoothing (`POST_AVERAGING_SMOOTHING_WINDOW`). Matlab smooths raw gyro input upfront.
     * **Normalization/Y-Correction:**
         * This implementation: Optional individual response Y-correction (normalize by own steady-state mean, `APPLY_INDIVIDUAL_RESPONSE_Y_CORRECTION`, `Y_CORRECTION_MIN_UNNORMALIZED_MEAN_ABS`) followed by final normalization of the averaged response to target 1.0 (within `FINAL_NORMALIZED_STEADY_STATE_TOLERANCE`).
         * Matlab: Optional Y-correction on individual responses by calculating an offset to make the mean 1.0.

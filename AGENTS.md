@@ -11,7 +11,6 @@
   - Pass data the report needs through the result structs (`StepAxisReport`, `FlightReport`); do not re-derive it in `report.rs`.
   - Console and report may be more verbose (extra fields, thresholds, reasoning). Plot titles and legends stay minimal and concise.
   - Changing one output updates the others in the same change, with a test that the report carries the shared function's text.
-- **Step response timing:** smoothing applied to gyro or to the averaged response must be centered (zero-phase); a trailing window delays the trace and Td by (window-1)/2 samples. The response time axis is `i / sample_rate`, never `linspace` over the span.
 - Run checks in this order:
   1) `cargo clippy --all-targets --all-features -- -D warnings` — fix all warnings.
   2) `cargo fmt --all` — only after clippy passes.
