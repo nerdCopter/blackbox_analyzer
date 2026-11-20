@@ -603,30 +603,29 @@ pub fn find_peak_value(response_data: &Array1<f64>) -> Option<f64> {
 mod tests {
     use super::*;
 
-    const TEST_SAMPLE_RATE: f64 = 1000.0;
+    // 1001 Hz makes RESPONSE_LENGTH_S * rate non-integral (500.5), so the length rounds up.
+    const TEST_SAMPLE_RATES: [f64; 2] = [1000.0, 1001.0];
 
     #[test]
     fn response_time_axis_is_sample_index_over_rate() {
-        // Identity plant: gyro follows setpoint, so every window passes QC.
-        let n = (TEST_SAMPLE_RATE * 6.0) as usize;
-        let mut x = 0.0f32;
-        let setpoint: Array1<f32> = Array1::from_shape_fn(n, |i| {
-            if i % 400 == 0 {
-                x = if x > 0.0 { -150.0 } else { 150.0 };
+        for rate in TEST_SAMPLE_RATES {
+            // Identity plant: gyro follows setpoint, so every window passes QC.
+            let n = (rate * 6.0) as usize;
+            let mut x = 0.0f32;
+            let setpoint: Array1<f32> = Array1::from_shape_fn(n, |i| {
+                if i % 400 == 0 {
+                    x = if x > 0.0 { -150.0 } else { 150.0 };
+                }
+                x
+            });
+            let time = Array1::from_shape_fn(n, |i| i as f64 / rate);
+            let (t, resp, _) = calculate_step_response(&time, &setpoint, &setpoint, rate).unwrap();
+            assert!(resp.shape()[0] > 0);
+            assert_eq!(t.len(), (RESPONSE_LENGTH_S * rate).ceil() as usize);
+            assert_eq!(t[0], 0.0);
+            for i in 0..t.len() {
+                assert!((t[i] - i as f64 / rate).abs() < 1e-12);
             }
-            x
-        });
-        let time = Array1::from_shape_fn(n, |i| i as f64 / TEST_SAMPLE_RATE);
-        let (t, resp, _) =
-            calculate_step_response(&time, &setpoint, &setpoint, TEST_SAMPLE_RATE).unwrap();
-        assert!(resp.shape()[0] > 0);
-        assert_eq!(
-            t.len(),
-            (RESPONSE_LENGTH_S * TEST_SAMPLE_RATE).ceil() as usize
-        );
-        assert_eq!(t[0], 0.0);
-        for i in 0..t.len() {
-            assert!((t[i] - i as f64 / TEST_SAMPLE_RATE).abs() < 1e-12);
         }
     }
 }
