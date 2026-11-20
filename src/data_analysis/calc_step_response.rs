@@ -484,7 +484,8 @@ pub fn calculate_step_response(
             .unwrap_or(0.0)
     });
     let valid_window_max_setpoints = Array1::from(window_max_setpoints_qc);
-    let response_time = Array1::linspace(0.0, RESPONSE_LENGTH_S, response_length_samples);
+    // Sample i is at i / sample_rate seconds (same time axis as PIDtoolbox: t = 0 : 1/lograte).
+    let response_time = Array1::from_shape_fn(response_length_samples, |i| i as f64 / sample_rate);
 
     Ok((
         response_time,
@@ -597,3 +598,34 @@ pub fn find_peak_value(response_data: &Array1<f64>) -> Option<f64> {
 }
 
 // src/data_analysis/calc_step_response.rs
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // 1001 Hz makes RESPONSE_LENGTH_S * rate non-integral (500.5), so the length rounds up.
+    const TEST_SAMPLE_RATES: [f64; 2] = [1000.0, 1001.0];
+
+    #[test]
+    fn response_time_axis_is_sample_index_over_rate() {
+        for rate in TEST_SAMPLE_RATES {
+            // Identity plant: gyro follows setpoint, so at least one window passes QC.
+            let n = (rate * 6.0) as usize;
+            let mut x = 0.0f32;
+            let setpoint: Array1<f32> = Array1::from_shape_fn(n, |i| {
+                if i % 400 == 0 {
+                    x = if x > 0.0 { -150.0 } else { 150.0 };
+                }
+                x
+            });
+            let time = Array1::from_shape_fn(n, |i| i as f64 / rate);
+            let (t, resp, _) = calculate_step_response(&time, &setpoint, &setpoint, rate).unwrap();
+            assert!(resp.shape()[0] > 0);
+            assert_eq!(t.len(), (RESPONSE_LENGTH_S * rate).ceil() as usize);
+            assert_eq!(t[0], 0.0);
+            for i in 0..t.len() {
+                assert!((t[i] - i as f64 / rate).abs() < 1e-12);
+            }
+        }
+    }
+}

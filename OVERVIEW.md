@@ -74,7 +74,7 @@ All analysis parameters, thresholds, plot dimensions, and algorithmic constants 
                 * **Averaging & Final Normalization (`plot_functions::plot_step_response::process_response`):**
                     * The QC'd responses (either low, high, or combined) are averaged using `calc_step_response::average_responses`.
                     * The averaged response is smoothed using a moving average (`calc_step_response::moving_average_smooth_f64`) with `POST_AVERAGING_SMOOTHING_WINDOW`.
-                    * The smoothed response is shifted to start at 0.0.
+                    * The smoothed response is shifted to start at 0.0. The time axis is `i / sample_rate`, as in PIDtoolbox.
                     * A **final normalization** step is performed: the mean of the steady-state portion of this *averaged, smoothed, and shifted* response is calculated. The entire response is then divided by this mean to ensure the plotted average response aims for a steady-state of 1.0.
                     * The final response is only plotted if its steady-state mean (after this final normalization) is within `FINAL_NORMALIZED_STEADY_STATE_TOLERANCE` of 1.0.
                 * Calculates peak value and delay time (Td) for each plotted average response using `calc_step_response::find_peak_value` and `calc_step_response::calculate_delay_time`.
