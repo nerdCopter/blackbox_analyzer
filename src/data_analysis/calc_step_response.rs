@@ -1,19 +1,18 @@
 // src/data_analysis/calc_step_response.rs
 
 use ndarray::{s, Array1, Array2};
-use std::collections::VecDeque;
 use std::error::Error;
 
 use crate::types::StepResponseResult;
 
 use crate::constants::{
     APPLY_INDIVIDUAL_RESPONSE_Y_CORRECTION, ENABLE_NORMALIZED_STEADY_STATE_MEAN_CHECK,
-    FRAME_LENGTH_S, HIGH_AUTHORITY_SETPOINT_THRESHOLD_DEG_S, INITIAL_GYRO_SMOOTHING_WINDOW,
+    FRAME_LENGTH_S, HIGH_AUTHORITY_SETPOINT_THRESHOLD_DEG_S,
     LOW_AUTHORITY_SETPOINT_THRESHOLD_DEG_S, MOVEMENT_THRESHOLD_DEG_S,
     NORMALIZED_STEADY_STATE_MAX_VAL, NORMALIZED_STEADY_STATE_MEAN_MAX,
     NORMALIZED_STEADY_STATE_MEAN_MIN, NORMALIZED_STEADY_STATE_MIN_VAL, RESPONSE_LENGTH_S,
     STEADY_STATE_END_S, STEADY_STATE_START_S, SUPERPOSITION_FACTOR, TUKEY_ALPHA,
-    Y_CORRECTION_MIN_UNNORMALIZED_MEAN_ABS,
+    WIENER_REGULARIZATION, Y_CORRECTION_MIN_UNNORMALIZED_MEAN_ABS,
 };
 
 /// Setpoint authority classification derived from the mean of per-window max setpoints.
@@ -62,7 +61,7 @@ pub fn compute_setpoint_authority(
 use crate::data_analysis::fft_utils;
 
 // tukeywin, winstacker_contiguous, wiener_deconvolution_window, cumulative_sum,
-// moving_average_smooth_f32, moving_average_smooth_f64, average_responses
+// average_responses
 // are assumed to be the same as in the previous full file output provided.
 // For brevity, only calculate_step_response is shown with changes.
 
@@ -156,13 +155,15 @@ fn wiener_deconvolution_window(
         eprintln!("⚠️  FFT output empty/mismatch in Wiener deconvolution.");
         return Array1::zeros(n);
     }
-    // Apply regularization to prevent division by near-zero values
-    let regularization_term = 0.0001;
+    // Scale both spectra by 1/N before regularizing, as PIDtoolbox does (PTstepcalc.m: G = a/length(a)).
+    // This makes the regularization term act as WIENER_REGULARIZATION * N^2 on unscaled FFTs.
+    let regularization_term = WIENER_REGULARIZATION;
+    let spectrum_scale = 1.0 / padded_n as f32;
     let epsilon = 1e-9;
     let mut deconvolved_spec = Array1::<num_complex::Complex32>::zeros(h_spec.len());
     for i in 0..h_spec.len() {
-        let h = h_spec[i];
-        let g = g_spec[i];
+        let h = h_spec[i] * spectrum_scale;
+        let g = g_spec[i] * spectrum_scale;
         let h_conj = h.conj();
         let denominator = (h * h_conj).re + regularization_term;
         if denominator.abs() > epsilon {
@@ -192,60 +193,6 @@ fn cumulative_sum(data: &Array1<f32>) -> Array1<f32> {
         cumulative[i] = current_sum;
     }
     cumulative
-}
-
-/// Applies a moving average filter to smooth a 1D array of f32. (Same as before)
-pub fn moving_average_smooth_f32(data: &Array1<f32>, window_size: usize) -> Array1<f32> {
-    if window_size <= 1 || data.is_empty() {
-        return data.to_owned();
-    }
-    let mut smoothed_data = Array1::<f32>::zeros(data.len());
-    let mut current_sum: f32 = 0.0;
-    let mut history: VecDeque<f32> = VecDeque::with_capacity(window_size);
-    for i in 0..data.len() {
-        let val = data[i];
-        history.push_back(val);
-        current_sum += val;
-        if history.len() > window_size {
-            if let Some(old_val) = history.pop_front() {
-                current_sum -= old_val;
-            }
-        }
-        let current_window_len = history.len() as f32;
-        if current_window_len > 0.0 {
-            smoothed_data[i] = current_sum / current_window_len;
-        } else {
-            smoothed_data[i] = 0.0;
-        }
-    }
-    smoothed_data
-}
-
-/// Applies a moving average filter to smooth a 1D array of f64. (Same as before)
-pub fn moving_average_smooth_f64(data: &Array1<f64>, window_size: usize) -> Array1<f64> {
-    if window_size <= 1 || data.is_empty() {
-        return data.to_owned();
-    }
-    let mut smoothed_data = Array1::<f64>::zeros(data.len());
-    let mut current_sum: f64 = 0.0;
-    let mut history: VecDeque<f64> = VecDeque::with_capacity(window_size);
-    for i in 0..data.len() {
-        let val = data[i];
-        history.push_back(val);
-        current_sum += val;
-        if history.len() > window_size {
-            if let Some(old_val) = history.pop_front() {
-                current_sum -= old_val;
-            }
-        }
-        let current_window_len = history.len() as f64;
-        if current_window_len > 0.0 {
-            smoothed_data[i] = current_sum / current_window_len;
-        } else {
-            smoothed_data[i] = 0.0;
-        }
-    }
-    smoothed_data
 }
 
 /// Computes weighted average of multiple step responses for final result.
@@ -301,13 +248,6 @@ pub fn calculate_step_response(
         return Err("Invalid input to calculate_step_response".into());
     }
 
-    // Apply initial smoothing to gyro data if configured
-    let gyro_processed = if INITIAL_GYRO_SMOOTHING_WINDOW > 1 {
-        moving_average_smooth_f32(gyro_filtered_input, INITIAL_GYRO_SMOOTHING_WINDOW)
-    } else {
-        gyro_filtered_input.to_owned()
-    };
-
     let frame_length_samples = (FRAME_LENGTH_S * sample_rate).ceil() as usize;
     let response_length_samples = (RESPONSE_LENGTH_S * sample_rate).ceil() as usize;
 
@@ -329,7 +269,7 @@ pub fn calculate_step_response(
     // Generate overlapping windows for parallel processing
     let (stacked_input_raw, stacked_output_raw) = winstacker_contiguous(
         setpoint,
-        &gyro_processed,
+        gyro_filtered_input,
         frame_length_samples,
         SUPERPOSITION_FACTOR,
     );
@@ -627,5 +567,75 @@ mod tests {
                 assert!((t[i] - i as f64 / rate).abs() < 1e-12);
             }
         }
+    }
+
+    /// Mean of QC-passed step responses.
+    fn mean_response(setpoint: &Array1<f32>, gyro: &Array1<f32>, rate: f64) -> Array1<f64> {
+        let time = Array1::from_shape_fn(setpoint.len(), |i| i as f64 / rate);
+        let (_, resp, _) = calculate_step_response(&time, setpoint, gyro, rate).unwrap();
+        average_responses(&resp, &Array1::ones(resp.shape()[0]), resp.shape()[1]).unwrap()
+    }
+
+    /// 50% crossing, in samples from the first sample, with linear interpolation.
+    fn crossing_50(r: &Array1<f64>) -> f64 {
+        let i = r.iter().position(|&v| v >= 0.5).unwrap();
+        if i == 0 {
+            return 0.0;
+        }
+        (i - 1) as f64 + (0.5 - r[i - 1]) / (r[i] - r[i - 1])
+    }
+
+    #[test]
+    fn identity_plant_gives_unit_step_with_no_delay() {
+        let rate = 1000.0;
+        let n = (rate * 8.0) as usize;
+        let mut x = 0.0f32;
+        let sp = Array1::from_shape_fn(n, |i| {
+            if i % 400 == 0 {
+                x = if x > 0.0 { -150.0 } else { 150.0 };
+            }
+            x
+        });
+        let r = mean_response(&sp, &sp, rate);
+        // Steady state is normalized to 1.0; a plant with no lag crosses 50% within one sample.
+        assert!((r[r.len() - 1] - 1.0).abs() < 0.1);
+        assert!(crossing_50(&r) < 2.0);
+    }
+
+    #[test]
+    fn first_order_lag_crossing_matches_plant() {
+        // y[k] = y[k-1] + a (x[k-1] - y[k-1]), a = 1 / (1 + tau).
+        // Step response s[k] = 1 - (1 - a)^k, so s = 0.5 at k = ln(0.5) / ln(1 - a).
+        let rate = 1000.0;
+        let tau = 8.0f32;
+        let a = 1.0 / (1.0 + tau);
+        let n = (rate * 12.0) as usize;
+        let mut state = 12345u64;
+        let mut level = 0.0f32;
+        let sp = Array1::from_shape_fn(n, |i| {
+            if i % 250 == 0 {
+                state = state
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                level = ((state >> 33) as f32 / (1u64 << 31) as f32 - 0.5) * 600.0;
+            }
+            level
+        });
+        let mut y = 0.0f32;
+        let gy = Array1::from_shape_fn(n, |i| {
+            if i > 0 {
+                y += a * (sp[i - 1] - y);
+            }
+            y
+        });
+        let r = mean_response(&sp, &gy, rate);
+        let expected = (0.5f64).ln() / (1.0 - a as f64).ln();
+        // Regularization low-passes the estimate, so allow 1.5 samples.
+        assert!(
+            (crossing_50(&r) - expected).abs() < 1.5,
+            "crossing {} expected {}",
+            crossing_50(&r),
+            expected
+        );
     }
 }

@@ -22,8 +22,9 @@ pub const RESPONSE_LENGTH_S: f64 = 0.5; // Length of the step response to keep (
 pub const SUPERPOSITION_FACTOR: usize = 16; // Number of overlapping windows (can be tuned)
 pub const TUKEY_ALPHA: f64 = 1.0; // Alpha for Tukey window (1.0 is Hanning window)
 
-pub const INITIAL_GYRO_SMOOTHING_WINDOW: usize = 15; // Initial Gyro Smoothing (applied before deconvolution)
-pub const POST_AVERAGING_SMOOTHING_WINDOW: usize = 15; // Constant for post-averaging smoothing of the final step response curves.
+// Wiener regularization term, applied to FFTs scaled by 1/N as in PIDtoolbox (PTstepcalc.m).
+// Equivalent to 1e-4 * N^2 on unscaled FFTs. Step response uses no gyro or curve smoothing.
+pub const WIENER_REGULARIZATION: f32 = 0.0001;
 
 pub const APPLY_INDIVIDUAL_RESPONSE_Y_CORRECTION: bool = true; // Individual Response "Y-Correction" (Normalization before averaging)
                                                                // If Y-correction is applied, this is the minimum absolute mean of the unnormalized steady-state
