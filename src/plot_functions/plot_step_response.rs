@@ -288,7 +288,7 @@ pub fn plot_step_response(
                             .map(|(&t, &v)| (t, v))
                             .collect(),
                         label: format!(
-                            "< {} deg/s (Smoothed Peak: {peak_str}, Td: {latency_str})",
+                            "< {} deg/s (Peak: {peak_str}, Td: {latency_str})",
                             display.setpoint_threshold
                         ),
                         color: color_low_sp,
@@ -311,7 +311,7 @@ pub fn plot_step_response(
                             .map(|(&t, &v)| (t, v))
                             .collect(),
                         label: format!(
-                            "\u{2265} {} deg/s (Smoothed Peak: {peak_str}, Td: {latency_str})",
+                            "\u{2265} {} deg/s (Peak: {peak_str}, Td: {latency_str})",
                             display.setpoint_threshold
                         ),
                         color: color_high_sp,
@@ -333,7 +333,7 @@ pub fn plot_step_response(
                             .zip(resp.iter())
                             .map(|(&t, &v)| (t, v))
                             .collect(),
-                        label: format!("Combined (Smoothed Peak: {peak_str}, Td: {latency_str})"), // average of all Y-corrected & QC'd responses, post-smoothed
+                        label: format!("Combined (Peak: {peak_str}, Td: {latency_str})"), // average of all Y-corrected & QC'd responses
                         color: color_combined,
                         stroke_width: line_stroke_plot,
                     });
@@ -355,9 +355,7 @@ pub fn plot_step_response(
                             .zip(resp.iter())
                             .map(|(&t, &v)| (t, v))
                             .collect(),
-                        label: format!(
-                            "Step-Response Avg (Smoothed Peak: {peak_str}, Td: {latency_str})"
-                        ), // average of all Y-corrected & QC'd responses, post-smoothed
+                        label: format!("Step-Response Avg (Peak: {peak_str}, Td: {latency_str})"), // average of all Y-corrected & QC'd responses
                         color: color_combined,
                         stroke_width: line_stroke_plot,
                     });

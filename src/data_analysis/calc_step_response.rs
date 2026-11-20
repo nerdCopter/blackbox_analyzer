@@ -155,10 +155,12 @@ fn wiener_deconvolution_window(
         eprintln!("⚠️  FFT output empty/mismatch in Wiener deconvolution.");
         return Array1::zeros(n);
     }
-    // Scale both spectra by 1/N before regularizing, as PIDtoolbox does (PTstepcalc.m: G = a/length(a)).
-    // This makes the regularization term act as WIENER_REGULARIZATION * N^2 on unscaled FFTs.
+    // Scale both spectra by 1/n (window length) before regularizing, as PIDtoolbox does
+    // (PTstepcalc.m: G = a/length(a)). The term then acts as WIENER_REGULARIZATION * n^2 on
+    // unscaled FFTs. Using n, not the power-of-two padded length, keeps it continuous in the
+    // sample rate: padding can double between nearby rates.
     let regularization_term = WIENER_REGULARIZATION;
-    let spectrum_scale = 1.0 / padded_n as f32;
+    let spectrum_scale = 1.0 / n as f32;
     let epsilon = 1e-9;
     let mut deconvolved_spec = Array1::<num_complex::Complex32>::zeros(h_spec.len());
     for i in 0..h_spec.len() {
@@ -635,6 +637,25 @@ mod tests {
             (crossing_50(&r) - expected).abs() < 1.5,
             "crossing {} expected {}",
             crossing_50(&r),
+            expected
+        );
+    }
+
+    #[test]
+    fn wiener_regularization_scales_with_window_length() {
+        // Unit impulse as input and output: every bin has H = G = 1. After scaling both by 1/n
+        // the estimate in every bin is (1/n^2) / (1/n^2 + r) = 1 / (1 + r n^2), so the first
+        // impulse sample is that value. n = 100 pads to 128, so n and the padded length differ.
+        let n = 100usize;
+        let mut v = vec![0.0f32; n];
+        v[0] = 1.0;
+        let x = Array1::from(v);
+        let out = wiener_deconvolution_window(&x, &x, 1000.0);
+        let expected = 1.0 / (1.0 + WIENER_REGULARIZATION * (n * n) as f32);
+        assert!(
+            (out[0] - expected).abs() < 1e-3,
+            "got {} expected {}",
+            out[0],
             expected
         );
     }
