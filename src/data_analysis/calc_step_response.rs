@@ -609,7 +609,7 @@ mod tests {
     #[test]
     fn response_time_axis_is_sample_index_over_rate() {
         for rate in TEST_SAMPLE_RATES {
-            // Identity plant: gyro follows setpoint, so every window passes QC.
+            // Identity plant: gyro follows setpoint, so at least one window passes QC.
             let n = (rate * 6.0) as usize;
             let mut x = 0.0f32;
             let setpoint: Array1<f32> = Array1::from_shape_fn(n, |i| {
