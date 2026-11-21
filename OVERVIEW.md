@@ -83,7 +83,7 @@ All analysis parameters, thresholds, plot dimensions, and algorithmic constants 
                 * Generates and saves the step response plot. The y-axis floor is 0 when no trace goes below 0, so the origin is (0, 0).
         * **P:D Ratio Recommendations (`src/main.rs`):**
             * Based on step response peak analysis, the system provides tuning recommendations:
-                * **Important:** Peak value is measured as the first maximum after the response crosses the setpoint (1.0). The initial transient dip (visible in first ~30ms) is normal system behavior and not used for tuning recommendations.
+                * **Important:** Peak value is the maximum finite sample of the displayed response (`find_peak_value`). The initial transient dip (visible in first ~30ms) is normal system behavior and not used for tuning recommendations.
                 * **Peak Analysis Ranges (based on step response overshoot/undershoot):** Simplified 6-zone structure aligned with real-world practical tuning:
                     * **< 1.00 (Undershoot):** Too much D damping. Recommendation (conservative): P:D × (1.05 / peak) — proportional decrease targeting sweet-spot centre.
                     * **1.00–1.02 (Near Optimal):** Critically damped transition zone. Recommendation (none) + optional D−1 hint for fine-tuning.
@@ -251,7 +251,7 @@ The system provides intelligent P:D tuning recommendations based on step-respons
 - Works for all aircraft sizes, including 10+ inch, where D can exceed P
 - Includes warnings for severe overshoot or unreasonable P:D ratios
 - Shows recommendations only when the step response needs improvement (no adjustment for 1.02 ≤ peak < 1.08; 1.00 ≤ peak < 1.02 can show an optional D−1 hint; peak ≥ 1.08 can show a D recommendation; see zones above)
-- **Note:** Peak value measures the first maximum after crossing the setpoint; the initial transient dip is normal system behavior
+- **Note:** Peak value is the maximum finite sample of the displayed response; the initial transient dip is normal system behavior
 
 #### Optimal P Estimation (Optional, Experimental)
 

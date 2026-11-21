@@ -614,24 +614,21 @@ mod tests {
 
     #[test]
     fn displayed_response_averages_only_masked_rows() {
-        // Row 0 is flat 1.0, row 1 is flat 2.0, row 2 is flat 4.0 with one peak sample.
-        // Mask selects rows 0 and 1: average is 1.5 everywhere, so the normalized response is 1.0.
-        // Mask selecting row 2 only: peak sample 4.8 over steady state 4.0 gives 1.2.
+        // Row 0: flat 1.0. Row 1: flat 2.0 with a 2.4 sample at i=100. Row 2: flat 4.0 with a 4.8 sample.
+        // Rows 0 and 1 selected: average at i=100 is 1.7, steady state 1.5, so peak 1.7/1.5.
+        // Row 2 only: 4.8 over steady state 4.0 gives 1.2.
         let len = 500;
-        let stacked = Array2::from_shape_fn((3, len), |(r, i)| match r {
-            0 => 1.0f32,
-            1 => 2.0,
-            _ => {
-                if i == 100 {
-                    4.8
-                } else {
-                    4.0
-                }
-            }
+        let stacked = Array2::from_shape_fn((3, len), |(r, i)| match (r, i) {
+            (0, _) => 1.0f32,
+            (1, 100) => 2.4,
+            (1, _) => 2.0,
+            (_, 100) => 4.8,
+            _ => 4.0,
         });
         let first_two = Array1::from_vec(vec![1.0f32, 1.0, 0.0]);
         let resp = displayed_response(&stacked, &first_two, len, 1000.0).expect("response");
-        assert!(resp.iter().all(|v| (v - 1.0).abs() < 1e-9));
+        let peak = find_peak_value(&resp).expect("peak");
+        assert!((peak - 1.7 / 1.5).abs() < 1e-5, "peak {peak}");
         let third = Array1::from_vec(vec![0.0f32, 0.0, 1.0]);
         let resp = displayed_response(&stacked, &third, len, 1000.0).expect("response");
         let peak = find_peak_value(&resp).expect("peak");
