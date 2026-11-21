@@ -71,18 +71,19 @@ All analysis parameters, thresholds, plot dimensions, and algorithmic constants 
         * **Plot Generation (various functions in `src/plot_functions/`):**
             * `plot_step_response` (in `src/plot_functions/plot_step_response.rs`): Takes the results from `calculate_step_response`.
                 * Separates the QC'd responses into "low" and "high" setpoint groups based on the `setpoint_threshold` if the `--dps` parameter (and thus `show_legend`) is provided.
-                * **Averaging & Final Normalization (`plot_functions::plot_step_response::process_response`):**
+                * **Averaging & Final Normalization (`calc_step_response::displayed_response`, shared by the plot, console and report):**
                     * The QC'd responses (either low, high, or combined) are averaged using `calc_step_response::average_responses`.
                     * The averaged response is not smoothed. A trailing or centered moving average would delay or blur the rise, and PIDtoolbox plots the raw average.
-                    * The response is shifted to start at 0.0. The time axis is `i / sample_rate`, as in PIDtoolbox.
-                    * A **final normalization** step is performed: the mean of the steady-state portion of this *averaged and shifted* response is calculated. The entire response is then divided by this mean to ensure the plotted average response aims for a steady-state of 1.0.
+                    * No first-sample shift is applied, as in PIDtoolbox. The time axis is `i / sample_rate`.
+                    * A **final normalization** step is performed: the mean of the steady-state portion of this *averaged* response is calculated. The entire response is then divided by this mean to ensure the plotted average response aims for a steady-state of 1.0.
                     * The final response is only plotted if its steady-state mean (after this final normalization) is within `FINAL_NORMALIZED_STEADY_STATE_TOLERANCE` of 1.0.
+                * The peak is read on this unsmoothed, renormalized curve. The combined legend Peak (the only legend entry without `--dps`), the console "Actual Peak" and report "Peak Value", and the P:D zones all use the same value. With `--dps`, the low- and high-setpoint legend entries use subset masks, so their peaks can differ from the combined peak. The legend prints two decimals; console and report print three.
                 * Calculates peak value and delay time (Td) for each plotted average response using `calc_step_response::find_peak_value` and `calc_step_response::calculate_delay_time`.
                     * **Delay Time (Td) Calculation:** The delay time is calculated as the time for the step response to reach 50% of its final value. Linear interpolation is used for precise determination of the 50% threshold crossing. A fixed offset of -1ms is applied to the calculated time (in milliseconds) before converting to seconds, and the result is constrained to be non-negative.
                 * Generates and saves the step response plot. The y-axis floor is 0 when no trace goes below 0, so the origin is (0, 0).
         * **P:D Ratio Recommendations (`src/main.rs`):**
             * Based on step response peak analysis, the system provides tuning recommendations:
-                * **Important:** Peak value is measured as the first maximum after the response crosses the setpoint (1.0). The initial transient dip (visible in first ~30ms) is normal system behavior and not used for tuning recommendations.
+                * **Important:** Peak value is the maximum finite sample of the displayed response (`find_peak_value`). The initial transient dip (visible in first ~30ms) is normal system behavior; it lies below 1.0, so it does not set the maximum. `find_peak_value` applies no time filter.
                 * **Peak Analysis Ranges (based on step response overshoot/undershoot):** Simplified 6-zone structure aligned with real-world practical tuning:
                     * **< 1.00 (Undershoot):** Too much D damping. Recommendation (conservative): P:D × (1.05 / peak) — proportional decrease targeting sweet-spot centre.
                     * **1.00–1.02 (Near Optimal):** Critically damped transition zone. Recommendation (none) + optional D−1 hint for fine-tuning.
@@ -250,7 +251,7 @@ The system provides intelligent P:D tuning recommendations based on step-respons
 - Works for all aircraft sizes, including 10+ inch, where D can exceed P
 - Includes warnings for severe overshoot or unreasonable P:D ratios
 - Shows recommendations only when the step response needs improvement (no adjustment for 1.02 ≤ peak < 1.08; 1.00 ≤ peak < 1.02 can show an optional D−1 hint; peak ≥ 1.08 can show a D recommendation; see zones above)
-- **Note:** Peak value measures the first maximum after crossing the setpoint; the initial transient dip is normal system behavior
+- **Note:** Peak value is the maximum finite sample of the displayed response; the initial transient dip is normal system behavior
 
 #### Optimal P Estimation (Optional, Experimental)
 

@@ -916,3 +916,69 @@ fn fmt_dterm_rec(rec: &DTermRec) -> String {
         None => format!("P:D={:.2}", rec.pd_ratio),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::data_analysis::calc_step_response::{displayed_response, find_peak_value};
+    use ndarray::{Array1, Array2};
+
+    fn empty_report(step_reports: Vec<StepAxisReport>) -> FlightReport {
+        FlightReport {
+            root_name: "peak_parity".to_string(),
+            sample_rate: Some(1000.0),
+            trim_window: None,
+            header_metadata: Vec::new(),
+            pd_ratios: Default::default(),
+            pid_labels: Default::default(),
+            d_ranges: Default::default(),
+            step_reports,
+            optimal_p: Default::default(),
+            gyro_analysis: None,
+            dterm_results: Vec::new(),
+            bode_results: Vec::new(),
+            motor_results: Vec::new(),
+            motor_desync_results: Vec::new(),
+            rc_command_steps: Vec::new(),
+            stick_distribution_results: Vec::new(),
+            png_links: Vec::new(),
+            skipped_plots: Vec::new(),
+            filter_config: None,
+            dynamic_notch: None,
+            rpm_filter: None,
+            rpm_motor_frequencies: None,
+            debug_fallback: false,
+            debug_mode_name: None,
+        }
+    }
+
+    // Spec: the report prints the peak of the shared displayed response to three decimals.
+    // Steady state 4.0 with one 4.8 sample gives a peak of exactly 1.200.
+    #[test]
+    fn report_carries_the_shared_displayed_response_peak() {
+        let len = 500;
+        let stacked = Array2::from_shape_fn((2, len), |(_, i)| if i == 100 { 4.8f32 } else { 4.0 });
+        let mask = Array1::<f32>::ones(2);
+        let resp = displayed_response(&stacked, &mask, len, 1000.0).expect("response");
+        let peak = find_peak_value(&resp).expect("peak");
+
+        let step = StepAxisReport {
+            axis_name: "Roll",
+            peak_value: peak,
+            assessment: "Overshoot",
+            current_pd_ratio: 1.2,
+            conservative: None,
+            moderate: None,
+            aggressive: None,
+            near_optimal_hint: None,
+            setpoint_authority_name: None,
+            setpoint_authority_mean: None,
+            warnings: Vec::new(),
+        };
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("report.md");
+        generate_markdown_report(&empty_report(vec![step]), &path).expect("report");
+        let text = fs::read_to_string(&path).expect("read");
+        assert!(text.contains("- **Peak Value:** 1.200"), "{text}");
+    }
+}

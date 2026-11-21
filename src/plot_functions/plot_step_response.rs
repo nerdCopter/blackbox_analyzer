@@ -1,6 +1,6 @@
 // src/plot_functions/plot_step_response.rs
 
-use ndarray::{s, Array1, Array2};
+use ndarray::{Array1, Array2};
 use plotters::style::RGBColor;
 use std::error::Error;
 
@@ -9,8 +9,7 @@ use crate::constants::{
     COLOR_OPTIMAL_P_DIVIDER, COLOR_OPTIMAL_P_HEADER, COLOR_OPTIMAL_P_RECOMMENDATION,
     COLOR_OPTIMAL_P_SKIP, COLOR_OPTIMAL_P_TEXT, COLOR_OPTIMAL_P_WARNING,
     COLOR_STEP_RESPONSE_COMBINED, COLOR_STEP_RESPONSE_HIGH_SP, COLOR_STEP_RESPONSE_LOW_SP,
-    FINAL_NORMALIZED_STEADY_STATE_TOLERANCE, LINE_WIDTH_PLOT,
-    LOW_AUTHORITY_SETPOINT_THRESHOLD_DEG_S, RESPONSE_LENGTH_S, STEADY_STATE_END_S,
+    LINE_WIDTH_PLOT, LOW_AUTHORITY_SETPOINT_THRESHOLD_DEG_S, RESPONSE_LENGTH_S, STEADY_STATE_END_S,
     STEADY_STATE_START_S,
 };
 use crate::data_analysis::calc_step_response; // For average_responses
@@ -178,71 +177,14 @@ pub fn plot_step_response(
 
             let process_response = |mask: &Array1<f32>,
                                     stacked_resp: &Array2<f32>,
-                                    resp_len_samples_local: usize, // Use a local variable for clarity
-                                    ss_start_idx_local: usize,
-                                    ss_end_idx_local: usize|
+                                    resp_len_samples_local: usize|
              -> Option<Array1<f64>> {
-                // Return type simplified to just the response array
-                if !mask.iter().any(|&w| w > 0.0) {
-                    return None;
-                } // No windows selected by mask
-
-                // avg_resp is now an average of *individually Y-corrected* (mostly normalized towards 1) responses
-                // from calc_step_response.rs
-                calc_step_response::average_responses(stacked_resp, mask, resp_len_samples_local)
-                    .ok()
-                    .and_then(|avg_resp| {
-                        if avg_resp.is_empty() {
-                            return None;
-                        }
-
-                        // Shift the response to start at 0.0
-                        let mut shifted_response = avg_resp;
-                        let first_val = shifted_response[0];
-                        shifted_response.mapv_inplace(|v| v - first_val);
-
-                        // This steady_state_segment is from the averaged, Y-corrected (upstream),
-                        // and shifted response. Its mean is used for a final normalization refinement.
-                        let steady_state_segment =
-                            shifted_response.slice(s![ss_start_idx_local..ss_end_idx_local]);
-                        if steady_state_segment.is_empty() {
-                            // Guard against empty slice
-                            return None;
-                        }
-
-                        steady_state_segment
-                            .mean()
-                            .and_then(|final_ss_mean_for_norm| {
-                                if final_ss_mean_for_norm.abs() > 1e-9 {
-                                    // Avoid division by zero
-                                    // This final normalization step ensures the plotted response aims for 1.0.
-                                    // It refines the average of the Y-corrected individual responses.
-                                    let normalized_response =
-                                        shifted_response.mapv(|v| v / final_ss_mean_for_norm);
-
-                                    // Final check on this fully processed and normalized response
-                                    let final_check_ss_segment = normalized_response
-                                        .slice(s![ss_start_idx_local..ss_end_idx_local]);
-                                    if final_check_ss_segment.is_empty() {
-                                        return None;
-                                    } // Should not happen
-
-                                    final_check_ss_segment.mean().and_then(
-                                        |final_normalized_ss_mean| {
-                                            if (final_normalized_ss_mean - 1.0).abs()
-                                                <= FINAL_NORMALIZED_STEADY_STATE_TOLERANCE
-                                            {
-                                                Some(normalized_response)
-                                            } else {
-                                                None
-                                            }
-                                        },
-                                    )
-                                } else {
-                                    None
-                                }
-                            })
-                    })
+                calc_step_response::displayed_response(
+                    stacked_resp,
+                    mask,
+                    resp_len_samples_local,
+                    sr,
+                )
             };
 
             let mut series = Vec::new();
@@ -252,25 +194,13 @@ pub fn plot_step_response(
                 &combined_mask,
                 valid_stacked_responses,
                 response_length_samples,
-                current_ss_start_idx,
-                current_ss_end_idx,
             );
 
             if display.show_legend {
-                let final_low_response = process_response(
-                    &low_mask,
-                    valid_stacked_responses,
-                    response_length_samples,
-                    current_ss_start_idx,
-                    current_ss_end_idx,
-                );
-                let final_high_response = process_response(
-                    &high_mask,
-                    valid_stacked_responses,
-                    response_length_samples,
-                    current_ss_start_idx,
-                    current_ss_end_idx,
-                );
+                let final_low_response =
+                    process_response(&low_mask, valid_stacked_responses, response_length_samples);
+                let final_high_response =
+                    process_response(&high_mask, valid_stacked_responses, response_length_samples);
 
                 if let Some(resp) = final_low_response {
                     let peak_val_opt = calc_step_response::find_peak_value(&resp);
