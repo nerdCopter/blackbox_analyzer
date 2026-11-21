@@ -71,12 +71,13 @@ All analysis parameters, thresholds, plot dimensions, and algorithmic constants 
         * **Plot Generation (various functions in `src/plot_functions/`):**
             * `plot_step_response` (in `src/plot_functions/plot_step_response.rs`): Takes the results from `calculate_step_response`.
                 * Separates the QC'd responses into "low" and "high" setpoint groups based on the `setpoint_threshold` if the `--dps` parameter (and thus `show_legend`) is provided.
-                * **Averaging & Final Normalization (`plot_functions::plot_step_response::process_response`):**
+                * **Averaging & Final Normalization (`calc_step_response::displayed_response`, shared by the plot, console and report):**
                     * The QC'd responses (either low, high, or combined) are averaged using `calc_step_response::average_responses`.
                     * The averaged response is not smoothed. A trailing or centered moving average would delay or blur the rise, and PIDtoolbox plots the raw average.
-                    * The response is shifted to start at 0.0. The time axis is `i / sample_rate`, as in PIDtoolbox.
-                    * A **final normalization** step is performed: the mean of the steady-state portion of this *averaged and shifted* response is calculated. The entire response is then divided by this mean to ensure the plotted average response aims for a steady-state of 1.0.
+                    * No first-sample shift is applied, as in PIDtoolbox. The time axis is `i / sample_rate`.
+                    * A **final normalization** step is performed: the mean of the steady-state portion of this *averaged* response is calculated. The entire response is then divided by this mean to ensure the plotted average response aims for a steady-state of 1.0.
                     * The final response is only plotted if its steady-state mean (after this final normalization) is within `FINAL_NORMALIZED_STEADY_STATE_TOLERANCE` of 1.0.
+                * The peak is read on this unsmoothed, renormalized curve. Legend Peak, console and report "Actual Peak", and the P:D zones all use the same value.
                 * Calculates peak value and delay time (Td) for each plotted average response using `calc_step_response::find_peak_value` and `calc_step_response::calculate_delay_time`.
                     * **Delay Time (Td) Calculation:** The delay time is calculated as the time for the step response to reach 50% of its final value. Linear interpolation is used for precise determination of the 50% threshold crossing. A fixed offset of -1ms is applied to the calculated time (in milliseconds) before converting to seconds, and the result is constrained to be non-negative.
                 * Generates and saves the step response plot. The y-axis floor is 0 when no trace goes below 0, so the origin is (0, 0).

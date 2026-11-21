@@ -1580,10 +1580,11 @@ INFO: Skipping Step Response input data filtering for {input_file_str}: {reason}
                     let response_length = response_time.len();
                     let mask: Array1<f32> = Array1::ones(num_windows);
 
-                    if let Ok(avg_response) = calc_step_response::average_responses(
+                    if let Some(avg_response) = calc_step_response::displayed_response(
                         valid_stacked_responses,
                         &mask,
                         response_length,
+                        sample_rate.unwrap_or_default(),
                     ) {
                         // Find peak value
                         if let Some(peak_value) = calc_step_response::find_peak_value(&avg_response)

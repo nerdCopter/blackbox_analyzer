@@ -7,9 +7,9 @@ use crate::types::StepResponseResult;
 
 use crate::constants::{
     APPLY_INDIVIDUAL_RESPONSE_Y_CORRECTION, ENABLE_NORMALIZED_STEADY_STATE_MEAN_CHECK,
-    FRAME_LENGTH_S, HIGH_AUTHORITY_SETPOINT_THRESHOLD_DEG_S,
-    LOW_AUTHORITY_SETPOINT_THRESHOLD_DEG_S, MOVEMENT_THRESHOLD_DEG_S,
-    NORMALIZED_STEADY_STATE_MAX_VAL, NORMALIZED_STEADY_STATE_MEAN_MAX,
+    FINAL_NORMALIZED_STEADY_STATE_TOLERANCE, FRAME_LENGTH_S,
+    HIGH_AUTHORITY_SETPOINT_THRESHOLD_DEG_S, LOW_AUTHORITY_SETPOINT_THRESHOLD_DEG_S,
+    MOVEMENT_THRESHOLD_DEG_S, NORMALIZED_STEADY_STATE_MAX_VAL, NORMALIZED_STEADY_STATE_MEAN_MAX,
     NORMALIZED_STEADY_STATE_MEAN_MIN, NORMALIZED_STEADY_STATE_MIN_VAL, RESPONSE_LENGTH_S,
     STEADY_STATE_END_S, STEADY_STATE_START_S, SUPERPOSITION_FACTOR, TUKEY_ALPHA,
     WIENER_REGULARIZATION, Y_CORRECTION_MIN_UNNORMALIZED_MEAN_ABS,
@@ -516,6 +516,43 @@ pub fn calculate_delay_time(normalized_response: &Array1<f64>, sample_rate: f64)
     }
 }
 
+/// Builds the response that every output shows (plot curves, legend, console, report).
+///
+/// Averages the masked QC windows, then renormalizes so the steady-state mean is 1.0.
+/// PIDtoolbox applies no first-sample shift, so none is applied here.
+/// Returns None when no window is selected, the steady-state window is empty or has a
+/// zero mean, or the result misses `FINAL_NORMALIZED_STEADY_STATE_TOLERANCE`.
+pub fn displayed_response(
+    stacked_responses: &Array2<f32>,
+    mask: &Array1<f32>,
+    response_length_samples: usize,
+    sample_rate: f64,
+) -> Option<Array1<f64>> {
+    if response_length_samples == 0 || !mask.iter().any(|&w| w > 0.0) {
+        return None;
+    }
+    let avg_resp = average_responses(stacked_responses, mask, response_length_samples).ok()?;
+    if avg_resp.is_empty() {
+        return None;
+    }
+    let ss_start = ((STEADY_STATE_START_S * sample_rate).floor() as usize)
+        .min(response_length_samples.saturating_sub(1));
+    let ss_end = ((STEADY_STATE_END_S * sample_rate).ceil() as usize)
+        .min(response_length_samples)
+        .max(ss_start + 1);
+    let ss_mean = avg_resp.slice(s![ss_start..ss_end]).mean()?;
+    if ss_mean.abs() <= 1e-9 {
+        return None;
+    }
+    let normalized = avg_resp.mapv(|v| v / ss_mean);
+    let check_mean = normalized.slice(s![ss_start..ss_end]).mean()?;
+    if (check_mean - 1.0).abs() <= FINAL_NORMALIZED_STEADY_STATE_TOLERANCE {
+        Some(normalized)
+    } else {
+        None
+    }
+}
+
 /// Finds the peak (maximum) value in a 1D response data array.
 /// Returns None if the array is empty or contains no finite values.
 pub fn find_peak_value(response_data: &Array1<f64>) -> Option<f64> {
@@ -547,6 +584,43 @@ mod tests {
 
     // 1001 Hz makes RESPONSE_LENGTH_S * rate non-integral (500.5), so the length rounds up.
     const TEST_SAMPLE_RATES: [f64; 2] = [1000.0, 1001.0];
+
+    // Spec: the displayed response has steady-state mean 1.0 and keeps its own peak.
+    #[test]
+    fn displayed_response_identity_plant_is_not_zeroed() {
+        // A response that starts at 1.0 (instantaneous plant) must stay 1.0, not collapse to 0.
+        let len = 500;
+        let stacked = Array2::<f32>::ones((2, len));
+        let mask = Array1::<f32>::ones(2);
+        let resp = displayed_response(&stacked, &mask, len, 1000.0).expect("response");
+        assert!(resp.iter().all(|v| (v - 1.0).abs() < 1e-9));
+        assert_eq!(find_peak_value(&resp), Some(1.0));
+    }
+
+    #[test]
+    fn displayed_response_peak_follows_steady_state_scale() {
+        // Steady state (t >= 0.2 s) is 0.9; one sample at 1.08 is 1.2x steady state.
+        let len = 500;
+        let mut row = vec![0.9f32; len];
+        row[100] = 1.08;
+        let stacked = Array2::from_shape_fn((3, len), |(_, i)| row[i]);
+        let mask = Array1::<f32>::ones(3);
+        let resp = displayed_response(&stacked, &mask, len, 1000.0).expect("response");
+        let peak = find_peak_value(&resp).expect("peak");
+        assert!((peak - 1.2).abs() < 1e-5, "peak {peak}");
+        let ss = resp.slice(s![200..500]).mean().expect("mean");
+        assert!((ss - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn displayed_response_rejects_empty_mask_and_zero_steady_state() {
+        let len = 500;
+        let stacked = Array2::<f32>::zeros((2, len));
+        assert!(displayed_response(&stacked, &Array1::<f32>::ones(2), len, 1000.0).is_none());
+        let ones = Array2::<f32>::ones((2, len));
+        assert!(displayed_response(&ones, &Array1::<f32>::zeros(2), len, 1000.0).is_none());
+        assert!(displayed_response(&ones, &Array1::<f32>::ones(2), 0, 1000.0).is_none());
+    }
 
     #[test]
     fn response_time_axis_is_sample_index_over_rate() {
