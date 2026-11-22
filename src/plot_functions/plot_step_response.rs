@@ -592,7 +592,7 @@ pub fn plot_step_response(
                             let rel_text = format!(
                                 "  {}: {}",
                                 analysis.td_stats.reliability_label(),
-                                analysis.td_stats.reliability_details()
+                                analysis.reliability_text()
                             );
                             let (rel_label, rel_color) = if analysis.td_stats.is_consistent() {
                                 (rel_text, COLOR_OPTIMAL_P_TEXT)

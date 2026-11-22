@@ -480,7 +480,7 @@ pub fn generate_markdown_report(
                     md,
                     "- **{}:** {}",
                     analysis.td_stats.reliability_label(),
-                    analysis.td_stats.reliability_details()
+                    analysis.reliability_text()
                 )?;
                 writeln!(md, "- **Source:** {}", analysis.source_summary())?;
                 writeln!(md)?;

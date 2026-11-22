@@ -2141,6 +2141,12 @@ INFO: Skipping Step Response input data filtering for {input_file_str}: {reason}
                                     analysis.source_files = aircraft_profile.file_count;
                                     analysis.source_spread =
                                         aircraft_profile.axes[axis_index].ratio_spread_fraction;
+                                    analysis.analysed_seconds = match (first_time, last_time) {
+                                        (Some(first), Some(last)) => {
+                                            Some((last - first - EXCLUDE_START_S - EXCLUDE_END_S).max(0.0))
+                                        }
+                                        _ => None,
+                                    };
                                     // Print console output
                                     let d_range = pid_metadata
                                         .get_axis(axis_index)

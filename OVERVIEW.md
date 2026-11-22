@@ -304,7 +304,7 @@ Needs step-response windows, `.headers.csv`, D-term data and at least `TORQUE_PR
   - `Deviation:` — % difference between measured Td and physics target, with zone label
   - `Current P=` — P gain value from the flight's metadata
   - `Recommendation` — one of `(Conservative)`, `(Decrease)`, `Current P is optimal`, or `Investigate —` with reason; includes calculated D adjustment
-  - `Reliable:` / `Unreliable:` — always shows both `Consistency=N% (⊢≥70%)` and `CV=N% (⊢≤40%)`; `Unreliable` is highlighted in orange when either threshold is not met
+  - `Reliable:` / `Unreliable:` — always shows both `Consistency=N% (⊢≥70%)` and `CV=N% (⊢≤40%)`, then the analysed seconds of flight data (log time after `--start`/`--end` and the 3 s start/end margins, for example `61 s`); `Unreliable` is highlighted in orange when either threshold is not met
   - `Setpoint Authority:` — always shown; classifies flight inputs as `LOW`, `MODERATE`, or `HIGH` based on the **mean** of per-window max setpoints (see below). Orange for `LOW`.
   - When profiling is skipped (insufficient punch events), a skip reason replaces the above in the console, PNG and report. See **Consistency and Reliability Interpretation** below.
 

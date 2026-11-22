@@ -291,6 +291,9 @@ pub struct OptimalPAnalysis {
     /// Spread of the throttle-punch torque/inertia ratios (half inter-quartile range / median).
     /// A wide spread means the punches disagree, so the Td target is less certain.
     pub source_spread: Option<f64>,
+    /// Seconds of flight data the step-response windows came from (log time after the --start/--end
+    /// trim and the fixed start/end margins). Shown on the reliability line.
+    pub analysed_seconds: Option<f64>,
 }
 
 impl OptimalPAnalysis {
@@ -391,6 +394,7 @@ impl OptimalPAnalysis {
             source_events: 0,
             source_files: 0,
             source_spread: None,
+            analysed_seconds: None,
         })
     }
 
@@ -564,6 +568,15 @@ impl OptimalPAnalysis {
         }
     }
 
+    /// Reliability text shared by the legend, console and report: the Td statistics plus the
+    /// analysed seconds, for example `Consistency=86% (⊢≥70%), CV=24.8% (⊢≤40%), 61 s`.
+    pub fn reliability_text(&self) -> String {
+        let seconds = self
+            .analysed_seconds
+            .map_or_else(String::new, |s| format!(", {s:.0} s"));
+        format!("{}{}", self.td_stats.reliability_details(), seconds)
+    }
+
     /// Td source text shared by the legend, console and report, for example
     /// `4 flights, 14 punches, spread 32%`. The spread is the half inter-quartile range of the
     /// punch ratios over their median; it is omitted when there are too few punches to compute it.
@@ -684,7 +697,7 @@ impl OptimalPAnalysis {
         output.push_str(&format!(
             "  {}: {}\n",
             self.td_stats.reliability_label(),
-            self.td_stats.reliability_details()
+            self.reliability_text()
         ));
 
         output
@@ -810,6 +823,18 @@ mod d_target_tests {
             low_noise_recommendation(23.5),
             PRecommendation::Optimal { .. }
         ));
+    }
+
+    #[test]
+    fn reliability_text_appends_the_analysed_seconds() {
+        let samples = vec![30.0; 40];
+        let mut a =
+            OptimalPAnalysis::analyze(&samples, 40, Some(20), None, Some(2.0), Some((25.0, 3.0)))
+                .expect("analysis");
+        let base = a.td_stats.reliability_details();
+        assert_eq!(a.reliability_text(), base);
+        a.analysed_seconds = Some(60.6);
+        assert_eq!(a.reliability_text(), format!("{base}, 61 s"));
     }
 
     #[test]
