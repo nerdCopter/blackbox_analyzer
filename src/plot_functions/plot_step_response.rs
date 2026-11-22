@@ -552,9 +552,10 @@ pub fn plot_step_response(
                             |recommended_p: u32| analysis.d_target_suffix(recommended_p, d_range);
 
                         let rec_label = match &analysis.recommendation {
-                            PRecommendation::Optimal { .. } => format!(
-                                "  Recommendation: Current P is optimal (P={})",
-                                analysis.current_p
+                            rec @ PRecommendation::Optimal { .. } => format!(
+                                "  Recommendation: {}",
+                                rec.optimal_short_text(analysis.current_p)
+                                    .unwrap_or_default()
                             ),
                             PRecommendation::Increase { conservative_p, .. } => {
                                 let p_delta =

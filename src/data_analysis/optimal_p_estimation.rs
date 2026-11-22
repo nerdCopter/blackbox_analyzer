@@ -117,6 +117,9 @@ impl TdDeviation {
 pub enum PRecommendation {
     Optimal {
         reasoning: String,
+        /// True when Td is already faster than the physics target: more P headroom is likely
+        /// but cannot be quantified, so the short text says so instead of "optimal".
+        headroom_unquantified: bool,
     },
     Increase {
         conservative_p: u32,
@@ -129,6 +132,25 @@ pub enum PRecommendation {
     Investigate {
         issue: String,
     },
+}
+
+impl PRecommendation {
+    /// Short text for an `Optimal` recommendation, shared by the console, the legend and the
+    /// report, so all three say the same thing. `None` for the other variants.
+    pub fn optimal_short_text(&self, current_p: u32) -> Option<String> {
+        match self {
+            PRecommendation::Optimal {
+                headroom_unquantified: true,
+                ..
+            } => Some(format!(
+                "Current P (P={current_p}) — no change suggested, more headroom possible"
+            )),
+            PRecommendation::Optimal { .. } => {
+                Some(format!("Current P is optimal (P={current_p})"))
+            }
+            _ => None,
+        }
+    }
 }
 
 /// Statistics for Td measurements across multiple step responses
@@ -433,6 +455,7 @@ impl OptimalPAnalysis {
                     }
                 } else {
                     PRecommendation::Optimal {
+                headroom_unquantified: false,
                         reasoning: format!(
                             "Response time is in target range ({:.1}ms) with low noise levels. \
                              Current P ({}) appears optimal.",
@@ -444,6 +467,7 @@ impl OptimalPAnalysis {
 
             // Case 4: Td within target + moderate noise = likely optimal
             (TdDeviation::WithinTarget, NoiseLevel::Moderate) => PRecommendation::Optimal {
+                headroom_unquantified: false,
                 reasoning: format!(
                     "Response time is in target range ({:.1}ms) with moderate noise levels. \
                      Current P ({}) appears optimal for this aircraft.",
@@ -453,6 +477,7 @@ impl OptimalPAnalysis {
 
             // Case 5: Td within target + high noise = optimal but monitor
             (TdDeviation::WithinTarget, NoiseLevel::High) => PRecommendation::Optimal {
+                headroom_unquantified: false,
                 reasoning: format!(
                     "Response time is in target range but noise levels are high. \
                      Current P ({}) is at or near physical limits. Monitor motor temperatures.",
@@ -475,6 +500,7 @@ impl OptimalPAnalysis {
 
             // Case 7: Td faster than target + moderate noise = at optimal limit
             (TdDeviation::SignificantlyFaster, NoiseLevel::Moderate) => PRecommendation::Optimal {
+                headroom_unquantified: false,
                 reasoning: format!(
                     "Response is {:.1}% faster than target with moderate noise. \
                      Current P ({}) is at or near optimal limit for this aircraft.",
@@ -482,14 +508,17 @@ impl OptimalPAnalysis {
                 ),
             },
 
-            // Case 8: Td faster than target + low noise = no headroom by the physics target.
-            // A faster-than-target response is not a reason to raise P. It can also mean the
-            // prop or build differs from the spec the target assumes.
+            // Case 8: Td faster than target + low noise = no P change suggested. The target is
+            // conservative for this aircraft, so more headroom is likely but cannot be
+            // quantified (the target depends on the punch pool and an empirical factor).
             (TdDeviation::SignificantlyFaster, NoiseLevel::Low) => PRecommendation::Optimal {
+                headroom_unquantified: true,
                 reasoning: format!(
                     "Response is {:.1}% faster than target with low noise. \
-                     Current P ({}) is optimal. Excellent build quality or prop size may differ from spec.",
-                    td_deviation_percent, current_p
+                     The target may be conservative for this aircraft, so more P headroom is \
+                     possible but not quantified. Test any increase in small steps and check \
+                     motor temperature and noise. The prop or build may differ from the spec.",
+                    td_deviation_percent
                 ),
             },
 
@@ -520,6 +549,7 @@ impl OptimalPAnalysis {
                     }
                 }
                 TdDeviation::WithinTarget => PRecommendation::Optimal {
+                headroom_unquantified: false,
                     reasoning: format!(
                         "Response time ({:.1}ms) is in target range. Current P ({}) appears appropriate, \
                          but monitor motor temperatures (D-term data unavailable for noise analysis).",
@@ -527,6 +557,7 @@ impl OptimalPAnalysis {
                     ),
                 },
                 TdDeviation::SignificantlyFaster => PRecommendation::Optimal {
+                headroom_unquantified: false,
                     reasoning: format!(
                         "Response is {:.1}% faster than target. Current P ({}) may be at limits, \
                          monitor motor temperatures (D-term data unavailable for noise analysis).",
@@ -630,10 +661,10 @@ impl OptimalPAnalysis {
         output.push_str(&format!("  Current P={}\n", self.current_p));
 
         match &self.recommendation {
-            PRecommendation::Optimal { .. } => {
+            rec @ PRecommendation::Optimal { .. } => {
                 output.push_str(&format!(
-                    "  Recommendation: Current P is optimal (P={})\n",
-                    self.current_p
+                    "  Recommendation: {}\n",
+                    rec.optimal_short_text(self.current_p).unwrap_or_default()
                 ));
             }
             PRecommendation::Increase { conservative_p, .. } => {
@@ -753,6 +784,24 @@ mod d_target_tests {
             low_noise_recommendation(25.0),
             PRecommendation::Increase { .. }
         ));
+    }
+
+    #[test]
+    fn optimal_short_text_flags_unquantified_headroom() {
+        // 18 ms is -28% against the 25 ms target: Case 8.
+        let faster = low_noise_recommendation(18.0);
+        assert_eq!(
+            faster.optimal_short_text(60).as_deref(),
+            Some("Current P (P=60) — no change suggested, more headroom possible")
+        );
+        // Within the band and slightly faster than target: plain optimal wording.
+        let within = low_noise_recommendation(23.5);
+        assert_eq!(
+            within.optimal_short_text(60).as_deref(),
+            Some("Current P is optimal (P=60)")
+        );
+        // Increase has no Optimal short text.
+        assert_eq!(low_noise_recommendation(26.0).optimal_short_text(60), None);
     }
 
     #[test]

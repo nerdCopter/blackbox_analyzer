@@ -436,9 +436,12 @@ pub fn generate_markdown_report(
                 )?;
                 writeln!(md, "- **Noise level:** {}", analysis.noise_level.name())?;
                 let rec_text = match &analysis.recommendation {
-                    PRecommendation::Optimal { reasoning } => {
-                        format!("No change — {}", reasoning)
-                    }
+                    rec @ PRecommendation::Optimal { reasoning, .. } => format!(
+                        "{} — {}",
+                        rec.optimal_short_text(analysis.current_p)
+                            .unwrap_or_default(),
+                        reasoning
+                    ),
                     PRecommendation::Increase {
                         conservative_p,
                         reasoning,
@@ -980,5 +983,35 @@ mod tests {
         generate_markdown_report(&empty_report(vec![step]), &path).expect("report");
         let text = fs::read_to_string(&path).expect("read");
         assert!(text.contains("- **Peak Value:** 1.200"), "{text}");
+    }
+
+    // Spec: the report carries the shared Optimal short text, then the long reasoning.
+    #[test]
+    fn report_carries_the_shared_optimal_short_text() {
+        // Target 25 +- 3 ms, P 60, low noise; 18 ms is -28% against the target (Case 8).
+        let analysis = OptimalPAnalysis::analyze(
+            &[18.0; 40],
+            60,
+            Some(20),
+            Some(0.01),
+            Some(2.0),
+            Some((25.0, 3.0)),
+        )
+        .expect("analysis");
+        let short = analysis
+            .recommendation
+            .optimal_short_text(60)
+            .expect("optimal");
+        let mut report = empty_report(Vec::new());
+        report.optimal_p[0] = Some(analysis);
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("report.md");
+        generate_markdown_report(&report, &path).expect("report");
+        let text = fs::read_to_string(&path).expect("read");
+        assert!(text.contains(&short), "{text}");
+        assert!(
+            text.contains("more P headroom is possible but not quantified"),
+            "{text}"
+        );
     }
 }
