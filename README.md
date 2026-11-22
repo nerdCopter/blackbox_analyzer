@@ -36,9 +36,11 @@ cargo build --release
 > **Notice:** Default output is **core plots only**. Use `--extended` for all plots.
 
 ```shell
+Analyze Betaflight/EmuFlight Blackbox logs (BBL, BFL, or CSV); render plots and a report.
+
 Usage: ./blackbox_analyzer <input1> [<input2> ...] [OPTIONS]
 
-=== INPUT/OUTPUT OPTIONS ===
+--- INPUT/OUTPUT OPTIONS ---
 
   <inputX>: CSV, BBL, or BFL files, directories, or wildcards (*.csv, *.bbl, *.bfl). Header
             files auto-excluded. A multi-flight .bbl/.bfl can produce one report per eligible flight.
@@ -46,13 +48,13 @@ Usage: ./blackbox_analyzer <input1> [<input2> ...] [OPTIONS]
             same file name gets a `_2` suffix. Output names never get a folder prefix.
   -O, --output-dir <directory>: Output directory (default: source folder).
   -R, --recursive: Recursively find CSV/BBL/BFL files in subdirectories.
-  -F, --force-export: Export .bbl/.bfl flights bbl_parser would otherwise skip as low-value
-                       (very short / low data density / minimal gyro activity).
-  -K, --keep: Keep the exported .csv/.headers.csv files (source folder, or -O/--output-dir).
-               A later --keep run uses an existing export (CSV and .headers.csv) instead of
-               decoding again; -F re-extracts.
+  -F, --force-export: Export .bbl/.bfl flights bbl_parser would otherwise skip as
+            low-value (very short / low data density / minimal gyro activity).
+  -K, --keep: Keep the exported .csv/.headers.csv files (source folder, or
+              -O/--output-dir). A later --keep run uses an existing export (CSV and
+              .headers.csv) instead of decoding; -F/--force-export re-extracts.
 
-=== PLOT TYPE SELECTION ===
+--- PLOT TYPE SELECTION ---
 
   --core           [default] Step Response, Gyro Spectrums, D-term Spectrums,
                    Setpoint vs Gyro, Gyro vs Unfiltered, Motor Spectrums,
@@ -65,7 +67,7 @@ Usage: ./blackbox_analyzer <input1> [<input2> ...] [OPTIONS]
   --desync         Motor vs eRPM plot only (needs eRPM telemetry). Desync
                    detection itself (Fallback tier) still runs without it.
 
-=== ANALYSIS OPTIONS ===
+--- ANALYSIS OPTIONS ---
 
   --butterworth    Show Butterworth PT1 cutoffs on gyro/D-term spectrum plots.
   --dps <value>    Deg/s threshold for detailed step response plots (positive number).
@@ -75,7 +77,7 @@ Usage: ./blackbox_analyzer <input1> [<input2> ...] [OPTIONS]
                         Its Td target always profiles the full file, ignoring
                         --start/--end; only its Td measurement is trimmed.
 
-=== TIME WINDOW ===
+--- TIME WINDOW ---
 
   --start <seconds>  Trim analysis to this offset onward, relative to the
                      start of the log. Omit to start at the log start.
@@ -85,7 +87,7 @@ Usage: ./blackbox_analyzer <input1> [<input2> ...] [OPTIONS]
                      analysis and plot (step response may skip if the
                      trimmed window is too short).
 
-=== GENERAL ===
+--- GENERAL ---
 
   --debug          Show detailed metadata during processing.
   -h, --help       Show this help message and exit.
