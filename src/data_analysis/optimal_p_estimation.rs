@@ -137,17 +137,13 @@ pub enum PRecommendation {
 impl PRecommendation {
     /// Short text for an `Optimal` recommendation, shared by the console, the legend and the
     /// report, so all three say the same thing. `None` for the other variants.
-    pub fn optimal_short_text(&self, current_p: u32) -> Option<String> {
+    pub fn optimal_short_text(&self) -> Option<String> {
         match self {
             PRecommendation::Optimal {
                 headroom_unquantified: true,
                 ..
-            } => Some(format!(
-                "No change suggested (P={current_p}), headroom possible"
-            )),
-            PRecommendation::Optimal { .. } => {
-                Some(format!("Current P is optimal (P={current_p})"))
-            }
+            } => Some("No change suggested, headroom possible".to_string()),
+            PRecommendation::Optimal { .. } => Some("Current P is optimal".to_string()),
             _ => None,
         }
     }
@@ -667,7 +663,7 @@ impl OptimalPAnalysis {
             rec @ PRecommendation::Optimal { .. } => {
                 output.push_str(&format!(
                     "  Recommendation: {}\n",
-                    rec.optimal_short_text(self.current_p).unwrap_or_default()
+                    rec.optimal_short_text().unwrap_or_default()
                 ));
             }
             PRecommendation::Increase { conservative_p, .. } => {
@@ -794,17 +790,17 @@ mod d_target_tests {
         // 18 ms is -28% against the 25 ms target: Case 8.
         let faster = low_noise_recommendation(18.0);
         assert_eq!(
-            faster.optimal_short_text(60).as_deref(),
-            Some("No change suggested (P=60), headroom possible")
+            faster.optimal_short_text().as_deref(),
+            Some("No change suggested, headroom possible")
         );
         // Within the band and slightly faster than target: plain optimal wording.
         let within = low_noise_recommendation(23.5);
         assert_eq!(
-            within.optimal_short_text(60).as_deref(),
-            Some("Current P is optimal (P=60)")
+            within.optimal_short_text().as_deref(),
+            Some("Current P is optimal")
         );
         // Increase has no Optimal short text.
-        assert_eq!(low_noise_recommendation(26.0).optimal_short_text(60), None);
+        assert_eq!(low_noise_recommendation(26.0).optimal_short_text(), None);
     }
 
     #[test]

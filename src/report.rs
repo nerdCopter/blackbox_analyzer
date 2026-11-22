@@ -449,8 +449,7 @@ pub fn generate_markdown_report(
                 let rec_text = match &analysis.recommendation {
                     rec @ PRecommendation::Optimal { reasoning, .. } => format!(
                         "{} — {}",
-                        rec.optimal_short_text(analysis.current_p)
-                            .unwrap_or_default(),
+                        rec.optimal_short_text().unwrap_or_default(),
                         reasoning
                     ),
                     PRecommendation::Increase {
@@ -1028,7 +1027,7 @@ mod tests {
         .expect("analysis");
         let short = analysis
             .recommendation
-            .optimal_short_text(60)
+            .optimal_short_text()
             .expect("optimal");
         let mut report = empty_report(Vec::new());
         report.optimal_p[0] = Some(analysis);

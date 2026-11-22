@@ -554,8 +554,7 @@ pub fn plot_step_response(
                         let rec_label = match &analysis.recommendation {
                             rec @ PRecommendation::Optimal { .. } => format!(
                                 "  Recommendation: {}",
-                                rec.optimal_short_text(analysis.current_p)
-                                    .unwrap_or_default()
+                                rec.optimal_short_text().unwrap_or_default()
                             ),
                             PRecommendation::Increase { conservative_p, .. } => {
                                 let p_delta =
