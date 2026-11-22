@@ -624,37 +624,13 @@ impl OptimalPAnalysis {
         format!(", D≈{} ({:+})", rec_d, rec_d as i64 - current_d as i64)
     }
 
-    /// Format analysis as human-readable console output
+    /// Format analysis as human-readable console output.
+    ///
+    /// Order: recommendation first, then the evidence behind it (same order as the legend and
+    /// the report).
     pub fn format_console_output(&self, axis_name: &str, d_range: Option<(u32, u32)>) -> String {
         let mut output = String::new();
-
-        // Header: axis name and Td measurement
-        output.push_str(&format!(
-            "{}: Td={:.1}ms (target: {:.1}±{:.1}ms, windows={})\n",
-            axis_name,
-            self.td_stats.median_ms,
-            self.td_target_ms,
-            self.td_tolerance_ms,
-            self.td_stats.num_samples,
-        ));
-        output.push_str(&format!("  Td source: {}\n", self.source_summary()));
-        output.push_str(&format!("  Noise: {}\n", self.noise_level.name()));
-
-        // Deviation
-        let deviation_sign = if self.td_deviation_percent > 0.0 {
-            "+"
-        } else {
-            ""
-        };
-        output.push_str(&format!(
-            "  Deviation: {}{:.1}% ({})\n",
-            deviation_sign,
-            self.td_deviation_percent,
-            self.td_deviation.name(),
-        ));
-
-        // Current P
-        output.push_str(&format!("  Current P={}\n", self.current_p));
+        output.push_str(&format!("{axis_name}:\n"));
 
         match &self.recommendation {
             rec @ PRecommendation::Optimal { .. } => {
@@ -686,10 +662,32 @@ impl OptimalPAnalysis {
             }
         }
 
-        // Flight clip, then reliability — always shown, after recommendation
+        // The console has no axis title, so it keeps the current P (the legend drops it).
+        output.push_str(&format!("  Current P={}\n", self.current_p));
+        output.push_str(&format!(
+            "  Td={:.1}ms (target: {:.1}±{:.1}ms, windows={})\n",
+            self.td_stats.median_ms,
+            self.td_target_ms,
+            self.td_tolerance_ms,
+            self.td_stats.num_samples,
+        ));
         if let Some(clip) = self.flight_clip_text() {
             output.push_str(&format!("  Flight clip: {clip}\n"));
         }
+
+        let deviation_sign = if self.td_deviation_percent > 0.0 {
+            "+"
+        } else {
+            ""
+        };
+        output.push_str(&format!(
+            "  Deviation: {}{:.1}% ({})\n",
+            deviation_sign,
+            self.td_deviation_percent,
+            self.td_deviation.name(),
+        ));
+        output.push_str(&format!("  Noise: {}\n", self.noise_level.name()));
+        output.push_str(&format!("  Td source: {}\n", self.source_summary()));
         output.push_str(&format!(
             "  {}: {}\n",
             self.td_stats.reliability_label(),

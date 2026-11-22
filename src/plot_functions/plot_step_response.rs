@@ -489,62 +489,8 @@ pub fn plot_step_response(
                             stroke_width: 0,
                         });
 
-                        // Td measurement
-                        series.push(PlotSeries {
-                            data: vec![],
-                            label: format!(
-                                "  Td: {:.1}ms (target: {:.1}±{:.1}ms, windows={})",
-                                analysis.td_stats.median_ms,
-                                analysis.td_target_ms,
-                                analysis.td_tolerance_ms,
-                                analysis.td_stats.num_samples,
-                            ),
-                            color: COLOR_OPTIMAL_P_TEXT,
-                            stroke_width: 0,
-                        });
-
-                        series.push(PlotSeries {
-                            data: vec![],
-                            label: format!("  Td source: {}", analysis.source_summary()),
-                            color: COLOR_OPTIMAL_P_TEXT,
-                            stroke_width: 0,
-                        });
-
-                        // Noise
-                        series.push(PlotSeries {
-                            data: vec![],
-                            label: format!("  Noise: {}", analysis.noise_level.name()),
-                            color: COLOR_OPTIMAL_P_TEXT,
-                            stroke_width: 0,
-                        });
-
-                        // Deviation
-                        let deviation_sign = if analysis.td_deviation_percent > 0.0 {
-                            "+"
-                        } else {
-                            ""
-                        };
-                        series.push(PlotSeries {
-                            data: vec![],
-                            label: format!(
-                                "  Deviation: {}{:.1}% ({})",
-                                deviation_sign,
-                                analysis.td_deviation_percent,
-                                analysis.td_deviation.name(),
-                            ),
-                            color: COLOR_OPTIMAL_P_TEXT,
-                            stroke_width: 0,
-                        });
-
-                        // Current P
-                        series.push(PlotSeries {
-                            data: vec![],
-                            label: format!("  Current P={}", analysis.current_p),
-                            color: COLOR_OPTIMAL_P_TEXT,
-                            stroke_width: 0,
-                        });
-
-                        // Recommendation — D-suffix helper
+                        // Order: recommendation first, then the evidence behind it. The axis
+                        // title already shows the current P, so it is not repeated here.
                         let d_range = pid_metadata
                             .get_axis(axis_index)
                             .and_then(|ax| ax.d_range_for_display(dmax_enabled));
@@ -586,8 +532,20 @@ pub fn plot_step_response(
                             stroke_width: 0,
                         });
 
-                        // Flight clip, then reliability — always shown, after recommendation;
-                        // reliability is orange when poor
+                        // Td measurement
+                        series.push(PlotSeries {
+                            data: vec![],
+                            label: format!(
+                                "  Td: {:.1}ms (target: {:.1}±{:.1}ms, windows={})",
+                                analysis.td_stats.median_ms,
+                                analysis.td_target_ms,
+                                analysis.td_tolerance_ms,
+                                analysis.td_stats.num_samples,
+                            ),
+                            color: COLOR_OPTIMAL_P_TEXT,
+                            stroke_width: 0,
+                        });
+
                         if let Some(clip) = analysis.flight_clip_text() {
                             series.push(PlotSeries {
                                 data: vec![],
@@ -596,6 +554,41 @@ pub fn plot_step_response(
                                 stroke_width: 0,
                             });
                         }
+
+                        // Deviation
+                        let deviation_sign = if analysis.td_deviation_percent > 0.0 {
+                            "+"
+                        } else {
+                            ""
+                        };
+                        series.push(PlotSeries {
+                            data: vec![],
+                            label: format!(
+                                "  Deviation: {}{:.1}% ({})",
+                                deviation_sign,
+                                analysis.td_deviation_percent,
+                                analysis.td_deviation.name(),
+                            ),
+                            color: COLOR_OPTIMAL_P_TEXT,
+                            stroke_width: 0,
+                        });
+
+                        // Noise
+                        series.push(PlotSeries {
+                            data: vec![],
+                            label: format!("  Noise: {}", analysis.noise_level.name()),
+                            color: COLOR_OPTIMAL_P_TEXT,
+                            stroke_width: 0,
+                        });
+
+                        series.push(PlotSeries {
+                            data: vec![],
+                            label: format!("  Td source: {}", analysis.source_summary()),
+                            color: COLOR_OPTIMAL_P_TEXT,
+                            stroke_width: 0,
+                        });
+
+                        // Reliability — always shown, last; orange when poor
                         {
                             let rel_text = format!(
                                 "  {}: {}",

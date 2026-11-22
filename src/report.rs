@@ -420,32 +420,7 @@ pub fn generate_markdown_report(
             if let Some(analysis) = opt {
                 writeln!(md, "### {}", AXIS_NAMES[axis_index])?;
                 writeln!(md)?;
-                writeln!(md, "- **Current P:** {}", analysis.current_p)?;
-                match (report.d_ranges[axis_index], analysis.current_d) {
-                    (Some((min, max)), _) => {
-                        writeln!(md, "- **Current D:** D-Min {}, D-Max {}", min, max)?
-                    }
-                    (None, Some(d)) => writeln!(md, "- **Current D:** {}", d)?,
-                    (None, None) => {}
-                }
                 let d_range = report.d_ranges[axis_index];
-                writeln!(
-                    md,
-                    "- **Td measured:** {:.1} ms ({} samples)",
-                    analysis.td_stats.median_ms, analysis.td_stats.num_samples
-                )?;
-                writeln!(
-                    md,
-                    "- **Td target:** {:.1} ms ± {:.1} ms",
-                    analysis.td_target_ms, analysis.td_tolerance_ms
-                )?;
-                writeln!(
-                    md,
-                    "- **Td deviation:** {:.1}% ({})",
-                    analysis.td_deviation_percent,
-                    analysis.td_deviation.name()
-                )?;
-                writeln!(md, "- **Noise level:** {}", analysis.noise_level.name())?;
                 let rec_text = match &analysis.recommendation {
                     rec @ PRecommendation::Optimal { reasoning, .. } => format!(
                         "{} — {}",
@@ -474,17 +449,43 @@ pub fn generate_markdown_report(
                     ),
                     PRecommendation::Investigate { issue } => format!("Investigate — {}", issue),
                 };
+                // Order: recommendation first, then the evidence behind it.
                 writeln!(md, "- **Recommendation:** {}", rec_text)?;
+                writeln!(md, "- **Current P:** {}", analysis.current_p)?;
+                match (report.d_ranges[axis_index], analysis.current_d) {
+                    (Some((min, max)), _) => {
+                        writeln!(md, "- **Current D:** D-Min {}, D-Max {}", min, max)?
+                    }
+                    (None, Some(d)) => writeln!(md, "- **Current D:** {}", d)?,
+                    (None, None) => {}
+                }
+                writeln!(
+                    md,
+                    "- **Td measured:** {:.1} ms ({} samples)",
+                    analysis.td_stats.median_ms, analysis.td_stats.num_samples
+                )?;
+                writeln!(
+                    md,
+                    "- **Td target:** {:.1} ms ± {:.1} ms",
+                    analysis.td_target_ms, analysis.td_tolerance_ms
+                )?;
                 if let Some(clip) = analysis.flight_clip_text() {
                     writeln!(md, "- **Flight clip:** {}", clip)?;
                 }
+                writeln!(
+                    md,
+                    "- **Td deviation:** {:.1}% ({})",
+                    analysis.td_deviation_percent,
+                    analysis.td_deviation.name()
+                )?;
+                writeln!(md, "- **Noise level:** {}", analysis.noise_level.name())?;
+                writeln!(md, "- **Source:** {}", analysis.source_summary())?;
                 writeln!(
                     md,
                     "- **{}:** {}",
                     analysis.td_stats.reliability_label(),
                     analysis.td_stats.reliability_details()
                 )?;
-                writeln!(md, "- **Source:** {}", analysis.source_summary())?;
                 writeln!(md)?;
             }
         }
