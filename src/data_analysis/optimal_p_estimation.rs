@@ -266,6 +266,9 @@ pub struct OptimalPAnalysis {
     pub source_events: usize,
     /// Number of flight files that contributed to the physics Td target.
     pub source_files: usize,
+    /// Spread of the throttle-punch torque/inertia ratios (half inter-quartile range / median).
+    /// A wide spread means the punches disagree, so the Td target is less certain.
+    pub source_spread: Option<f64>,
 }
 
 impl OptimalPAnalysis {
@@ -365,6 +368,7 @@ impl OptimalPAnalysis {
             td_tolerance_ms,
             source_events: 0,
             source_files: 0,
+            source_spread: None,
         })
     }
 
@@ -544,16 +548,19 @@ impl OptimalPAnalysis {
     }
 
     /// Td source text shared by the legend, console and report, for example
-    /// `File Group — 11 flights, 94 throttle-punches`.
+    /// `File Group — 11 flights, 94 throttle-punches, punch spread=21%`.
     pub fn source_summary(&self) -> String {
         let label = if self.source_files > 1 {
             "File Group"
         } else {
             "Single File"
         };
+        let spread = self
+            .source_spread
+            .map_or_else(String::new, |f| format!(", punch spread={:.0}%", f * 100.0));
         format!(
-            "{} — {} flights, {} throttle-punches",
-            label, self.source_files, self.source_events
+            "{} — {} flights, {} throttle-punches{}",
+            label, self.source_files, self.source_events, spread
         )
     }
 
@@ -799,6 +806,11 @@ mod d_target_tests {
         assert_eq!(
             a.source_summary(),
             "File Group — 11 flights, 94 throttle-punches"
+        );
+        a.source_spread = Some(0.214);
+        assert_eq!(
+            a.source_summary(),
+            "File Group — 11 flights, 94 throttle-punches, punch spread=21%"
         );
     }
 

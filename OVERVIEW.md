@@ -297,7 +297,7 @@ Physics-derived P gain optimization using a Torque-Inertia Profiler that measure
 
 - **Output:** Console and PNG legend overlay (identical content) per axis:
   - `Td:` — measured Td mean with target `±tolerance` and `windows=` count
-  - `Td source:` — `File Group` (multi-file run) or `Single File`, with flight count and throttle-punch count that produced the physics target
+  - `Td source:` — `File Group` (multi-file run) or `Single File`, with flight count, throttle-punch count and the punch spread (half inter-quartile range / median of the punch ratios) that produced the physics target. A wide spread means the punches disagree and the target is less certain. The same text appears in the console, report and PNG
   - `Noise:` — HF D-term energy level (`LOW` / `MODERATE` / `HIGH` / `UNKNOWN`) for the current flight
   - `Deviation:` — % difference between measured Td and physics target, with zone label
   - `Current P=` — P gain value from the flight's metadata
