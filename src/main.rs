@@ -2074,6 +2074,7 @@ INFO: Skipping Step Response input data filtering for {input_file_str}: {reason}
     }
 
     let optimal_p_for_report = optimal_p_analyses.clone();
+    let optimal_p_skip_for_report = optimal_p_skip_reasons.clone();
 
     // Create RAII guard BEFORE changing directory if needed
     let _cwd_guard = if let Some(output_dir) = output_dir {
@@ -2521,6 +2522,7 @@ INFO: Skipping Step Response input data filtering for {input_file_str}: {reason}
         d_ranges: d_ranges_for_report,
         step_reports,
         optimal_p: optimal_p_for_report,
+        optimal_p_skip: optimal_p_skip_for_report,
         gyro_analysis,
         dterm_results,
         bode_results,

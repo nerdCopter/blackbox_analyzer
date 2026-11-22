@@ -69,6 +69,8 @@ pub struct FlightReport {
     pub d_ranges: [Option<(u32, u32)>; AXIS_COUNT],
     pub step_reports: Vec<StepAxisReport>,
     pub optimal_p: [Option<OptimalPAnalysis>; AXIS_COUNT],
+    /// Per-axis reason Optimal P was skipped (same text as the console and PNG legend).
+    pub optimal_p_skip: [Option<String>; AXIS_COUNT],
     pub gyro_analysis: Option<GyroAnalysisResult>,
     pub dterm_results: Vec<DTermAxisResult>,
     pub bode_results: Vec<BodeAxisResult>,
@@ -401,11 +403,20 @@ pub fn generate_markdown_report(
     }
 
     // --- Optimal P Estimation ---
-    let has_optimal_p = report.optimal_p.iter().any(|o| o.is_some());
+    let has_optimal_p = report.optimal_p.iter().any(|o| o.is_some())
+        || report.optimal_p_skip.iter().any(|s| s.is_some());
     if has_optimal_p {
         writeln!(md, "## Optimal P Estimation")?;
         writeln!(md)?;
         for (axis_index, opt) in report.optimal_p.iter().enumerate() {
+            if opt.is_none() {
+                if let Some(reason) = &report.optimal_p_skip[axis_index] {
+                    writeln!(md, "### {}", AXIS_NAMES[axis_index])?;
+                    writeln!(md)?;
+                    writeln!(md, "- {}", reason)?;
+                    writeln!(md)?;
+                }
+            }
             if let Some(analysis) = opt {
                 writeln!(md, "### {}", AXIS_NAMES[axis_index])?;
                 writeln!(md)?;
@@ -937,6 +948,7 @@ mod tests {
             d_ranges: Default::default(),
             step_reports,
             optimal_p: Default::default(),
+            optimal_p_skip: Default::default(),
             gyro_analysis: None,
             dterm_results: Vec::new(),
             bode_results: Vec::new(),
@@ -983,6 +995,22 @@ mod tests {
         generate_markdown_report(&empty_report(vec![step]), &path).expect("report");
         let text = fs::read_to_string(&path).expect("read");
         assert!(text.contains("- **Peak Value:** 1.200"), "{text}");
+    }
+
+    // Spec: a skipped axis appears in the report with the same reason text as the console and
+    // legend, and no recommendation.
+    #[test]
+    fn report_carries_the_optimal_p_skip_reason() {
+        let reason = "SKIPPED: insufficient throttle dynamics (2 events, need >=5)".to_string();
+        let mut report = empty_report(Vec::new());
+        report.optimal_p_skip[0] = Some(reason.clone());
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("report.md");
+        generate_markdown_report(&report, &path).expect("report");
+        let text = fs::read_to_string(&path).expect("read");
+        assert!(text.contains("## Optimal P Estimation"), "{text}");
+        assert!(text.contains(&format!("- {reason}")), "{text}");
+        assert!(!text.contains("**Recommendation:**"), "{text}");
     }
 
     // Spec: the report carries the shared Optimal short text, then the long reasoning.
