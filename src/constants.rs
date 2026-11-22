@@ -377,9 +377,10 @@ pub const DTERM_HF_ENERGY_THRESHOLD: f64 = 0.15; // 15% of total D-term energy (
 pub const DTERM_HF_ENERGY_MODERATE: f64 = 0.10; // 10% of total D-term energy (moderate noise level)
 
 // Response consistency quality control
-// Ensures Td measurements are reliable across multiple step responses
-pub const TD_CONSISTENCY_MIN_THRESHOLD: f64 = 0.70; // 70% of responses within tolerance (was 85%)
-pub const TD_COEFFICIENT_OF_VARIATION_MAX: f64 = 0.40; // 40% CV (std/mean) is acceptable for noisy flight logs (was 20%)
+// Ensures Td measurements are reliable across multiple step responses.
+// Spread is robust: median absolute deviation about the median, so a few failed windows do not dominate.
+pub const TD_CONSISTENCY_MIN_THRESHOLD: f64 = 0.70; // 70% of responses within TD_COEFFICIENT_OF_VARIATION_MAX of the median (was 85%)
+pub const TD_COEFFICIENT_OF_VARIATION_MAX: f64 = 0.40; // 40% robust CV (1.4826*MAD/median) is acceptable for noisy flight logs (was 20%)
 
 // P headroom estimation multipliers
 // Conservative approach for users who want safe incremental improvements
@@ -398,7 +399,8 @@ pub const P_REDUCTION_AGGRESSIVE_MULTIPLIER: f64 = 0.90; // -10% from current P
 // Td statistics computation constants
 pub const MIN_TD_MS: f64 = 0.1; // Minimum valid Td (time to 50%) in milliseconds (domain-appropriate threshold)
 pub const TD_MEAN_EPSILON: f64 = 1e-12; // Threshold for near-zero mean values (avoid division by zero)
-pub const TD_SAMPLES_MIN_FOR_STDDEV: usize = 2; // Minimum samples needed for std dev calculation
+pub const TD_SAMPLES_MIN_FOR_STDDEV: usize = 2; // Minimum samples needed for the spread (MAD) calculation
+pub const TD_MAD_TO_SIGMA: f64 = 1.4826; // Scales a median absolute deviation to a standard deviation for normally distributed data
 
 // Td deviation thresholds (percentage deviation from target)
 // Deviation thresholds for classifying Td behavior

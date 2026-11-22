@@ -494,7 +494,7 @@ pub fn plot_step_response(
                             data: vec![],
                             label: format!(
                                 "  Td: {:.1}ms (target: {:.1}±{:.1}ms, windows={})",
-                                analysis.td_stats.mean_ms,
+                                analysis.td_stats.median_ms,
                                 analysis.td_target_ms,
                                 analysis.td_tolerance_ms,
                                 analysis.td_stats.num_samples,

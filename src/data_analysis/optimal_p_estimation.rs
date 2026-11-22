@@ -134,63 +134,75 @@ pub enum PRecommendation {
 /// Statistics for Td measurements across multiple step responses
 #[derive(Debug, Clone)]
 pub struct TdStatistics {
-    pub mean_ms: f64,
+    /// Median Td in ms. The median is used because single windows can fail deconvolution and
+    /// return Td values many times the typical one; a mean would follow those outliers.
+    pub median_ms: f64,
+    /// Robust coefficient of variation: `TD_MAD_TO_SIGMA * MAD / median`. `None` when there are
+    /// too few samples.
     pub coefficient_of_variation: Option<f64>,
     pub num_samples: usize,
-    pub consistency: f64, // Fraction of samples within ±1 std dev
+    /// Fraction of samples within `TD_COEFFICIENT_OF_VARIATION_MAX * median` of the median.
+    pub consistency: f64,
+}
+
+/// Median of a non-empty slice already sorted ascending.
+fn sorted_median(sorted: &[f64]) -> f64 {
+    let n = sorted.len();
+    if n % 2 == 0 {
+        (sorted[n / 2 - 1] + sorted[n / 2]) / 2.0
+    } else {
+        sorted[n / 2]
+    }
 }
 
 impl TdStatistics {
     /// Calculate statistics from array of Td values (in milliseconds)
     pub fn from_samples(td_samples_ms: &[f64]) -> Option<Self> {
-        let td_samples_ms: Vec<f64> = td_samples_ms
+        let mut sorted: Vec<f64> = td_samples_ms
             .iter()
             .copied()
             .filter(|x| x.is_finite())
             .collect();
 
-        if td_samples_ms.is_empty() {
+        if sorted.is_empty() {
             return None;
         }
+        sorted.sort_by(|a, b| a.total_cmp(b));
 
-        let n = td_samples_ms.len() as f64;
-        let mean = td_samples_ms.iter().sum::<f64>() / n;
+        let n = sorted.len() as f64;
+        let median = sorted_median(&sorted);
 
         // Use epsilon-based comparison to avoid division by near-zero values
-        if mean.abs() <= TD_MEAN_EPSILON {
+        if median.abs() <= TD_MEAN_EPSILON {
             return None;
         }
 
-        // Calculate sample variance with Bessel's correction (divide by n-1)
-        // For small samples, set coefficient_of_variation to None to indicate insufficient data
-        let coefficient_of_variation = if td_samples_ms.len() < TD_SAMPLES_MIN_FOR_STDDEV {
+        // Robust spread: median absolute deviation, scaled to match a standard deviation for
+        // normally distributed data. A few outlier windows do not inflate it.
+        // Too few samples: no spread estimate (coefficient_of_variation None).
+        let coefficient_of_variation = if sorted.len() < TD_SAMPLES_MIN_FOR_STDDEV {
             None
         } else {
-            let sum_sq_dev = td_samples_ms
-                .iter()
-                .map(|&x| (x - mean).powi(2))
-                .sum::<f64>();
-            let variance = sum_sq_dev / (n - 1.0);
-            let std_dev = variance.sqrt();
-            Some(std_dev / mean)
+            let mut abs_dev: Vec<f64> = sorted.iter().map(|&x| (x - median).abs()).collect();
+            abs_dev.sort_by(|a, b| a.total_cmp(b));
+            Some(TD_MAD_TO_SIGMA * sorted_median(&abs_dev) / median)
         };
 
-        // Calculate consistency: fraction within ±1 std dev
-        // When coefficient_of_variation is None (too few samples), consistency is perfect (1.0)
-        // Otherwise, tolerance = cv * mean and calculate fraction within range
-        let consistency = coefficient_of_variation.map_or(1.0, |cv| {
-            let tolerance = cv * mean;
-            let within_range = td_samples_ms
+        // Consistency: fraction of samples within the allowed relative spread of the median.
+        // When coefficient_of_variation is None (too few samples), consistency is perfect (1.0).
+        let consistency = coefficient_of_variation.map_or(1.0, |_| {
+            let tolerance = TD_COEFFICIENT_OF_VARIATION_MAX * median.abs();
+            let within_range = sorted
                 .iter()
-                .filter(|&&x| (x - mean).abs() <= tolerance)
+                .filter(|&&x| (x - median).abs() <= tolerance)
                 .count();
             within_range as f64 / n
         });
 
         Some(TdStatistics {
-            mean_ms: mean,
+            median_ms: median,
             coefficient_of_variation,
-            num_samples: td_samples_ms.len(),
+            num_samples: sorted.len(),
             consistency,
         })
     }
@@ -305,7 +317,7 @@ impl OptimalPAnalysis {
         }
 
         // Calculate deviation from target (safe: td_target_ms validated above)
-        let td_deviation_percent = ((td_stats.mean_ms - td_target_ms) / td_target_ms) * 100.0;
+        let td_deviation_percent = ((td_stats.median_ms - td_target_ms) / td_target_ms) * 100.0;
 
         // Classify deviation
         let td_deviation = if td_deviation_percent > TD_DEVIATION_SIGNIFICANTLY_SLOWER_THRESHOLD {
@@ -414,7 +426,7 @@ impl OptimalPAnalysis {
                         reasoning: format!(
                             "Response time is in target range ({:.1}ms) with low noise levels. \
                              Current P ({}) appears optimal.",
-                            td_stats.mean_ms, current_p
+                            td_stats.median_ms, current_p
                         ),
                     }
                 }
@@ -425,7 +437,7 @@ impl OptimalPAnalysis {
                 reasoning: format!(
                     "Response time is in target range ({:.1}ms) with moderate noise levels. \
                      Current P ({}) appears optimal for this aircraft.",
-                    td_stats.mean_ms, current_p
+                    td_stats.median_ms, current_p
                 ),
             },
 
@@ -517,7 +529,7 @@ impl OptimalPAnalysis {
                     reasoning: format!(
                         "Response time ({:.1}ms) is in target range. Current P ({}) appears appropriate, \
                          but monitor motor temperatures (D-term data unavailable for noise analysis).",
-                        td_stats.mean_ms, current_p
+                        td_stats.median_ms, current_p
                     ),
                 },
                 TdDeviation::SignificantlyFaster => PRecommendation::Optimal {
@@ -589,7 +601,7 @@ impl OptimalPAnalysis {
         output.push_str(&format!(
             "{}: Td={:.1}ms (target: {:.1}±{:.1}ms, windows={})\n",
             axis_name,
-            self.td_stats.mean_ms,
+            self.td_stats.median_ms,
             self.td_target_ms,
             self.td_tolerance_ms,
             self.td_stats.num_samples,
@@ -709,6 +721,51 @@ mod d_target_tests {
                 .collect(),
         );
         assert_eq!(spread.reliability_label(), "Unreliable");
+    }
+
+    #[test]
+    fn td_statistics_median_ignores_outlier_windows() {
+        // 100 windows at 20 ms plus 3 failed windows at 200 ms.
+        let mut samples = vec![20.0; 100];
+        samples.extend([200.0; 3]);
+        let stats = TdStatistics::from_samples(&samples).expect("stats");
+        assert_eq!(stats.median_ms, 20.0);
+        assert_eq!(stats.coefficient_of_variation, Some(0.0));
+        assert!(
+            stats.is_consistent(),
+            "outliers must not make it Unreliable"
+        );
+    }
+
+    #[test]
+    fn td_statistics_median_of_even_count_is_midpoint() {
+        let stats = TdStatistics::from_samples(&[40.0, 10.0, 30.0, 20.0]).expect("stats");
+        assert_eq!(stats.median_ms, 25.0);
+        // MAD of [15, 5, 5, 15] about 25 is 10; CV = 1.4826 * 10 / 25.
+        let cv = stats.coefficient_of_variation.expect("cv");
+        assert!((cv - TD_MAD_TO_SIGMA * 10.0 / 25.0).abs() < 1e-12, "{cv}");
+    }
+
+    #[test]
+    fn td_statistics_wide_spread_stays_unreliable() {
+        // Half the windows near 10 ms and half near 50 ms is a real spread, not outliers.
+        let samples: Vec<f64> = (0..40)
+            .map(|i| if i % 2 == 0 { 10.0 } else { 50.0 })
+            .collect();
+        let stats = TdStatistics::from_samples(&samples).expect("stats");
+        assert!(!stats.is_consistent());
+        assert_eq!(stats.consistency, 0.0);
+    }
+
+    #[test]
+    fn td_statistics_single_sample_has_no_spread() {
+        let stats = TdStatistics::from_samples(&[22.0]).expect("stats");
+        assert_eq!(stats.median_ms, 22.0);
+        assert_eq!(stats.coefficient_of_variation, None);
+        assert!(
+            !stats.is_consistent(),
+            "one sample is below the minimum count"
+        );
     }
 
     #[test]

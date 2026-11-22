@@ -307,10 +307,12 @@ Physics-derived P gain optimization using a Torque-Inertia Profiler that measure
   - When profiling is skipped (insufficient punch events), a skip reason replaces the above. See **Consistency and Reliability Interpretation** below.
 
 - **Consistency and Reliability Interpretation (CV):**
-  - **CV (Coefficient of Variation)** = standard deviation / mean of individual Td measurements across all valid step-response windows. It quantifies how scattered the measurements are relative to their average.
+  - **Td value:** the **median** of the individual Td measurements across all valid step-response windows (a plain mean follows the few windows that fail deconvolution and return Td of 100 ms or more).
+  - **CV (robust coefficient of variation)** = `TD_MAD_TO_SIGMA` (1.4826) × median absolute deviation / median. It quantifies how scattered the typical windows are, and a few outlier windows do not inflate it.
+  - **Consistency** = fraction of windows within `TD_COEFFICIENT_OF_VARIATION_MAX` (40%) of the median. It must be at least `TD_CONSISTENCY_MIN_THRESHOLD`.
   - **Low CV:** Td measurements are tightly clustered — the log contains clean, repeatable dynamics and recommendations are trustworthy.
   - **High CV (exceeds `TD_COEFFICIENT_OF_VARIATION_MAX`):** Td measurements vary widely across windows — `Unreliable:` is shown (orange) in both console and PNG. Recommendations should be treated with caution.
-  - **CV = N/A:** Fewer than `TD_SAMPLES_MIN_FOR_STDDEV` valid Td samples were available; standard deviation cannot be computed. The mean is still reported and `CV=N/A` appears in the reliability line.
+  - **CV = N/A:** Fewer than `TD_SAMPLES_MIN_FOR_STDDEV` valid Td samples were available; the spread cannot be computed. The median is still reported and `CV=N/A` appears in the reliability line.
   - **Setpoint Authority classification:** Always-visible line in both console and PNG. Uses the **mean** of per-window max setpoints (not the maximum) to classify the flight:
     - `LOW` (`mean < 100 dps`, orange) — hover/slow-cruise inputs; all P:D recommendations are still shown, but the pilot should treat them with caution.
     - `MODERATE` (`100–250 dps`) — normal sport/freestyle inputs.
