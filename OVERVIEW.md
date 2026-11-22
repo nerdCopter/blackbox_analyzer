@@ -291,7 +291,7 @@ Physics-derived P gain optimization using a Torque-Inertia Profiler that measure
 
 - **Recommendation Types:**
   - **P Increase:** Td slower than target with acceptable noise → P is conservative
-  - **Optimal:** Td within target range or at physical limits → P is well-matched. With low noise, a Td that is already faster than the target (negative deviation) is Optimal; the small P headroom is offered only at or slower than the target.
+  - **Optimal:** Td within target range or at physical limits → P is well-matched. With low noise, a Td that is already faster than the target (negative deviation, including significantly faster) is Optimal; the small P headroom is offered only at or slower than the target.
   - **P Decrease:** Td faster than target with high noise → P is too high (rare)
   - **Investigate:** Measurements suggest mechanical issues or abnormal dynamics
 
