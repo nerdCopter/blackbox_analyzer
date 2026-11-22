@@ -296,7 +296,7 @@ Physics-derived P gain optimization using a Torque-Inertia Profiler that measure
   - **Investigate:** Measurements suggest mechanical issues or abnormal dynamics
 
 - **Output:** Console and PNG legend overlay (identical content) per axis:
-  - `Td:` — measured Td mean with target `±tolerance` and `windows=` count
+  - `Td:` — measured Td median with target `±tolerance` and `windows=` count. Windows overlap (stride = 2 s / `SUPERPOSITION_FACTOR`), so `windows=` overstates independent data; independent windows are about the analysed duration / 2 s. PIDtoolbox keeps fewer windows (stride 2 s / 3, 7 or 10 by file length), so its `n` is lower for the same log
   - `Td source:` — flight count, punch count and spread of the throttle punches that produced the physics target, for example `4 flights, 14 punches, spread 32%`. The spread is the half inter-quartile range of the punch ratios over their median: the middle half of the punches lie within about that percentage of the typical one. A wide spread means the punches disagree and the target is less certain. The same text appears in the console, report and PNG
   - `Noise:` — HF D-term energy level (`LOW` / `MODERATE` / `HIGH` / `UNKNOWN`) for the current flight
   - `Deviation:` — % difference between measured Td and physics target, with zone label
