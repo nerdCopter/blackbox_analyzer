@@ -269,6 +269,9 @@ pub struct OptimalPAnalysis {
     /// Spread of the throttle-punch torque/inertia ratios (half inter-quartile range / median).
     /// A wide spread means the punches disagree, so the Td target is less certain.
     pub source_spread: Option<f64>,
+    /// Lowest and highest punch ratio relative to the median (fractions). Shown instead of the
+    /// spread when there are fewer than `TORQUE_PROFILER_RANGE_BELOW_EVENTS` punches.
+    pub source_range: Option<(f64, f64)>,
 }
 
 impl OptimalPAnalysis {
@@ -369,6 +372,7 @@ impl OptimalPAnalysis {
             source_events: 0,
             source_files: 0,
             source_spread: None,
+            source_range: None,
         })
     }
 
@@ -550,16 +554,23 @@ impl OptimalPAnalysis {
     }
 
     /// Td source text shared by the legend, console and report, for example
-    /// `File Group — 11 flights, 94 throttle-punches, punch spread=21%`.
+    /// `File Group — 11 flights, 94 throttle-punches, punch spread=21%`. With fewer than
+    /// `TORQUE_PROFILER_RANGE_BELOW_EVENTS` punches it shows `punch range=-8%..+21%` instead.
     pub fn source_summary(&self) -> String {
         let label = if self.source_files > 1 {
             "File Group"
         } else {
             "Single File"
         };
-        let spread = self
-            .source_spread
-            .map_or_else(String::new, |f| format!(", punch spread={:.0}%", f * 100.0));
+        // With few punches the half inter-quartile range uses only two middle values and
+        // understates the scatter, so show the full range instead.
+        let spread = match (self.source_range, self.source_spread) {
+            (Some((lo, hi)), _) if self.source_events < TORQUE_PROFILER_RANGE_BELOW_EVENTS => {
+                format!(", punch range={:+.0}%..{:+.0}%", lo * 100.0, hi * 100.0)
+            }
+            (_, Some(f)) => format!(", punch spread={:.0}%", f * 100.0),
+            _ => String::new(),
+        };
         format!(
             "{} — {} flights, {} throttle-punches{}",
             label, self.source_files, self.source_events, spread
@@ -850,6 +861,19 @@ mod d_target_tests {
         assert_eq!(
             a.source_summary(),
             "File Group — 11 flights, 94 throttle-punches, punch spread=21%"
+        );
+        // Few punches: the range replaces the spread.
+        a.source_events = 5;
+        a.source_range = Some((-0.082, 0.212));
+        assert_eq!(
+            a.source_summary(),
+            "File Group — 11 flights, 5 throttle-punches, punch range=-8%..+21%"
+        );
+        // Enough punches: the spread is shown again.
+        a.source_events = TORQUE_PROFILER_RANGE_BELOW_EVENTS;
+        assert_eq!(
+            a.source_summary(),
+            "File Group — 11 flights, 10 throttle-punches, punch spread=21%"
         );
     }
 
