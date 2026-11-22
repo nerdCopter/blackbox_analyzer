@@ -9,8 +9,8 @@ use crate::constants::{
     COLOR_OPTIMAL_P_DIVIDER, COLOR_OPTIMAL_P_HEADER, COLOR_OPTIMAL_P_RECOMMENDATION,
     COLOR_OPTIMAL_P_SKIP, COLOR_OPTIMAL_P_TEXT, COLOR_OPTIMAL_P_WARNING,
     COLOR_STEP_RESPONSE_COMBINED, COLOR_STEP_RESPONSE_HIGH_SP, COLOR_STEP_RESPONSE_LOW_SP,
-    LINE_WIDTH_PLOT, LOW_AUTHORITY_SETPOINT_THRESHOLD_DEG_S, RESPONSE_LENGTH_S, STEADY_STATE_END_S,
-    STEADY_STATE_START_S,
+    LINE_WIDTH_STEP_RESPONSE, LOW_AUTHORITY_SETPOINT_THRESHOLD_DEG_S, RESPONSE_LENGTH_S,
+    STEADY_STATE_END_S, STEADY_STATE_START_S,
 };
 use crate::data_analysis::calc_step_response; // For average_responses
 use crate::data_analysis::calc_step_response::{compute_setpoint_authority, SetpointAuthority};
@@ -99,7 +99,7 @@ pub fn plot_step_response(
     let color_high_sp: RGBColor = *COLOR_STEP_RESPONSE_HIGH_SP;
     let color_combined: RGBColor = *COLOR_STEP_RESPONSE_COMBINED;
     let color_low_sp: RGBColor = *COLOR_STEP_RESPONSE_LOW_SP;
-    let line_stroke_plot = LINE_WIDTH_PLOT;
+    let line_stroke_plot = LINE_WIDTH_STEP_RESPONSE;
 
     let output_file_step = if display.show_legend {
         format!(
