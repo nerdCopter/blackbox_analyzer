@@ -665,11 +665,8 @@ impl OptimalPAnalysis {
         // The console has no axis title, so it keeps the current P (the legend drops it).
         output.push_str(&format!("  Current P={}\n", self.current_p));
         output.push_str(&format!(
-            "  Td={:.1}ms (target: {:.1}±{:.1}ms, windows={})\n",
-            self.td_stats.median_ms,
-            self.td_target_ms,
-            self.td_tolerance_ms,
-            self.td_stats.num_samples,
+            "  Td={:.1}ms (target: {:.1}±{:.1}ms)\n",
+            self.td_stats.median_ms, self.td_target_ms, self.td_tolerance_ms,
         ));
         if let Some(clip) = self.flight_clip_text() {
             output.push_str(&format!("  Flight clip: {clip}\n"));

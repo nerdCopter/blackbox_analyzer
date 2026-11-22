@@ -536,11 +536,10 @@ pub fn plot_step_response(
                         series.push(PlotSeries {
                             data: vec![],
                             label: format!(
-                                "  Td: {:.1}ms (target: {:.1}±{:.1}ms, windows={})",
+                                "  Td: {:.1}ms (target: {:.1}±{:.1}ms)",
                                 analysis.td_stats.median_ms,
                                 analysis.td_target_ms,
                                 analysis.td_tolerance_ms,
-                                analysis.td_stats.num_samples,
                             ),
                             color: COLOR_OPTIMAL_P_TEXT,
                             stroke_width: 0,
