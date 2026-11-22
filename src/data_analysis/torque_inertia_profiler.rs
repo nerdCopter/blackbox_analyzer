@@ -35,9 +35,6 @@ pub struct AxisProfile {
     /// Spread as a fraction of the median (half inter-quartile range / median).
     /// Used for tolerance estimation. None if fewer than 4 events.
     pub ratio_spread_fraction: Option<f64>,
-    /// Lowest and highest punch ratio relative to the median, as fractions
-    /// (`(min / median - 1, max / median - 1)`). Shown instead of the spread for few punches.
-    pub ratio_range_fraction: Option<(f64, f64)>,
     /// Number of valid throttle-punch events used to compute this profile.
     pub event_count: usize,
 }
@@ -70,12 +67,9 @@ impl AxisProfile {
             None
         };
 
-        let ratio_range_fraction = Some((ratios[0] / median - 1.0, ratios[n - 1] / median - 1.0));
-
         AxisProfile {
             torque_inertia_ratio: Some(median),
             ratio_spread_fraction,
-            ratio_range_fraction,
             event_count: n,
         }
     }

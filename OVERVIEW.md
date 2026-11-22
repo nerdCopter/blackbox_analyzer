@@ -297,7 +297,7 @@ Physics-derived P gain optimization using a Torque-Inertia Profiler that measure
 
 - **Output:** Console and PNG legend overlay (identical content) per axis:
   - `Td:` — measured Td mean with target `±tolerance` and `windows=` count
-  - `Td source:` — `File Group` (multi-file run) or `Single File`, with flight count, throttle-punch count and the punch spread (half inter-quartile range / median of the punch ratios) that produced the physics target. A wide spread means the punches disagree and the target is less certain. With fewer than `TORQUE_PROFILER_RANGE_BELOW_EVENTS` (10) punches, the lowest and highest punch relative to the median (`punch range=-8%..+21%`) is shown instead, because the spread uses only two middle values. The same text appears in the console, report and PNG
+  - `Td source:` — flight count, punch count and spread of the throttle punches that produced the physics target, for example `4 flights, 14 punches, spread 32%`. The spread is the half inter-quartile range of the punch ratios over their median: the middle half of the punches lie within about that percentage of the typical one. A wide spread means the punches disagree and the target is less certain. The same text appears in the console, report and PNG
   - `Noise:` — HF D-term energy level (`LOW` / `MODERATE` / `HIGH` / `UNKNOWN`) for the current flight
   - `Deviation:` — % difference between measured Td and physics target, with zone label
   - `Current P=` — P gain value from the flight's metadata
@@ -323,7 +323,7 @@ Physics-derived P gain optimization using a Torque-Inertia Profiler that measure
   - **High CV without LOW authority:** If the consistency warning fires but `Setpoint Authority` is `MODERATE` or `HIGH`, the scatter is not caused by low-energy hover inputs. Remaining causes include propwash, inconsistent maneuvers, and oscillation from over-P. **If gains feel high, treat this combination as a prompt to verify the craft is not oscillating before acting on any recommendation.**
   - **Summary of dependability signals in output:**
     - `windows=` on the Td line — number of valid step-response windows contributing to the Td mean; more windows = more statistical weight
-    - `Td source:` — flight and throttle-punch counts that calibrated the physics target; `File Group` means data was pooled across multiple logs
+    - `Td source:` — flight and punch counts that calibrated the physics target; more than one flight means data was pooled across multiple logs
     - `Reliable:` / `Unreliable:` with `Consistency %` and `CV` — how repeatable the per-flight step-response measurements are (independent of how many punches fed the physics target)
     - `Setpoint Authority:` — mean setpoint level across valid windows; `LOW` indicates hover/gentle inputs that may reduce step-response quality
     - Noise level (`LOW` / `MODERATE` / `HIGH`) — HF D-term energy for the current flight; high noise limits safe P increase

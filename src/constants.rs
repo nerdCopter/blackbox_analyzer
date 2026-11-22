@@ -445,10 +445,6 @@ pub const THROTTLE_RESPONSE_WINDOW_MS: f64 = 150.0;
 /// Analysis is skipped (with a console warning) when this threshold is not met.
 pub const TORQUE_PROFILER_MIN_EVENTS: usize = 5;
 
-/// Below this many punches the Td source text shows the punch ratio range instead of the
-/// half inter-quartile spread, which uses only two middle values and understates the scatter.
-pub const TORQUE_PROFILER_RANGE_BELOW_EVENTS: usize = 10;
-
 /// Minimum normalised command delta (0–1) for a punch event to be valid.
 pub const TORQUE_PROFILER_MIN_CMD_DELTA_NORMALIZED: f64 = 0.10;
 
