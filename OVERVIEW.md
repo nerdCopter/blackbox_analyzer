@@ -283,7 +283,7 @@ Needs step-response windows, `.headers.csv`, D-term data and at least `TORQUE_PR
 
 - **Key Constants (`src/constants.rs`):**
   - `THROTTLE_PUNCH_MIN_DELTA` — minimum throttle step (0–1000 units) to qualify as a punch
-  - `THROTTLE_PUNCH_WINDOW_MS` — detection window for the throttle rise
+  - `THROTTLE_PUNCH_WINDOW_MS` — detection window for the throttle rise (100 ms; a hand throttle bump takes 100–250 ms, so 50 ms missed most real punches)
   - `THROTTLE_RESPONSE_WINDOW_MS` — gyro response measurement window
   - `TORQUE_PROFILER_SETTLE_MS` — settle time (ms) skipped at response start (ESC/motor lag allowance); converted to samples at runtime so it is correct at all loop rates
   - `TORQUE_PROFILER_MIN_EVENTS` — minimum punches required for a reliable profile
