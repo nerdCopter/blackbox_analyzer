@@ -143,7 +143,7 @@ impl PRecommendation {
                 headroom_unquantified: true,
                 ..
             } => Some(format!(
-                "Current P (P={current_p}) — no change suggested, more headroom possible"
+                "No change suggested (P={current_p}), headroom possible"
             )),
             PRecommendation::Optimal { .. } => {
                 Some(format!("Current P is optimal (P={current_p})"))
@@ -795,7 +795,7 @@ mod d_target_tests {
         let faster = low_noise_recommendation(18.0);
         assert_eq!(
             faster.optimal_short_text(60).as_deref(),
-            Some("Current P (P=60) — no change suggested, more headroom possible")
+            Some("No change suggested (P=60), headroom possible")
         );
         // Within the band and slightly faster than target: plain optimal wording.
         let within = low_noise_recommendation(23.5);
