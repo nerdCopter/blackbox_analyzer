@@ -289,7 +289,7 @@ Needs step-response windows, `.headers.csv`, D-term data and at least `TORQUE_PR
   - `TORQUE_PROFILER_MIN_EVENTS` — minimum punches required for a reliable profile
   - `TORQUE_PROFILER_P_SCALE` — converts raw firmware P gain to physical units
   - `TORQUE_PROFILER_TD_CALC_K` — Td numerator constant (π × 500)
-  - `TORQUE_PROFILER_ACHIEVABILITY_FACTOR` — empirical calibration coefficient
+  - `TORQUE_PROFILER_ACHIEVABILITY_FACTOR` — empirical calibration coefficient (2.0: at 2.5, 86 of 106 axis results from 53 older logs read more than 15% faster than target; 1.5 centred those logs but pushed current HELIO and LIONBEE results to slower; the set is mostly one pilot's aircraft)
 
 - **Recommendation Types:**
   - **P Increase:** Td slower than target with acceptable noise → P is conservative

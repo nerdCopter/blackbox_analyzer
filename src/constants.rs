@@ -469,9 +469,13 @@ pub const TORQUE_PROFILER_P_SCALE: f64 = 100.0;
 /// Bridges the gap between theoretical torque capacity and actual flight performance
 /// (accounts for ESC lag, motor startup, prop-wash efficiency, etc).
 /// Higher values = more relaxed targets.
-/// Empirically calibrated on a 5" 6S freestyle build (HELIO H7); may need
-/// adjustment for significantly heavier or lighter aircraft classes.
-pub const TORQUE_PROFILER_ACHIEVABILITY_FACTOR: f64 = 2.50;
+/// Calibrated against 100 ms punch-window results: at 2.5, 86 of 106 axis results from 53 older
+/// logs read more than 15% faster than target (median 42% faster). At 1.5 the older logs centre but
+/// the current HELIO and LIONBEE logs read slower. 2.0 is the compromise: 61% of the older results
+/// and 2 of 8 current results read faster, 5 of 8 current results land within +-15%. One factor
+/// cannot centre every aircraft; the set is mostly one pilot's aircraft, so revisit with
+/// independent known-good tunes.
+pub const TORQUE_PROFILER_ACHIEVABILITY_FACTOR: f64 = 2.00;
 
 /// Betaflight/EmuFlight debug_mode value for GYRO_SCALED.
 /// Only this mode populates debug[0-2] with raw unfiltered gyro data,
