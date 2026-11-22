@@ -57,7 +57,7 @@ All analysis parameters, thresholds, plot dimensions, and algorithmic constants 
                     * If `APPLY_INDIVIDUAL_RESPONSE_Y_CORRECTION` is true, each individual step response window is normalized. The mean of its steady-state portion (defined by `STEADY_STATE_START_S` and `STEADY_STATE_END_S`) is calculated. If this mean is significant (abs > `Y_CORRECTION_MIN_UNNORMALIZED_MEAN_ABS`), the entire response window is divided by this mean, aiming to make its steady-state value approach 1.0.
                 * **Quality Control (QC):**
                     * Each (potentially Y-corrected) step response window undergoes QC. The minimum and maximum values of its steady-state portion are checked against `NORMALIZED_STEADY_STATE_MIN_VAL` and `NORMALIZED_STEADY_STATE_MAX_VAL`.
-                    * Optionally (`ENABLE_NORMALIZED_STEADY_STATE_MEAN_CHECK`), the mean of the steady-state portion is also checked against `NORMALIZED_STEADY_STATE_MEAN_MIN` and `NORMALIZED_STEADY_STATE_MEAN_MAX`.
+                    * No mean check: Y-correction sets each window's steady-state mean to 1.0, so a mean bound could never reject a window. PIDtoolbox has none either.
                     * Only windows passing QC are kept.
                 * **Launch / landing / collision handling:**
                     * **Fixed edge trim:** the first `EXCLUDE_START_S` and last `EXCLUDE_END_S` (3 s each) of the analyzed interval are dropped before windowing. If `--start`/`--end` is given, the interval is the trimmed one, not the whole log. This is a fixed time, not a detection.
@@ -76,7 +76,6 @@ All analysis parameters, thresholds, plot dimensions, and algorithmic constants 
                     * The averaged response is not smoothed. A trailing or centered moving average would delay or blur the rise, and PIDtoolbox plots the raw average.
                     * No first-sample shift is applied, as in PIDtoolbox. The time axis is `i / sample_rate`.
                     * A **final normalization** step is performed: the mean of the steady-state portion of this *averaged* response is calculated. The entire response is then divided by this mean to ensure the plotted average response aims for a steady-state of 1.0.
-                    * The final response is only plotted if its steady-state mean (after this final normalization) is within `FINAL_NORMALIZED_STEADY_STATE_TOLERANCE` of 1.0.
                 * The peak is read on this unsmoothed, renormalized curve. The combined legend Peak (the only legend entry without `--dps`), the console "Actual Peak" and report "Peak Value", and the P:D zones all use the same value. With `--dps`, the low- and high-setpoint legend entries use subset masks, so their peaks can differ from the combined peak. The legend prints two decimals; console and report print three.
                 * Calculates peak value and delay time (Td) for each plotted average response using `calc_step_response::find_peak_value` and `calc_step_response::calculate_delay_time`.
                     * **Delay Time (Td) Calculation:** The delay time is calculated as the time for the step response to reach 50% of its final value. Linear interpolation is used for precise determination of the 50% threshold crossing. A fixed offset of -1ms is applied to the calculated time (in milliseconds) before converting to seconds, and the result is constrained to be non-negative.
@@ -342,9 +341,9 @@ This implementation provides detailed and configurable analysis of flight contro
     * **Smoothing:** Neither implementation smooths the averaged response, and this implementation applies no gyro smoothing. Matlab can smooth the raw gyro (centered lowess) when the user selects it; its default is off.
     * **Time axis:** This implementation uses the log's mean sample rate (`1e6 / mean(dt)`). Matlab uses `round(1000/median(diff(time_us)) * 10) / 10` kHz, rounded to 0.1 kHz. A 1.88 kHz log is plotted at 1.9 kHz, so Matlab's axis is about 1% compressed (features appear ~1 ms earlier per 100 ms).
     * **Normalization/Y-Correction:**
-        * This implementation: Optional individual response Y-correction (normalize by own steady-state mean, `APPLY_INDIVIDUAL_RESPONSE_Y_CORRECTION`, `Y_CORRECTION_MIN_UNNORMALIZED_MEAN_ABS`) followed by final normalization of the averaged response to target 1.0 (within `FINAL_NORMALIZED_STEADY_STATE_TOLERANCE`).
+        * This implementation: Optional individual response Y-correction (normalize by own steady-state mean, `APPLY_INDIVIDUAL_RESPONSE_Y_CORRECTION`, `Y_CORRECTION_MIN_UNNORMALIZED_MEAN_ABS`) followed by final normalization of the averaged response to target 1.0.
         * Matlab: Optional Y-correction on individual responses by calculating an offset to make the mean 1.0.
-    * **Quality Control (QC):** Both apply QC to individual responses based on steady-state characteristics. This implementation uses `NORMALIZED_STEADY_STATE_MIN_VAL`, `NORMALIZED_STEADY_STATE_MAX_VAL`, and optionally `NORMALIZED_STEADY_STATE_MEAN_MIN`, `NORMALIZED_STEADY_STATE_MEAN_MAX`. Matlab uses `min(steadyStateResp) > 0.5 && max(steadyStateResp) < 3`.
+    * **Quality Control (QC):** Both apply QC to individual responses based on steady-state characteristics. This implementation uses `NORMALIZED_STEADY_STATE_MIN_VAL`, `NORMALIZED_STEADY_STATE_MAX_VAL`. Matlab uses `min(steadyStateResp) > 0.5 && max(steadyStateResp) < 3`.
     * **Output:** This implementation can plot low/high/combined responses based on `setpoint_threshold` if `--dps` is provided with a value. Matlab stacks all valid responses.
 
 #### Compared to PlasmaTree/Python (`PID-Analyzer.py`)

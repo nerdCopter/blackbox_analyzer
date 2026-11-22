@@ -36,16 +36,10 @@ pub const Y_CORRECTION_MIN_UNNORMALIZED_MEAN_ABS: f32 = 0.1; // Tune this thresh
 pub const NORMALIZED_STEADY_STATE_MIN_VAL: f32 = 0.5; // From PTB
 pub const NORMALIZED_STEADY_STATE_MAX_VAL: f32 = 3.0; // From PTB
 
-// Optional: Additional check on the mean of the Y-corrected steady-state.
-pub const ENABLE_NORMALIZED_STEADY_STATE_MEAN_CHECK: bool = true;
-pub const NORMALIZED_STEADY_STATE_MEAN_MIN: f32 = 0.75; // e.g., mean should be > 0.75 after Y-correction
-pub const NORMALIZED_STEADY_STATE_MEAN_MAX: f32 = 1.25; // e.g., mean should be < 1.25 after Y-correction
-
 // Steady-state definition for Y-correction and QC (matches PTB PTstepcalc.m: 200ms to end of response)
 pub const STEADY_STATE_START_S: f64 = 0.2; // Start time for steady-state check (200ms into the response)
 pub const STEADY_STATE_END_S: f64 = RESPONSE_LENGTH_S; // End time for steady-state check (to the end of RESPONSE_LENGTH_S); can be decoupled if desired, but do NOT exceed RESPONSE_LENGTH_S
 
-pub const FINAL_NORMALIZED_STEADY_STATE_TOLERANCE: f64 = 0.15; // Final tolerance for normalized steady-state mean in step response plot
 pub const DEFAULT_SETPOINT_THRESHOLD: f64 = 500.0; // Default setpoint threshold, can be overridden at runtime for categorizing responses
 
 // Constants for filtering data based on movement and flight phase.
