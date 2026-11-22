@@ -416,10 +416,12 @@ impl OptimalPAnalysis {
                 ),
             },
 
-            // Case 3: Td within target + low noise = slight headroom available
+            // Case 3: Td within target + low noise = slight headroom, but only when Td is not
+            // already faster than the target (deviation >= 0). A faster-than-target response
+            // has no headroom left by the physics target.
             (TdDeviation::WithinTarget, NoiseLevel::Low) => {
                 let conservative = safe_scaled_p(current_p, P_HEADROOM_CONSERVATIVE_MULTIPLIER);
-                if conservative > current_p {
+                if td_deviation_percent >= 0.0 && conservative > current_p {
                     PRecommendation::Increase {
                         conservative_p: conservative,
                         reasoning: "Response time is in target range with low noise. \
@@ -728,6 +730,43 @@ mod d_target_tests {
                 .collect(),
         );
         assert_eq!(spread.reliability_label(), "Unreliable");
+    }
+
+    fn low_noise_recommendation(td_ms: f64) -> PRecommendation {
+        // Target 25 +- 3 ms, P 60, D 20, low D-term noise (1% high-frequency energy).
+        OptimalPAnalysis::analyze(
+            &[td_ms; 40],
+            60,
+            Some(20),
+            Some(0.01),
+            Some(2.0),
+            Some((25.0, 3.0)),
+        )
+        .expect("analysis")
+        .recommendation
+    }
+
+    #[test]
+    fn within_target_low_noise_slower_than_target_gets_headroom() {
+        // 26 ms is +4% against the 25 ms target.
+        assert!(matches!(
+            low_noise_recommendation(26.0),
+            PRecommendation::Increase { .. }
+        ));
+        // Exactly on target (0%) still gets headroom.
+        assert!(matches!(
+            low_noise_recommendation(25.0),
+            PRecommendation::Increase { .. }
+        ));
+    }
+
+    #[test]
+    fn within_target_low_noise_faster_than_target_is_optimal() {
+        // 23.5 ms is -6% against the 25 ms target: already faster, no headroom.
+        assert!(matches!(
+            low_noise_recommendation(23.5),
+            PRecommendation::Optimal { .. }
+        ));
     }
 
     #[test]
