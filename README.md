@@ -70,7 +70,8 @@ Usage: ./blackbox_analyzer <input1> [<input2> ...] [OPTIONS]
   --butterworth    Show Butterworth PT1 cutoffs on gyro/D-term spectrum plots.
   --dps <value>    Deg/s threshold for detailed step response plots (positive number).
   --estimate-optimal-p  [EXPERIMENTAL] Optimal P estimation from throttle-punch
-                        dynamics. Requires .headers.csv; skips if absent.
+                        dynamics; needs 5+ punches (one log or pooled group).
+                        Requires .headers.csv; skips if absent.
                         Its Td target always profiles the full file, ignoring
                         --start/--end; only its Td measurement is trimmed.
 

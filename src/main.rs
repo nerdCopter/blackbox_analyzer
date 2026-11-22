@@ -932,7 +932,8 @@ fn print_usage_and_exit(program_name: &str) {
         "  --dps <value>    Deg/s threshold for detailed step response plots (positive number)."
     );
     eprintln!("  --estimate-optimal-p  [EXPERIMENTAL] Optimal P estimation from throttle-punch");
-    eprintln!("                        dynamics. Requires .headers.csv; skips if absent.");
+    eprintln!("                        dynamics; needs 5+ punches (one log or pooled group).");
+    eprintln!("                        Requires .headers.csv; skips if absent.");
     eprintln!("                        Its Td target always profiles the full file, ignoring");
     eprintln!("                        --start/--end; only its Td measurement is trimmed.");
     eprintln!();
