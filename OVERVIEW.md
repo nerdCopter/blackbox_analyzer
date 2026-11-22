@@ -296,6 +296,16 @@ Needs step-response windows, `.headers.csv`, D-term data and at least `TORQUE_PR
   - **Optimal:** Td within target range or at physical limits → P is well-matched. With low noise, a Td that is already faster than the target (negative deviation, including significantly faster) is Optimal; the small P headroom is offered only at or slower than the target.
   - **P Decrease:** Td faster than target with high noise → P is too high (rare)
   - **Investigate:** Measurements suggest mechanical issues or abnormal dynamics
+  - **Recommendation table** (Td deviation = (measured − target) / target; noise from D-term energy above `DTERM_HF_CUTOFF_HZ`: LOW below `DTERM_HF_ENERGY_MODERATE`, MODERATE below `DTERM_HF_ENERGY_THRESHOLD`, else HIGH; pinned by the unit test `recommendation_table_follows_td_zone_and_noise`):
+
+    | Td vs target | LOW noise | MODERATE | HIGH | Unknown |
+    |---|---|---|---|---|
+    | more than 30% slower | P +10% | Investigate | Investigate | P +5%, watch motor heat |
+    | 15–30% slower | P +5% | P +5% | Investigate | P +5%, watch motor heat |
+    | within ±15% | P +5% only at 0% or slower; faster is Optimal | Optimal | Optimal, watch motor heat | Optimal |
+    | more than 15% faster | Optimal, headroom possible (not quantified) | Optimal | P −5% | Optimal |
+
+    Increases carry the matching D (D scales with P to keep the P:D ratio); the multipliers are `P_HEADROOM_CONSERVATIVE_MULTIPLIER` (+5%), `P_HEADROOM_MODERATE_MULTIPLIER` (+10%) and `P_REDUCTION_MODERATE_MULTIPLIER` (−5%). Td is measured against a per-axis physics target, so a slower axis is judged against its own target, not against another axis.
 
 - **Output:** Console and PNG legend overlay (identical content) per axis:
   - `Td:` — measured Td median with the target `±tolerance`. Td is the median over the step-response windows (overlapping 2 s slices; stride = 2 s / `SUPERPOSITION_FACTOR`), so the window count overstates independent data and is not shown; `Flight clip` gives the log time used instead. PIDtoolbox keeps fewer windows (stride 2 s / 3, 7 or 10 by file length), so its `n` is lower for the same log

@@ -798,6 +798,74 @@ mod d_target_tests {
         assert_eq!(low_noise_recommendation(26.0).optimal_short_text(), None);
     }
 
+    // Spec: the recommendation follows Td zone x noise level. Synthetic inputs only: target 25 ms
+    // (+-3 ms), P 60, so +5% P is 63, +10% is 66 and -5% is 57. Zones: faster than -15% is
+    // SignificantlyFaster, +-15% is WithinTarget, +15% to +30% is ModeratelySlower, beyond +30% is
+    // SignificantlySlower.
+    #[test]
+    fn recommendation_table_follows_td_zone_and_noise() {
+        #[derive(Debug, PartialEq)]
+        enum Kind {
+            Optimal,
+            OptimalHeadroom,
+            Increase(u32),
+            Decrease(u32),
+            Investigate,
+        }
+        let low = Some(DTERM_HF_ENERGY_MODERATE * 0.5);
+        let moderate = Some((DTERM_HF_ENERGY_MODERATE + DTERM_HF_ENERGY_THRESHOLD) / 2.0);
+        let high = Some(DTERM_HF_ENERGY_THRESHOLD * 1.5);
+        let kind = |td_ms: f64, hf: Option<f64>| {
+            let a = OptimalPAnalysis::analyze(
+                &[td_ms; 40],
+                60,
+                Some(20),
+                hf,
+                Some(2.0),
+                Some((25.0, 3.0)),
+            )
+            .expect("analysis");
+            match a.recommendation {
+                PRecommendation::Optimal {
+                    headroom_unquantified: true,
+                    ..
+                } => Kind::OptimalHeadroom,
+                PRecommendation::Optimal { .. } => Kind::Optimal,
+                PRecommendation::Increase { conservative_p, .. } => Kind::Increase(conservative_p),
+                PRecommendation::Decrease { recommended_p, .. } => Kind::Decrease(recommended_p),
+                PRecommendation::Investigate { .. } => Kind::Investigate,
+            }
+        };
+        // 18 ms is -28%, 21.5 is -14%, 25 is 0%, 28.7 is +14.8%, 30 is +20%, 33 is +32%.
+        let table: [(f64, Option<f64>, Kind); 22] = [
+            (18.0, low, Kind::OptimalHeadroom),
+            (21.5, low, Kind::Optimal),
+            (25.0, low, Kind::Increase(63)),
+            (28.7, low, Kind::Increase(63)),
+            (30.0, low, Kind::Increase(63)),
+            (33.0, low, Kind::Increase(66)),
+            (18.0, moderate, Kind::Optimal),
+            (21.5, moderate, Kind::Optimal),
+            (25.0, moderate, Kind::Optimal),
+            (30.0, moderate, Kind::Increase(63)),
+            (33.0, moderate, Kind::Investigate),
+            (18.0, high, Kind::Decrease(57)),
+            (21.5, high, Kind::Optimal),
+            (25.0, high, Kind::Optimal),
+            (28.7, high, Kind::Optimal),
+            (30.0, high, Kind::Investigate),
+            (33.0, high, Kind::Investigate),
+            (18.0, None, Kind::Optimal),
+            (25.0, None, Kind::Optimal),
+            (28.7, None, Kind::Optimal),
+            (30.0, None, Kind::Increase(63)),
+            (33.0, None, Kind::Increase(63)),
+        ];
+        for (td, hf, expected) in table {
+            assert_eq!(kind(td, hf), expected, "Td {td} ms, noise {hf:?}");
+        }
+    }
+
     #[test]
     fn significantly_faster_than_target_low_noise_is_optimal() {
         // 18 ms is -28% against the 25 ms target (below the -15% line).
