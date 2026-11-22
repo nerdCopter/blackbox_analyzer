@@ -586,12 +586,21 @@ pub fn plot_step_response(
                             stroke_width: 0,
                         });
 
-                        // Reliability — always shown, after recommendation; orange when poor
+                        // Flight clip, then reliability — always shown, after recommendation;
+                        // reliability is orange when poor
+                        if let Some(clip) = analysis.flight_clip_text() {
+                            series.push(PlotSeries {
+                                data: vec![],
+                                label: format!("  Flight clip: {clip}"),
+                                color: COLOR_OPTIMAL_P_TEXT,
+                                stroke_width: 0,
+                            });
+                        }
                         {
                             let rel_text = format!(
                                 "  {}: {}",
                                 analysis.td_stats.reliability_label(),
-                                analysis.reliability_text()
+                                analysis.td_stats.reliability_details()
                             );
                             let (rel_label, rel_color) = if analysis.td_stats.is_consistent() {
                                 (rel_text, COLOR_OPTIMAL_P_TEXT)

@@ -475,11 +475,14 @@ pub fn generate_markdown_report(
                     PRecommendation::Investigate { issue } => format!("Investigate — {}", issue),
                 };
                 writeln!(md, "- **Recommendation:** {}", rec_text)?;
+                if let Some(clip) = analysis.flight_clip_text() {
+                    writeln!(md, "- **Flight clip:** {}", clip)?;
+                }
                 writeln!(
                     md,
                     "- **{}:** {}",
                     analysis.td_stats.reliability_label(),
-                    analysis.reliability_text()
+                    analysis.td_stats.reliability_details()
                 )?;
                 writeln!(md, "- **Source:** {}", analysis.source_summary())?;
                 writeln!(md)?;

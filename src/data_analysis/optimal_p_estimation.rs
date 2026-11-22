@@ -564,13 +564,10 @@ impl OptimalPAnalysis {
         }
     }
 
-    /// Reliability text shared by the legend, console and report: the Td statistics plus the
-    /// analysed seconds, for example `Consistency=86% (⊢≥70%), CV=24.8% (⊢≤40%), 61 s`.
-    pub fn reliability_text(&self) -> String {
-        let seconds = self
-            .analysed_seconds
-            .map_or_else(String::new, |s| format!(", {s:.0} s"));
-        format!("{}{}", self.td_stats.reliability_details(), seconds)
+    /// Flight clip text shared by the legend, console and report, for example `218s`: the seconds
+    /// of log time the step-response windows came from. `None` when unknown.
+    pub fn flight_clip_text(&self) -> Option<String> {
+        self.analysed_seconds.map(|s| format!("{s:.0}s"))
     }
 
     /// Td source text shared by the legend, console and report, for example
@@ -689,11 +686,14 @@ impl OptimalPAnalysis {
             }
         }
 
-        // Reliability — always shown, after recommendation
+        // Flight clip, then reliability — always shown, after recommendation
+        if let Some(clip) = self.flight_clip_text() {
+            output.push_str(&format!("  Flight clip: {clip}\n"));
+        }
         output.push_str(&format!(
             "  {}: {}\n",
             self.td_stats.reliability_label(),
-            self.reliability_text()
+            self.td_stats.reliability_details()
         ));
 
         output
@@ -822,15 +822,14 @@ mod d_target_tests {
     }
 
     #[test]
-    fn reliability_text_appends_the_analysed_seconds() {
+    fn flight_clip_text_shows_whole_seconds() {
         let samples = vec![30.0; 40];
         let mut a =
             OptimalPAnalysis::analyze(&samples, 40, Some(20), None, Some(2.0), Some((25.0, 3.0)))
                 .expect("analysis");
-        let base = a.td_stats.reliability_details();
-        assert_eq!(a.reliability_text(), base);
-        a.analysed_seconds = Some(60.6);
-        assert_eq!(a.reliability_text(), format!("{base}, 61 s"));
+        assert_eq!(a.flight_clip_text(), None);
+        a.analysed_seconds = Some(217.6);
+        assert_eq!(a.flight_clip_text().as_deref(), Some("218s"));
     }
 
     #[test]
