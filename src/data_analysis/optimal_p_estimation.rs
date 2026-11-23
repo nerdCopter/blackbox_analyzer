@@ -11,6 +11,7 @@
 // is aircraft-specific, determined by power-to-rotational-inertia ratio.
 
 use crate::constants::*;
+use crate::data_input::pid_metadata::d_target_is_current;
 
 /// Error type for optimal P analysis
 #[derive(Debug, Clone)]
@@ -603,7 +604,8 @@ impl OptimalPAnalysis {
     /// Recommended-D text appended to a P recommendation, shared by the console and the plot
     /// legend. Scales the D that matches the P:D ratio: base D as `, D≈x (+n)`, or, when
     /// `d_range` holds the axis D-Min and D-Max (dynamic D enabled), both ends by the same
-    /// factor as `, D-Min≈a (+n), D-Max≈b (+n)`. Empty when D or the ratio is unknown.
+    /// factor as `, D-Min≈a (+n), D-Max≈b (+n)`. Empty when D or the ratio is unknown, or when
+    /// the target equals the current D (`d_target_is_current`): no D change to name.
     pub fn d_target_suffix(&self, recommended_p: u32, d_range: Option<(u32, u32)>) -> String {
         let effective_pd = self.recommended_pd_conservative.or_else(|| {
             self.current_d
@@ -625,6 +627,13 @@ impl OptimalPAnalysis {
             // A recommended D-Min of 0 would switch dynamic D off.
             let rec_min = ((min as f64 * scale).round() as u32).max(1);
             let rec_max = (max as f64 * scale).round() as u32;
+            if d_target_is_current(
+                (Some(current_d), Some(min), Some(max)),
+                (Some(rec_d), Some(rec_min), Some(rec_max)),
+                true,
+            ) {
+                return String::new();
+            }
             return format!(
                 ", D-Min≈{} ({:+}), D-Max≈{} ({:+})",
                 rec_min,
@@ -632,6 +641,13 @@ impl OptimalPAnalysis {
                 rec_max,
                 rec_max as i64 - max as i64
             );
+        }
+        if d_target_is_current(
+            (Some(current_d), None, None),
+            (Some(rec_d), None, None),
+            false,
+        ) {
+            return String::new();
         }
         format!(", D≈{} ({:+})", rec_d, rec_d as i64 - current_d as i64)
     }
@@ -1050,5 +1066,17 @@ mod d_target_tests {
     #[test]
     fn raised_p_saturates_at_u32_max() {
         assert_eq!(safe_raised_p(u32::MAX, 1.05), u32::MAX);
+    }
+
+    // P 40, D 20, P:D 2.05. Recommended P 41 needs D = 41 / 2.05 = 20, the current D:
+    // there is no D change to name, so no suffix (it would read "D≈20 (+0)").
+    #[test]
+    fn d_target_suffix_is_empty_when_the_target_equals_the_current_d() {
+        let a = analysis(Some(20), Some(2.05));
+        assert_eq!(a.d_target_suffix(41, None), "");
+        // Range 15 to 20: both ends scale by 20 / 20 = 1, so both stay.
+        assert_eq!(a.d_target_suffix(41, Some((15, 20))), "");
+        // A changed D still prints: P 44 needs D = 44 / 2.05 = 21.46 -> 21.
+        assert_eq!(a.d_target_suffix(44, None), ", D≈21 (+1)");
     }
 }

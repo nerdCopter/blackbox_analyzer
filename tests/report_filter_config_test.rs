@@ -211,6 +211,7 @@ fn step_axis(hint: Option<String>) -> StepAxisReport {
         conservative: None,
         moderate: None,
         aggressive: None,
+        d_note: None,
         near_optimal_hint: hint,
         setpoint_authority_name: None,
         setpoint_authority_mean: None,
@@ -380,4 +381,46 @@ fn optimal_p_source_line_uses_the_shared_summary() {
         contents.contains(&format!("- **Source:** {expected}")),
         "{contents}"
     );
+}
+
+// The report carries the shared decision's text: when every tier names the current D, the
+// report prints the shared note, and no tier line.
+#[test]
+fn same_d_report_carries_the_shared_note_and_drops_the_tier() {
+    use blackbox_analyzer::constants::{D_TARGET_WITHIN_ROUNDING_NOTE, PEAK_ACCEPTABLE_MULTIPLIER};
+    use blackbox_analyzer::data_input::pid_metadata::parse_pid_metadata;
+
+    let headers: Vec<(String, String)> = [
+        ("Firmware revision", "Betaflight 4.4.0"),
+        ("rollPID", "40,50,12"),
+    ]
+    .iter()
+    .map(|(k, v)| (k.to_string(), v.to_string()))
+    .collect();
+    let pid = parse_pid_metadata(&headers);
+    let on = pid.is_dmax_enabled();
+    let ratio = pid.roll.calculate_pd_ratio().unwrap() * PEAK_ACCEPTABLE_MULTIPLIER;
+    let target = pid.roll.calculate_goal_d_with_range(ratio, on);
+    let tiers = pid.roll.d_tier_visibility(Some(target), None, None, on);
+    assert!(tiers.within_rounding_note && !tiers.conservative);
+
+    let mut axis = step_axis(None);
+    axis.assessment = "Acceptable";
+    axis.d_note = tiers
+        .within_rounding_note
+        .then_some(D_TARGET_WITHIN_ROUNDING_NOTE);
+    let mut report = base_report(None);
+    report.step_reports = vec![axis];
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let path = dir.path().join("same_d_report.md");
+    generate_markdown_report(&report, &path).expect("generate report");
+    let contents = fs::read_to_string(&path).expect("read report");
+    assert!(
+        contents.contains(&format!(
+            "- **Recommendation:** {D_TARGET_WITHIN_ROUNDING_NOTE}"
+        )),
+        "{contents}"
+    );
+    assert!(!contents.contains("Recommendation (conservative)"));
+    assert!(!contents.contains("No obvious tuning adjustments needed"));
 }

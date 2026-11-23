@@ -353,6 +353,7 @@ pub const PEAK_ACCEPTABLE_MULTIPLIER: f64 = 0.98; // Acceptable (PEAK_ACCEPTABLE
 pub const PEAK_OVERSHOOT_MULTIPLIER: f64 = 0.92; // Overshoot (PEAK_ACCEPTABLE_MAX–PEAK_SIGNIFICANT_MIN): +≈8.7% D
 pub const PEAK_VALUE_MIN_CLAMP: f64 = 0.1; // Minimum peak value clamp to prevent divide-by-zero in undershoot multiplier
 pub const D_STEP_OPTIONAL: u32 = 1; // D decrement for optional near-optimal fine-tune hint
+pub const D_TARGET_WITHIN_ROUNDING_NOTE: &str = "P:D target is within rounding of the current D"; // shown when every P:D tier rounds to the current D
 
 // Sanity check limits for P:D ratio recommendations
 // Note: MIN_REASONABLE_PD_RATIO of 0.3 accommodates large aircraft where D > P

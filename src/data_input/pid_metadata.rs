@@ -32,6 +32,33 @@ pub struct AggressiveRecommendation {
     pub d_max: Option<u32>,
 }
 
+/// Recommended D target of one tier: base D, D-Min, D-Max (as `calculate_goal_d_with_range` returns them).
+pub type DTarget = (Option<u32>, Option<u32>, Option<u32>);
+
+/// Which P:D recommendation tiers an axis shows, and whether the "no D change" note replaces them.
+/// From `AxisPid::d_tier_visibility`; console, report and plot legend all read it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DTierVisibility {
+    pub conservative: bool,
+    pub moderate: bool,
+    pub aggressive: bool,
+    /// True when a conservative tier exists but every existing tier names the current D.
+    pub within_rounding_note: bool,
+}
+
+/// True when a recommended D target names the values the axis already has, so it is not a
+/// recommendation. Mirrors `format_d_target`: with `range_shown` the D-Min and D-Max ends
+/// that are known are compared (a changed end makes the target a change); otherwise base D.
+pub fn d_target_is_current(current: DTarget, target: DTarget, range_shown: bool) -> bool {
+    let (cur_d, cur_min, cur_max) = current;
+    let (d, d_min, d_max) = target;
+    if range_shown {
+        (d_min.is_none() || d_min == cur_min) && (d_max.is_none() || d_max == cur_max)
+    } else {
+        d.is_some() && d == cur_d
+    }
+}
+
 /// PID values for a single axis
 #[derive(Debug, Clone, Default)]
 pub struct AxisPid {
@@ -176,6 +203,36 @@ impl AxisPid {
             d,
             d_min,
             d_max,
+        }
+    }
+
+    /// True when `target` equals this axis' current D (or D-Min and D-Max when the target is
+    /// shown as a range). `d_target_is_current` holds the rule.
+    pub fn target_is_current_d(&self, target: DTarget, dmax_enabled: bool) -> bool {
+        let range_shown = dmax_enabled && (target.1.is_some() || target.2.is_some());
+        d_target_is_current((self.d, self.d_min, self.d_max), target, range_shown)
+    }
+
+    /// Single decision for the P:D tiers of one axis, used by console, report and plot legend.
+    /// A tier whose D target equals the current D is not shown. When a conservative tier
+    /// exists and every existing tier is dropped, `within_rounding_note` is set instead.
+    pub fn d_tier_visibility(
+        &self,
+        conservative: Option<DTarget>,
+        moderate: Option<DTarget>,
+        aggressive: Option<DTarget>,
+        dmax_enabled: bool,
+    ) -> DTierVisibility {
+        let shown =
+            |t: Option<DTarget>| t.is_some_and(|t| !self.target_is_current_d(t, dmax_enabled));
+        let (conservative_shown, moderate_shown, aggressive_shown) =
+            (shown(conservative), shown(moderate), shown(aggressive));
+        DTierVisibility {
+            conservative: conservative_shown,
+            moderate: moderate_shown,
+            aggressive: aggressive_shown,
+            within_rounding_note: conservative.is_some()
+                && !(conservative_shown || moderate_shown || aggressive_shown),
         }
     }
 
@@ -2081,5 +2138,125 @@ mod tests {
             ],
         ));
         assert!(pid.is_dmax_enabled());
+    }
+
+    // Spec for the same-D rule: a tier whose D target equals the current D is dropped.
+    // Tier ratios are the current P:D times the tier multiplier (see constants.rs).
+    use crate::constants::{
+        PD_RATIO_AGGRESSIVE_MULTIPLIER, PD_RATIO_MODERATE_MULTIPLIER, PEAK_ACCEPTABLE_MULTIPLIER,
+    };
+
+    fn roll_axis(rev: &str, extra: &[(&str, &str)], roll_pid: &str) -> (PidMetadata, bool) {
+        let mut h = vec![("rollPID", roll_pid)];
+        h.extend_from_slice(extra);
+        let pid = parse_pid_metadata(&headers(rev, &h));
+        let on = pid.is_dmax_enabled();
+        (pid, on)
+    }
+
+    fn tier_target(axis: &AxisPid, multiplier: f64, on: bool) -> DTarget {
+        axis.calculate_goal_d_with_range(axis.calculate_pd_ratio().unwrap() * multiplier, on)
+    }
+
+    // P 40, D 12: the 2% step gives D = 12 / 0.98 = 12.24, which rounds to 12 (dropped).
+    // The moderate step gives D = 12 / 0.75 = 16 (kept).
+    #[test]
+    fn same_d_conservative_tier_is_dropped_and_moderate_is_kept() {
+        let (pid, on) = roll_axis("Betaflight 4.4.0", &[], "40,50,12");
+        let cons = tier_target(&pid.roll, PEAK_ACCEPTABLE_MULTIPLIER, on);
+        let moderate = tier_target(&pid.roll, PD_RATIO_MODERATE_MULTIPLIER, on);
+        assert_eq!(cons.0, Some(12));
+        assert_eq!(moderate.0, Some(16));
+        let v = pid
+            .roll
+            .d_tier_visibility(Some(cons), Some(moderate), None, on);
+        assert!(!v.conservative);
+        assert!(v.moderate);
+        assert!(!v.within_rounding_note);
+    }
+
+    // Only a conservative tier exists and it names D 12: one note replaces it.
+    #[test]
+    fn same_d_all_tiers_dropped_gives_the_note() {
+        let (pid, on) = roll_axis("Betaflight 4.4.0", &[], "40,50,12");
+        let cons = tier_target(&pid.roll, PEAK_ACCEPTABLE_MULTIPLIER, on);
+        let v = pid.roll.d_tier_visibility(Some(cons), None, None, on);
+        assert_eq!(
+            v,
+            DTierVisibility {
+                conservative: false,
+                moderate: false,
+                aggressive: false,
+                within_rounding_note: true
+            }
+        );
+        // No conservative tier at all (no recommendation): no note.
+        let v = pid.roll.d_tier_visibility(None, None, None, on);
+        assert!(!v.within_rounding_note);
+    }
+
+    // Large D: the 2% step moves D by at least 0.5, so every tier differs from the current D.
+    #[test]
+    fn same_d_high_d_tiers_are_all_kept() {
+        for d in 25u32..=300 {
+            for ratio_x10 in [10u32, 14, 20, 35] {
+                let p = d * ratio_x10 / 10;
+                let (pid, on) = roll_axis("Betaflight 4.4.0", &[], &format!("{p},50,{d}"));
+                let t = |m| tier_target(&pid.roll, m, on);
+                let v = pid.roll.d_tier_visibility(
+                    Some(t(PEAK_ACCEPTABLE_MULTIPLIER)),
+                    Some(t(PD_RATIO_MODERATE_MULTIPLIER)),
+                    Some(t(PD_RATIO_AGGRESSIVE_MULTIPLIER)),
+                    on,
+                );
+                assert_eq!(
+                    (
+                        v.conservative,
+                        v.moderate,
+                        v.aggressive,
+                        v.within_rounding_note
+                    ),
+                    (true, true, true, false),
+                    "P {p} D {d}"
+                );
+            }
+        }
+    }
+
+    // Range: D-Max 12 and D-Min 9. The 2% step keeps both ends (12, 9), so it is dropped.
+    // The moderate step scales both ends by 16 / 12, so it differs.
+    #[test]
+    fn same_d_range_unchanged_is_dropped_changed_is_kept() {
+        let (pid, on) = roll_axis("Betaflight 4.5.0", &[("d_min", "9,0,0")], "40,50,12");
+        assert!(on);
+        let cons = tier_target(&pid.roll, PEAK_ACCEPTABLE_MULTIPLIER, on);
+        assert_eq!((cons.1, cons.2), (Some(9), Some(12)));
+        let moderate = tier_target(&pid.roll, PD_RATIO_MODERATE_MULTIPLIER, on);
+        assert_eq!((moderate.1, moderate.2), (Some(12), Some(16)));
+        let v = pid
+            .roll
+            .d_tier_visibility(Some(cons), Some(moderate), None, on);
+        assert!(!v.conservative && v.moderate);
+    }
+
+    // Range with one end changed: P 50, D-Max 25, D-Min 12. The 2% step gives D-Max
+    // 25.51 -> 26 (changed) and D-Min 12.5 -> 12 (same); the tier stays because an end changed.
+    #[test]
+    fn same_d_range_with_one_changed_end_is_kept() {
+        let (pid, on) = roll_axis("Betaflight 4.5.0", &[("d_min", "12,0,0")], "50,50,25");
+        let cons = tier_target(&pid.roll, PEAK_ACCEPTABLE_MULTIPLIER, on);
+        assert_eq!((cons.1, cons.2), (Some(12), Some(26)));
+        let v = pid.roll.d_tier_visibility(Some(cons), None, None, on);
+        assert!(v.conservative && !v.within_rounding_note);
+    }
+
+    // Unknown D target (no D known) is not "current": the tier stays as before.
+    #[test]
+    fn same_d_unknown_target_is_kept() {
+        let (pid, on) = roll_axis("Betaflight 4.4.0", &[], "40,50,12");
+        let v = pid
+            .roll
+            .d_tier_visibility(Some((None, None, None)), None, None, on);
+        assert!(v.conservative);
     }
 }

@@ -103,6 +103,7 @@ All analysis parameters, thresholds, plot dimensions, and algorithmic constants 
                     * Warnings for severe overshoot (Peak > 1.5) suggesting mechanical issues
                     * Warnings for unreasonable P:D ratios (< 0.3 or > 3.0)
                     * Only displays recommendations when change exceeds PD_RATIO_MIN_CHANGE_THRESHOLD (5%)
+                    * A tier whose D (or D-Min and D-Max) rounds to the axis's current values is dropped (`AxisPid::d_tier_visibility`, shared by console, report and plot legend); when every tier is dropped, one line says the P:D target is within rounding of the current D. The Optimal P `D≈` suffix is dropped the same way
                     * Shows recommendations for improvable responses (acceptable/minor/moderate/significant overshoot)
                     * Clear disclaimers that recommendations are starting points, not absolute values
                     * Works for all aircraft sizes including 10"+ where D > P (P:D < 1.0)
