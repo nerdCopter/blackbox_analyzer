@@ -26,7 +26,9 @@ use tempfile::TempDir;
 use ndarray::Array1;
 
 use crate::axis_names::AXIS_COUNT;
-use crate::data_analysis::torque_inertia_profiler::{extract_punch_ratios, AircraftProfile};
+use crate::data_analysis::torque_inertia_profiler::{
+    add_axis_file_counts, extract_punch_ratios, AircraftProfile,
+};
 use crate::data_input::bbl_reader::print_block_separator;
 use crate::types::{InputExpansionResult, LogParseResult, StepResponseResults};
 
@@ -1208,6 +1210,7 @@ fn profile_aircraft_group(
     let mut all_axis_ratios: [Vec<f64>; crate::axis_names::AXIS_COUNT] =
         std::array::from_fn(|_| Vec::new());
     let mut files_profiled: usize = 0;
+    let mut axis_files = [0usize; crate::axis_names::AXIS_COUNT];
     let mut parsed_cache: Vec<LogParseResult> = Vec::with_capacity(files.len());
 
     for file_str in files {
@@ -1217,6 +1220,7 @@ fn profile_aircraft_group(
             Ok((log_data, Some(sr), ..)) => {
                 let ratios = extract_punch_ratios(log_data, *sr);
                 let total_events: usize = ratios.iter().map(|v| v.len()).sum();
+                add_axis_file_counts(&ratios, &mut axis_files);
                 for (axis, axis_ratio_vec) in all_axis_ratios.iter_mut().enumerate() {
                     axis_ratio_vec.extend_from_slice(&ratios[axis]);
                 }
@@ -1259,6 +1263,9 @@ fn profile_aircraft_group(
 
     let mut profile = AircraftProfile::from_axis_ratios(all_axis_ratios);
     profile.file_count = files_profiled;
+    for (axis, count) in axis_files.iter().enumerate() {
+        profile.axes[axis].file_count = *count;
+    }
     (profile, parsed_cache)
 }
 
@@ -2138,7 +2145,7 @@ INFO: Skipping Step Response input data filtering for {input_file_str}: {reason}
                                 Ok(mut analysis) => {
                                     analysis.source_events =
                                         aircraft_profile.axes[axis_index].event_count;
-                                    analysis.source_files = aircraft_profile.file_count;
+                                    analysis.source_files = aircraft_profile.axes[axis_index].file_count;
                                     analysis.source_spread =
                                         aircraft_profile.axes[axis_index].ratio_spread_fraction;
                                     analysis.analysed_seconds = match (first_time, last_time) {

@@ -37,6 +37,8 @@ pub struct AxisProfile {
     pub ratio_spread_fraction: Option<f64>,
     /// Number of valid throttle-punch events used to compute this profile.
     pub event_count: usize,
+    /// Number of flight files that contributed at least one punch on this axis.
+    pub file_count: usize,
 }
 
 impl AxisProfile {
@@ -71,6 +73,7 @@ impl AxisProfile {
             torque_inertia_ratio: Some(median),
             ratio_spread_fraction,
             event_count: n,
+            file_count: 0,
         }
     }
 
@@ -115,6 +118,18 @@ pub struct AircraftProfile {
     pub axes: [AxisProfile; AXIS_COUNT],
     /// Number of flight files that contributed to this profile.
     pub file_count: usize,
+}
+
+/// Adds one to each axis count whose ratio list for one file is not empty.
+pub fn add_axis_file_counts(
+    file_ratios: &[Vec<f64>; AXIS_COUNT],
+    counts: &mut [usize; AXIS_COUNT],
+) {
+    for (count, ratios) in counts.iter_mut().zip(file_ratios) {
+        if !ratios.is_empty() {
+            *count += 1;
+        }
+    }
 }
 
 impl AircraftProfile {
@@ -246,3 +261,21 @@ pub fn extract_punch_ratios(log_data: &[LogRowData], sample_rate: f64) -> [Vec<f
 }
 
 // src/data_analysis/torque_inertia_profiler.rs
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Spec: an axis counts a file only when that file gave it at least one punch ratio.
+    #[test]
+    fn axis_file_counts_count_files_per_axis() {
+        let mut counts = [0usize; AXIS_COUNT];
+        // File 1: punches on every axis.
+        add_axis_file_counts(&[vec![1.0], vec![2.0], vec![3.0]], &mut counts);
+        // File 2: no roll punch, pitch and yaw punches.
+        add_axis_file_counts(&[vec![], vec![2.0], vec![3.0]], &mut counts);
+        // File 3: no punches at all.
+        add_axis_file_counts(&[vec![], vec![], vec![]], &mut counts);
+        assert_eq!(counts, [1, 2, 2]);
+    }
+}
