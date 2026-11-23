@@ -535,6 +535,23 @@ pub fn displayed_response(
     Some(avg_resp.mapv(|v| v / ss_mean))
 }
 
+/// Peak of the displayed response for one axis. Roll and pitch search only samples before
+/// `PEAK_SEARCH_MAX_S_ROLL_PITCH` (PIDtoolbox parity); yaw searches the whole response.
+/// Console, report and plot legends all use this one function.
+pub fn find_axis_peak_value(
+    response_data: &Array1<f64>,
+    sample_rate: f64,
+    axis_index: usize,
+) -> Option<f64> {
+    if axis_index < crate::axis_names::ROLL_PITCH_AXIS_COUNT && sample_rate > 0.0 {
+        let n = ((crate::constants::PEAK_SEARCH_MAX_S_ROLL_PITCH * sample_rate).ceil() as usize)
+            .min(response_data.len());
+        find_peak_value(&response_data.slice(ndarray::s![..n]).to_owned())
+    } else {
+        find_peak_value(response_data)
+    }
+}
+
 /// Finds the peak (maximum) value in a 1D response data array.
 /// Returns None if the array is empty or contains no finite values.
 pub fn find_peak_value(response_data: &Array1<f64>) -> Option<f64> {
@@ -737,5 +754,31 @@ mod tests {
             out[0],
             expected
         );
+    }
+
+    #[test]
+    fn axis_peak_roll_pitch_ignores_samples_from_150ms_yaw_keeps_them() {
+        // 1000 Hz, 500 samples: a 1.3 peak at 200 ms and a 1.1 peak at 100 ms.
+        let mut v = vec![1.0; 500];
+        v[100] = 1.1;
+        v[200] = 1.3;
+        let resp = Array1::from(v);
+        assert_eq!(find_axis_peak_value(&resp, 1000.0, 0), Some(1.1));
+        assert_eq!(find_axis_peak_value(&resp, 1000.0, 1), Some(1.1));
+        assert_eq!(find_axis_peak_value(&resp, 1000.0, 2), Some(1.3));
+    }
+
+    #[test]
+    fn axis_peak_boundary_is_strictly_before_150ms_and_can_fall_below_one() {
+        // Sample 149 (t = 149 ms) counts, sample 150 (t = 150 ms) does not.
+        let mut v = vec![0.9; 500];
+        v[149] = 0.95;
+        v[150] = 1.4;
+        let resp = Array1::from(v);
+        assert_eq!(find_axis_peak_value(&resp, 1000.0, 0), Some(0.95));
+        // Short response and bad sample rate fall back safely.
+        let short = Array1::from(vec![1.0, 1.2]);
+        assert_eq!(find_axis_peak_value(&short, 1000.0, 0), Some(1.2));
+        assert_eq!(find_axis_peak_value(&resp, 0.0, 0), Some(1.4));
     }
 }

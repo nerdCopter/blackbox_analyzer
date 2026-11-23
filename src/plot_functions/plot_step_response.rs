@@ -203,7 +203,8 @@ pub fn plot_step_response(
                     process_response(&high_mask, valid_stacked_responses, response_length_samples);
 
                 if let Some(resp) = final_low_response {
-                    let peak_val_opt = calc_step_response::find_peak_value(&resp);
+                    let peak_val_opt =
+                        calc_step_response::find_axis_peak_value(&resp, sr, axis_index);
                     let latency_opt = calc_step_response::calculate_delay_time(&resp, sr);
                     let peak_str =
                         peak_val_opt.map_or_else(|| "N/A".to_string(), |p| format!("{p:.2}"));
@@ -224,7 +225,8 @@ pub fn plot_step_response(
                     });
                 }
                 if let Some(resp) = final_high_response {
-                    let peak_val_opt = calc_step_response::find_peak_value(&resp);
+                    let peak_val_opt =
+                        calc_step_response::find_axis_peak_value(&resp, sr, axis_index);
                     let latency_opt = calc_step_response::calculate_delay_time(&resp, sr);
                     let peak_str =
                         peak_val_opt.map_or_else(|| "N/A".to_string(), |p| format!("{p:.2}"));
@@ -245,7 +247,8 @@ pub fn plot_step_response(
                     });
                 }
                 if let Some(resp) = &final_combined_response {
-                    let peak_val_opt = calc_step_response::find_peak_value(resp);
+                    let peak_val_opt =
+                        calc_step_response::find_axis_peak_value(resp, sr, axis_index);
                     let latency_opt = calc_step_response::calculate_delay_time(resp, sr);
                     let peak_str =
                         peak_val_opt.map_or_else(|| "N/A".to_string(), |p| format!("{p:.2}"));
@@ -265,7 +268,8 @@ pub fn plot_step_response(
             } else {
                 // If not showing legend, only plot the "Combined" (average of all QC'd responses)
                 if let Some(resp) = &final_combined_response {
-                    let peak_val_opt = calc_step_response::find_peak_value(resp);
+                    let peak_val_opt =
+                        calc_step_response::find_axis_peak_value(resp, sr, axis_index);
                     let latency_opt = calc_step_response::calculate_delay_time(resp, sr);
                     let peak_str =
                         peak_val_opt.map_or_else(|| "N/A".to_string(), |p| format!("{p:.2}"));

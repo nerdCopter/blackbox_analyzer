@@ -1691,8 +1691,11 @@ INFO: Skipping Step Response input data filtering for {input_file_str}: {reason}
                         sample_rate.unwrap_or_default(),
                     ) {
                         // Find peak value
-                        if let Some(peak_value) = calc_step_response::find_peak_value(&avg_response)
-                        {
+                        if let Some(peak_value) = calc_step_response::find_axis_peak_value(
+                            &avg_response,
+                            sample_rate.unwrap_or_default(),
+                            axis_index,
+                        ) {
                             let current_ratio = if axis_index == 0 {
                                 pid_metadata.roll.calculate_pd_ratio()
                             } else {
