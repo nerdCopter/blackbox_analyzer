@@ -377,7 +377,9 @@ pub fn calculate_step_response(
                     .fold(f32::NEG_INFINITY, |a, &b| a.max(b));
 
                 // Check min/max bounds for steady-state region. A mean check is not needed:
-                // Y-correction sets the steady-state mean to 1.0 by construction.
+                // Y-correction sets the steady-state mean to 1.0 by construction, and QC only runs
+                // after a successful correction. With APPLY_INDIVIDUAL_RESPONSE_Y_CORRECTION set to
+                // false this no longer holds and a mean check would be needed.
                 if min_val_ss.is_finite()
                     && max_val_ss.is_finite()
                     && min_val_ss > NORMALIZED_STEADY_STATE_MIN_VAL

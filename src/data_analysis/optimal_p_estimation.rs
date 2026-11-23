@@ -930,6 +930,18 @@ mod d_target_tests {
     }
 
     #[test]
+    fn td_statistics_rejects_empty_non_finite_and_zero_median_input() {
+        assert!(TdStatistics::from_samples(&[]).is_none());
+        assert!(TdStatistics::from_samples(&[f64::NAN, f64::INFINITY]).is_none());
+        // Non-finite values are dropped; the rest are used.
+        let stats = TdStatistics::from_samples(&[f64::NAN, 20.0, 30.0]).expect("stats");
+        assert_eq!(stats.num_samples, 2);
+        assert_eq!(stats.median_ms, 25.0);
+        // A zero median has no relative spread.
+        assert!(TdStatistics::from_samples(&[0.0, 0.0, 0.0]).is_none());
+    }
+
+    #[test]
     fn td_statistics_single_sample_has_no_spread() {
         let stats = TdStatistics::from_samples(&[22.0]).expect("stats");
         assert_eq!(stats.median_ms, 22.0);
