@@ -31,6 +31,7 @@ fn base_report(filter_config: Option<AllFilterConfigs>) -> FlightReport {
         motor_desync_results: vec![],
         rc_command_steps: vec![],
         stick_distribution_results: vec![],
+        vibration_percentile_results: Vec::new(),
         png_links: vec![],
         skipped_plots: vec![],
         filter_config,

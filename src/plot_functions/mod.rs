@@ -23,6 +23,7 @@ pub mod plot_setpoint_derivative;
 pub mod plot_setpoint_vs_gyro;
 pub mod plot_step_response;
 pub mod plot_throttle_freq_heatmap;
+pub mod plot_vibration_percentile;
 
 // Helper function for formatting debug suffix in plot labels
 /// RPM filter harmonic lines for a throttle-frequency heatmap, labeled `RPM Filter Harmonic <n>` for the

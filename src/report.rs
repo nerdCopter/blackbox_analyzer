@@ -9,6 +9,7 @@ use std::fs;
 use std::path::Path;
 
 use crate::axis_names::{AXIS_COUNT, AXIS_NAMES};
+use crate::constants::VIBRATION_PERCENTILES_PCT;
 use crate::constants::{
     MOTOR_DESYNC_REPORT_MAX_TIMES, MOTOR_OSCILLATION_FREQ_MAX_HZ, MOTOR_OSCILLATION_FREQ_MIN_HZ,
     MOTOR_OSCILLATION_SECONDS_TO_MS, MOTOR_OSCILLATION_WINDOW_S, RATIO_TO_PERCENT,
@@ -21,6 +22,9 @@ use crate::data_analysis::filter_response::{
 use crate::data_analysis::optimal_p_estimation::{OptimalPAnalysis, PRecommendation};
 use crate::data_analysis::stick_distribution::StickDistributionResult;
 use crate::data_analysis::transfer_function_estimation::Confidence;
+use crate::data_analysis::vibration_percentile::{
+    format_percentile_value, VibrationPercentileResult,
+};
 use crate::data_input::pid_metadata::format_d_target;
 use crate::plot_functions::motor_desync::{
     fallback_oscillation_overlaps, DesyncConfidence, MotorDesyncResult,
@@ -78,6 +82,8 @@ pub struct FlightReport {
     pub motor_desync_results: Vec<MotorDesyncResult>,
     pub rc_command_steps: Vec<RcCommandStepResult>,
     pub stick_distribution_results: Vec<StickDistributionResult>,
+    /// Empty unless the Gyro Vibration Percentile plot is enabled.
+    pub vibration_percentile_results: Vec<VibrationPercentileResult>,
     pub png_links: Vec<String>,
     /// Human-readable labels of plot types that were enabled but produced no plottable data.
     pub skipped_plots: Vec<String>,
@@ -815,6 +821,55 @@ pub fn generate_markdown_report(
         writeln!(md)?;
     }
 
+    // --- Gyro Vibration Percentile Analysis ---
+    let has_vibration_data = report
+        .vibration_percentile_results
+        .iter()
+        .any(|r| r.filtered.is_some() || r.unfiltered.is_some());
+    if has_vibration_data {
+        writeln!(md, "## Gyro Vibration Percentile Analysis")?;
+        writeln!(md)?;
+        let header_cols: Vec<String> = VIBRATION_PERCENTILES_PCT
+            .iter()
+            .map(|p| format!("P{p} (deg/s)"))
+            .collect();
+        writeln!(
+            md,
+            "| Axis | Signal | Samples | {} |",
+            header_cols.join(" | ")
+        )?;
+        writeln!(
+            md,
+            "|------|--------|---------|{}",
+            "------|".repeat(VIBRATION_PERCENTILES_PCT.len())
+        )?;
+        for r in &report.vibration_percentile_results {
+            for (signal, series) in [("Filtered", &r.filtered), ("Unfiltered", &r.unfiltered)] {
+                if let Some(s) = series {
+                    let cells: Vec<String> = s
+                        .percentiles
+                        .iter()
+                        .map(|v| format_percentile_value(*v))
+                        .collect();
+                    writeln!(
+                        md,
+                        "| {} | {} | {} | {} |",
+                        r.axis_name,
+                        signal,
+                        s.count,
+                        cells.join(" | ")
+                    )?;
+                }
+            }
+        }
+        writeln!(md)?;
+        writeln!(
+            md,
+            "Percentiles of |gyro| over all finite samples of the flight, value at sorted index (n-1)*p/100. They describe the whole signal, including intentional maneuvers, not noise alone: compare Filtered with Unfiltered, and compare flights flown the same way. A P99 far above P95 means rare large excursions; P50 close to P99 means steady vibration."
+        )?;
+        writeln!(md)?;
+    }
+
     // --- Generated Plots ---
     if !report.png_links.is_empty() {
         writeln!(md, "## Generated Plots")?;
@@ -959,6 +1014,7 @@ mod tests {
             motor_desync_results: Vec::new(),
             rc_command_steps: Vec::new(),
             stick_distribution_results: Vec::new(),
+            vibration_percentile_results: Vec::new(),
             png_links: Vec::new(),
             skipped_plots: Vec::new(),
             filter_config: None,
@@ -1044,5 +1100,31 @@ mod tests {
             text.contains("more P headroom is possible but not quantified"),
             "{text}"
         );
+    }
+
+    // Spec: the report table carries the shared percentile formatter's values (1..=100 gives
+    // P50 50, P90 90, P95 95, P99 99).
+    #[test]
+    fn report_carries_the_shared_vibration_percentiles() {
+        use crate::data_analysis::vibration_percentile::build_series;
+        let mut report = empty_report(Vec::new());
+        report.vibration_percentile_results = vec![VibrationPercentileResult {
+            axis_name: "Roll".to_string(),
+            filtered: build_series((1..=100).map(f64::from)),
+            unfiltered: None,
+        }];
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("report.md");
+        generate_markdown_report(&report, &path).expect("report");
+        let text = fs::read_to_string(&path).expect("read");
+        assert!(
+            text.contains("## Gyro Vibration Percentile Analysis"),
+            "{text}"
+        );
+        assert!(
+            text.contains("| Roll | Filtered | 100 | 50.0 | 90.0 | 95.0 | 99.0 |"),
+            "{text}"
+        );
+        assert!(!text.contains("| Roll | Unfiltered |"), "{text}");
     }
 }

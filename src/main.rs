@@ -87,6 +87,7 @@ struct PlotConfig {
     pub pid_activity: bool,
     pub rc_command_activity: bool,
     pub motor_erpm: bool,
+    pub vibration_percentile: bool,
 }
 
 impl Default for PlotConfig {
@@ -110,6 +111,7 @@ impl Default for PlotConfig {
             pid_activity: false,
             rc_command_activity: true,
             motor_erpm: false,
+            vibration_percentile: false,
         }
     }
 }
@@ -134,6 +136,7 @@ impl PlotConfig {
             pid_activity: false,
             rc_command_activity: false,
             motor_erpm: false,
+            vibration_percentile: false,
         }
     }
 
@@ -156,6 +159,7 @@ impl PlotConfig {
             pid_activity: true,
             rc_command_activity: true,
             motor_erpm: true,
+            vibration_percentile: true,
         }
     }
 }
@@ -189,6 +193,7 @@ use crate::constants::{
 
 // Specific plot function imports
 use crate::data_analysis::stick_distribution::analyze_stick_distribution;
+use crate::data_analysis::vibration_percentile::{analyze_vibration_percentiles, console_lines};
 use crate::plot_functions::motor_desync::{detect_motor_desync, fallback_oscillation_overlaps};
 use crate::plot_functions::plot_bode::plot_bode_analysis;
 use crate::plot_functions::plot_d_term_heatmap::plot_d_term_heatmap;
@@ -209,6 +214,7 @@ use crate::plot_functions::plot_setpoint_derivative::plot_setpoint_derivative;
 use crate::plot_functions::plot_setpoint_vs_gyro::plot_setpoint_vs_gyro;
 use crate::plot_functions::plot_step_response::plot_step_response;
 use crate::plot_functions::plot_throttle_freq_heatmap::plot_throttle_freq_heatmap;
+use crate::plot_functions::plot_vibration_percentile::plot_vibration_percentile;
 
 /// RAII guard to ensure current working directory is restored
 struct CwdGuard {
@@ -958,11 +964,15 @@ fn usage_text(program_name: &str) -> String {
     );
     let _ = writeln!(
         out,
-        "                   Setpoint Derivative, Gyro PSD, D-term PSD, heatmaps, and"
+        "                   Setpoint Derivative, Gyro PSD, D-term PSD, heatmaps,"
     );
     let _ = writeln!(
         out,
-        "                   Motor vs eRPM (requires bidirectional DShot telemetry)."
+        "                   Motor vs eRPM (requires bidirectional DShot telemetry), and"
+    );
+    let _ = writeln!(
+        out,
+        "                   Gyro Vibration Percentile (|gyro| distribution, P50-P99)."
     );
     let _ = writeln!(out, "  --step           Step response only.");
     let _ = writeln!(
@@ -2435,6 +2445,26 @@ INFO: Skipping Step Response input data filtering for {input_file_str}: {reason}
         plot_pid_activity(&all_log_data, &root_name_string, Some(&header_metadata))?;
     }
 
+    let vibration_percentile_results = if plot_config.vibration_percentile {
+        let results = analyze_vibration_percentiles(&all_log_data);
+        let lines = console_lines(&results);
+        if !lines.is_empty() {
+            println!("\n--- Gyro Vibration Percentiles ---");
+            for line in &lines {
+                println!("{line}");
+            }
+        }
+        plot_vibration_percentile(
+            &results,
+            &root_name_string,
+            using_debug_fallback,
+            debug_mode_label,
+        )?;
+        results
+    } else {
+        Vec::new()
+    };
+
     let rc_command_steps = if plot_config.rc_command_activity {
         plot_rc_command_activity(&all_log_data, &root_name_string)?
     } else {
@@ -2608,6 +2638,14 @@ INFO: Skipping Step Response input data filtering for {input_file_str}: {reason}
             format!("{root_name_string}_PID_Activity_stacked.png"),
         );
     }
+    if plot_config.vibration_percentile {
+        push_if_written(
+            &mut png_links,
+            &mut skipped_plots,
+            "Gyro Vibration Percentile",
+            format!("{root_name_string}_Gyro_Vibration_Percentile_stacked.png"),
+        );
+    }
     if plot_config.rc_command_activity {
         push_if_written(
             &mut png_links,
@@ -2639,6 +2677,7 @@ INFO: Skipping Step Response input data filtering for {input_file_str}: {reason}
         motor_desync_results,
         rc_command_steps,
         stick_distribution_results,
+        vibration_percentile_results,
         png_links,
         skipped_plots,
         filter_config,

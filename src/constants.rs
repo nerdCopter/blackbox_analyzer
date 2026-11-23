@@ -217,6 +217,20 @@ pub const SETPOINT_DERIVATIVE_MIN_DT: f64 = 0.00005;
 pub const COLOR_GYRO_VS_UNFILT_FILT: &RGBColor = &LIGHTBLUE;
 pub const COLOR_GYRO_VS_UNFILT_UNFILT: &RGBColor = &AMBER;
 
+// Gyro Vibration Percentile Plot (empirical CDF of |gyro| per axis, filtered vs unfiltered)
+pub const COLOR_VIBRATION_PERCENTILE_FILT: &RGBColor = &LIGHTBLUE;
+pub const COLOR_VIBRATION_PERCENTILE_UNFILT: &RGBColor = &AMBER;
+// Reported percentiles, whole numbers in percent. The value at percentile p of n sorted samples is
+// sorted[(n - 1) * p / 100] with integer division (lower nearest-rank on the index (n - 1) * p / 100),
+// so 1..=100 gives P50 = 50, P90 = 90, P95 = 95, P99 = 99 and no float rounding enters the index.
+pub const VIBRATION_PERCENTILES_PCT: [usize; 4] = [50, 90, 95, 99];
+// Percentile of the larger series that sets the X-axis limit (position in VIBRATION_PERCENTILES_PCT)
+pub const VIBRATION_X_AXIS_PERCENTILE_INDEX: usize = 3;
+// Maximum ECDF points drawn per series; longer series are decimated by even index spacing
+pub const VIBRATION_ECDF_MAX_POINTS: usize = 2000;
+// Minimum X-axis span (deg/s) so a near-silent axis still draws a readable curve
+pub const VIBRATION_X_AXIS_MIN_SCALE: f64 = 10.0;
+
 // P, I, D Term Activity Plot
 pub const COLOR_P_TERM: &RGBColor = &RED;
 pub const COLOR_I_TERM: &RGBColor = &LIGHTBLUE;
