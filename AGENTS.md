@@ -1,3 +1,8 @@
+## Scope
+- This repo holds math, physics, logs and the data-driven application only.
+- Never put aircraft, build, pilot or owner references, log or file names from a specific set, log counts, or personal and workflow remarks in code, comments, docs, tests, commit messages or PR text.
+- Calibration constants say only what is empirical and how to revisit it; the evidence from specific logs stays outside this repo.
+
 ## Code Changes
 - Preserve comments unless related code changes
 - Add only functional comments, no AI/history notes
@@ -26,7 +31,8 @@
 ## Testing
 - **ALWAYS** prefer `cargo build --release` rather than `cargo run`
 - **ALWAYS** use `--output-dir` ./output/
-- Temporary test code must go in ./tests/
+- Temporary test code must go in ./tests/ and is deleted before committing
+- Run the full `cargo test` and read every `test result` line. The pre-commit hook runs clippy and fmt only, so integration tests in `tests/` can break unseen.
 - Disk-writing unit tests **must** use a unique path per test (e.g. a per-call temp subdirectory) — `cargo test` runs concurrently by default, and a shared path races
 
 ## Git Workflow  
@@ -53,3 +59,5 @@
   - Verify placement fits the document structure and flow
 - Update Table of Contents in OVERVIEW.md when adding new sections
 - Keep README.md usage/examples synchronized with actual CLI flags in `src/main.rs`
+  - The README usage block holds the `--help` text verbatim (only the binary name differs); the test `readme_usage_block_matches_help_text` fails when they differ. Change `usage_text` in `src/main.rs` and the README together.
+- The Optimal P recommendation table in `OVERVIEW.md` is pinned by the test `recommendation_table_follows_td_zone_and_noise`. Change the rule, the table and the test together.
