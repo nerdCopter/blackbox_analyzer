@@ -19,6 +19,7 @@ pub const FONT_SIZE_MESSAGE: i32 = 20; // "Data Unavailable" and other info mess
 // Constants for the step response calculation method (mimicking PlasmaTree and PTB PTstepcalc.m)
 pub const FRAME_LENGTH_S: f64 = 2.0; // Length of each window in seconds (PTB uses 2s)
 pub const RESPONSE_LENGTH_S: f64 = 0.5; // Length of the step response to keep (500ms typical)
+pub const PEAK_SEARCH_MAX_S_ROLL_PITCH: f64 = 0.15; // Roll/pitch peak is searched only before this time (PTB PTstepcalc.m: t < 150 ms); yaw uses the full response
 pub const SUPERPOSITION_FACTOR: usize = 16; // Number of overlapping windows (can be tuned)
 pub const TUKEY_ALPHA: f64 = 1.0; // Alpha for Tukey window (1.0 is Hanning window)
 
