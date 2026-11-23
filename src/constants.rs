@@ -436,8 +436,8 @@ pub const TORQUE_PROFILER_MIN_DT_S: f64 = 1e-9;
 pub const THROTTLE_PUNCH_MIN_DELTA: f64 = 200.0;
 
 /// Time window (ms) within which the throttle increase must occur to count as a punch.
-/// 100 ms catches hand throttle bumps (flip and power-loop blips rise over 100-250 ms); a 50 ms
-/// window found a median of 2 punches per log, 100 ms a median of 8.
+/// 100 ms: a manually applied throttle rise takes 100-250 ms, so a 50 ms window missed most
+/// punches (median 2 per log against 8 at 100 ms).
 pub const THROTTLE_PUNCH_WINDOW_MS: f64 = 100.0;
 
 /// Window (ms) after punch onset in which to measure peak angular acceleration.
