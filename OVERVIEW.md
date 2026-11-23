@@ -293,7 +293,7 @@ Needs step-response windows, `.headers.csv` and at least `TORQUE_PROFILER_MIN_EV
 
 - **Recommendation Types:**
   - **P Increase:** Td slower than target with acceptable noise → P is conservative
-  - **Optimal:** Td within target range or at physical limits → P is well-matched. With low noise, a Td that is already faster than the target (negative deviation, including significantly faster) is Optimal; the small P headroom is offered only at or slower than the target.
+  - **Optimal:** Td within target range or at physical limits → P is well-matched. The low-noise cases are in the table below.
   - **P Decrease:** Td faster than target with high noise → P is too high (rare)
   - **Investigate:** Measurements suggest mechanical issues or abnormal dynamics
   - **Recommendation table** (Td deviation = (measured − target) / target; noise from D-term energy above `DTERM_HF_CUTOFF_HZ`: LOW below `DTERM_HF_ENERGY_MODERATE`, MODERATE below `DTERM_HF_ENERGY_THRESHOLD`, else HIGH; pinned by the unit test `recommendation_table_follows_td_zone_and_noise`):
@@ -307,17 +307,17 @@ Needs step-response windows, `.headers.csv` and at least `TORQUE_PROFILER_MIN_EV
 
     Increases carry the matching D (D scales with P to keep the P:D ratio); the multipliers are `P_HEADROOM_CONSERVATIVE_MULTIPLIER` (+5%), `P_HEADROOM_MODERATE_MULTIPLIER` (+10%) and `P_REDUCTION_MODERATE_MULTIPLIER` (−5%). Td is measured against a per-axis physics target, so a slower axis is judged against its own target, not against another axis.
 
-- **Output:** Console and PNG legend overlay (identical content) per axis:
-  - `Td (median):` — measured Td, the median of the per-window Td values, with the target `±tolerance`. (The first legend line `Td:` is the Td of the averaged curve, so the two can differ slightly.) Td is the median over the step-response windows (overlapping 2 s slices; stride = 2 s / `SUPERPOSITION_FACTOR`), so the window count overstates independent data and is not shown; `Flight clip` gives the log time used instead. PIDtoolbox keeps fewer windows (stride 2 s / 3, 7 or 10 by file length), so its `n` is lower for the same log
-  - `Td source:` — flight count, punch count and spread of the throttle punches that produced the physics target, for example `4 flights, 14 punches, spread 32%`. The spread is the half inter-quartile range of the punch ratios over their median: the middle half of the punches lie within about that percentage of the typical one. A wide spread means the punches disagree and the target is less certain. The same text appears in the console, report and PNG
-  - `Noise:` — HF D-term energy level (`LOW` / `MODERATE` / `HIGH` / `UNKNOWN`) for the current flight
+- **Output:** the console, report and PNG legend show these lines per axis, in this order. The legend omits `Current P=` (the axis title shows it); the console prints it after `Recommendation`; the report uses bullets:
+  - `Recommendation` — one of `(Conservative)` (P increase), `(Decrease)`, `Current P is optimal`, `No change suggested, headroom possible` (Td faster than target with low noise; headroom is not quantified), or `Investigate —` with reason. Increases and decreases include the calculated D adjustment.
+  - `Td (median):` — measured Td, the median of the per-window Td values, with the target `±tolerance`. The first legend line `Td:` is the Td of the averaged curve, so the two can differ slightly.
+  - `Flight clip:` — seconds of log time the step-response windows came from (after `--start`/`--end` and the 3 s start/end margins), for example `218s`
   - `Deviation:` — % difference between measured Td and physics target, with zone label
-  - `Current P=` — P gain value from the flight's metadata
-  - `Recommendation` — one of `(Conservative)`, `(Decrease)`, `Current P is optimal`, or `Investigate —` with reason; includes calculated D adjustment
-  - `Flight clip:` — seconds of log time the step-response windows came from (after `--start`/`--end` and the 3 s start/end margins), for example `218s`; shown on its own line above `Reliable:`
+  - `Noise:` — HF D-term energy level (`LOW` / `MODERATE` / `HIGH` / `UNKNOWN`) for the current flight
+  - `Td source:` — flights, punches and spread of the throttle punches that produced the physics target, for example `4 flights, 14 punches, spread 32%`. The spread is the half inter-quartile range of the punch ratios over their median; a wide spread means the punches disagree and the target is less certain.
   - `Reliable:` / `Unreliable:` — always shows both `Consistency=N% (⊢≥70%)` and `CV=N% (⊢≤40%)`; `Unreliable` is highlighted in orange when either threshold is not met
   - `Setpoint Authority:` — always shown; classifies flight inputs as `LOW`, `MODERATE`, or `HIGH` based on the **mean** of per-window max setpoints (see below). Orange for `LOW`.
   - When profiling is skipped (insufficient punch events), a skip reason replaces the above in the console, PNG and report. See **Consistency and Reliability Interpretation** below.
+  - The window count is not shown: neighbouring windows overlap (stride = 2 s / `SUPERPOSITION_FACTOR`), so it overstates independent data. `Flight clip` gives the log time used.
 
 - **Consistency and Reliability Interpretation (CV):**
   - **Td value:** the **median** of the individual Td measurements across all valid step-response windows (a plain mean follows the few windows that fail deconvolution and return Td of 100 ms or more).
