@@ -22,7 +22,7 @@ use crate::data_analysis::optimal_p_estimation::{OptimalPAnalysis, PRecommendati
 use crate::data_analysis::stick_distribution::StickDistributionResult;
 use crate::data_analysis::transfer_function_estimation::Confidence;
 use crate::data_analysis::vibration_percentile::{
-    percentile_summary_text, VibrationPercentileResult,
+    percentile_summary_text, VibrationPercentileResult, SIGNAL_FILTERED, SIGNAL_UNFILTERED,
 };
 use crate::data_input::pid_metadata::format_d_target;
 use crate::plot_functions::motor_desync::{
@@ -848,7 +848,7 @@ pub fn generate_markdown_report(
         writeln!(md)?;
         writeln!(
             md,
-            "Percentiles of |gyro| over all finite samples of the analyzed data (the whole flight, or the --start/--end window when one is set), value at sorted index (n-1)*p/100. They describe the whole signal, including intentional maneuvers, not noise alone: compare Filtered with Unfiltered, and compare flights flown the same way. A P99 far above P95 means rare large excursions; P50 close to P99 means a steady |gyro| magnitude (steady vibration or steady intentional rotation)."
+            "Percentiles of |gyro| over all finite samples of the analyzed data (the whole flight, or the --start/--end window when one is set), value at sorted index (n-1)*p/100. They describe the whole signal, including intentional maneuvers, not noise alone: compare {SIGNAL_FILTERED} with {SIGNAL_UNFILTERED}, and compare flights flown the same way. A P99 far above P95 means rare large excursions; P50 close to P99 means a steady |gyro| magnitude (steady vibration or steady intentional rotation)."
         )?;
         writeln!(md)?;
     }

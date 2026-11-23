@@ -43,27 +43,20 @@ pub fn plot_vibration_percentile(
         .map(|r| {
             let mut series = Vec::new();
             let mut x_max: f64 = 0.0;
-            for (signal, color, data) in [
-                (
-                    unfilt_signal.as_str(),
-                    *COLOR_VIBRATION_PERCENTILE_UNFILT,
-                    &r.unfiltered,
-                ),
-                (
-                    filt_signal.as_str(),
-                    *COLOR_VIBRATION_PERCENTILE_FILT,
-                    &r.filtered,
-                ),
-            ] {
-                if let Some(s) = data {
-                    x_max = x_max.max(s.percentiles[VIBRATION_X_AXIS_PERCENTILE_INDEX]);
-                    series.push(PlotSeries {
-                        data: series_ecdf_points(s),
-                        label: series_legend(signal, s),
-                        color,
-                        stroke_width: LINE_WIDTH_PLOT,
-                    });
-                }
+            // Unfiltered is drawn first, so the filtered curve stays on top.
+            for (label, s) in r.present_series().into_iter().rev() {
+                let (signal, color) = if label == SIGNAL_UNFILTERED {
+                    (unfilt_signal.as_str(), *COLOR_VIBRATION_PERCENTILE_UNFILT)
+                } else {
+                    (filt_signal.as_str(), *COLOR_VIBRATION_PERCENTILE_FILT)
+                };
+                x_max = x_max.max(s.percentiles[VIBRATION_X_AXIS_PERCENTILE_INDEX]);
+                series.push(PlotSeries {
+                    data: series_ecdf_points(s),
+                    label: series_legend(signal, s),
+                    color,
+                    stroke_width: LINE_WIDTH_PLOT,
+                });
             }
             if series.is_empty() {
                 return None;
