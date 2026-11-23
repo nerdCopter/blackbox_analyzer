@@ -998,7 +998,7 @@ fn usage_text(program_name: &str) -> String {
     );
     let _ = writeln!(
         out,
-        "                        Requires .headers.csv; skips if absent."
+        "                        Requires header metadata (.headers.csv or embedded); skips if absent."
     );
     let _ = writeln!(
         out,

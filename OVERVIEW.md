@@ -256,10 +256,10 @@ The system provides intelligent P:D tuning recommendations based on step-respons
 
 Physics-derived P gain optimization using a Torque-Inertia Profiler that measures aircraft-specific dynamics directly from flight log throttle-punch events. No prop-size input is required — the aircraft's torque-to-inertia ratio is derived from the logs.
 
-Needs step-response windows, `.headers.csv` and at least `TORQUE_PROFILER_MIN_EVENTS` punches. D-term data is optional: it enables the noise assessment, and without it the noise level is `UNKNOWN` and the recommendation uses Td only. The P:D recommendation does not depend on it; it needs valid step-response windows and the P and D gains from the PID metadata.
+Needs step-response windows, header metadata with the P gain (`.headers.csv` or embedded header lines) and at least `TORQUE_PROFILER_MIN_EVENTS` punches. D-term data is optional: it enables the noise assessment, and without it the noise level is `UNKNOWN` and the recommendation uses Td only. The P:D recommendation does not depend on it; it needs valid step-response windows and the P and D gains from the PID metadata.
 
 - **Activation:** Disabled by default; enable with `--estimate-optimal-p` flag.
-- **Requires:** Header metadata with the P and D gains: a `.headers.csv` file alongside each input CSV (produced by `blackbox_decode`, or automatically by BBL/BFL input expansion — see above) or embedded header lines in the CSV. Without gains, optimal P estimation is skipped with a skip-reason shown in console and PNG, and P:D recommendations are not produced. Other analyses (step response, spectrums) remain unaffected.
+- **Requires:** Header metadata with the P gain (D gain is optional: without it the D target is omitted): a `.headers.csv` file alongside each input CSV (produced by `blackbox_decode`, or automatically by BBL/BFL input expansion — see above) or embedded header lines in the CSV. Without the P gain, optimal P estimation is skipped with a skip-reason shown in console and PNG. P:D recommendations need both gains and a nonzero D. Other analyses (step response, spectrums) remain unaffected.
 - **⚠️ Status:** Experimental. `TORQUE_PROFILER_ACHIEVABILITY_FACTOR` bridges the gap between the theoretical physics formula and real-world flight performance (ESC lag, prop-wash, motor startup). It is empirically calibrated and may need adjustment for aircraft significantly different from a mid-size freestyle build.
 
 ##### Torque-Inertia Profiler (`src/data_analysis/torque_inertia_profiler.rs`)
