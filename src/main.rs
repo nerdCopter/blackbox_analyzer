@@ -1747,11 +1747,11 @@ INFO: Skipping Step Response input data filtering for {input_file_str}: {reason}
                                 // Always store recommendations for zones where the delta is small by
                                 // design (Acceptable ≈2%, Undershoot near-boundary ≈5% at low P:D)
                                 // to avoid the 5% gate suppressing valid recommendations.
-                                if assessment == "Acceptable"
-                                    || assessment == "Undershoot"
-                                    || (recommended_ratio - current_pd_ratio).abs()
-                                        > crate::constants::PD_RATIO_MIN_CHANGE_THRESHOLD
-                                {
+                                if crate::data_input::pid_metadata::pd_advice_passes_change_gate(
+                                    assessment,
+                                    current_pd_ratio,
+                                    recommended_ratio,
+                                ) {
                                     // store conservative recommendation for later use in plots
                                     recommended_pd_conservative[axis_index] =
                                         Some(recommended_ratio);
@@ -2011,7 +2011,10 @@ INFO: Skipping Step Response input data filtering for {input_file_str}: {reason}
                     d_min: recommended_d_min_aggressive[axis_index],
                     d_max: recommended_d_max_aggressive[axis_index],
                 });
-                let aggressive = if assessment == "Significant overshoot" {
+                // Same gate as console and legend: no stored conservative tier, no aggressive tier.
+                let aggressive = if assessment == "Significant overshoot"
+                    && recommended_pd_conservative[axis_index].is_some()
+                {
                     pid_metadata.get_axis(axis_index).map(|axis| {
                         let agg = axis.aggressive_recommendation(current_pd_ratio, dmax_enabled);
                         report::DTermRec {
