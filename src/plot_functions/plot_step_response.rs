@@ -9,8 +9,8 @@ use crate::constants::{
     COLOR_OPTIMAL_P_DIVIDER, COLOR_OPTIMAL_P_HEADER, COLOR_OPTIMAL_P_RECOMMENDATION,
     COLOR_OPTIMAL_P_SKIP, COLOR_OPTIMAL_P_TEXT, COLOR_OPTIMAL_P_WARNING,
     COLOR_STEP_RESPONSE_COMBINED, COLOR_STEP_RESPONSE_HIGH_SP, COLOR_STEP_RESPONSE_LOW_SP,
-    LINE_WIDTH_PLOT, LOW_AUTHORITY_SETPOINT_THRESHOLD_DEG_S, RESPONSE_LENGTH_S, STEADY_STATE_END_S,
-    STEADY_STATE_START_S,
+    LINE_WIDTH_STEP_RESPONSE, LOW_AUTHORITY_SETPOINT_THRESHOLD_DEG_S, RESPONSE_LENGTH_S,
+    STEADY_STATE_END_S, STEADY_STATE_START_S,
 };
 use crate::data_analysis::calc_step_response; // For average_responses
 use crate::data_analysis::calc_step_response::{compute_setpoint_authority, SetpointAuthority};
@@ -99,7 +99,7 @@ pub fn plot_step_response(
     let color_high_sp: RGBColor = *COLOR_STEP_RESPONSE_HIGH_SP;
     let color_combined: RGBColor = *COLOR_STEP_RESPONSE_COMBINED;
     let color_low_sp: RGBColor = *COLOR_STEP_RESPONSE_LOW_SP;
-    let line_stroke_plot = LINE_WIDTH_PLOT;
+    let line_stroke_plot = LINE_WIDTH_STEP_RESPONSE;
 
     let output_file_step = if display.show_legend {
         format!(
@@ -207,10 +207,8 @@ pub fn plot_step_response(
                     let latency_opt = calc_step_response::calculate_delay_time(&resp, sr);
                     let peak_str =
                         peak_val_opt.map_or_else(|| "N/A".to_string(), |p| format!("{p:.2}"));
-                    let latency_str = latency_opt.map_or_else(
-                        || "N/A".to_string(),
-                        |l_s| format!("{:.0} ms", l_s * 1000.0),
-                    );
+                    let latency_str = latency_opt
+                        .map_or_else(|| "N/A".to_string(), |l_s| format!("{:.1}ms", l_s * 1000.0));
                     series.push(PlotSeries {
                         data: response_time
                             .iter()
@@ -230,10 +228,8 @@ pub fn plot_step_response(
                     let latency_opt = calc_step_response::calculate_delay_time(&resp, sr);
                     let peak_str =
                         peak_val_opt.map_or_else(|| "N/A".to_string(), |p| format!("{p:.2}"));
-                    let latency_str = latency_opt.map_or_else(
-                        || "N/A".to_string(),
-                        |l_s| format!("{:.0} ms", l_s * 1000.0),
-                    );
+                    let latency_str = latency_opt
+                        .map_or_else(|| "N/A".to_string(), |l_s| format!("{:.1}ms", l_s * 1000.0));
                     series.push(PlotSeries {
                         data: response_time
                             .iter()
@@ -253,10 +249,8 @@ pub fn plot_step_response(
                     let latency_opt = calc_step_response::calculate_delay_time(resp, sr);
                     let peak_str =
                         peak_val_opt.map_or_else(|| "N/A".to_string(), |p| format!("{p:.2}"));
-                    let latency_str = latency_opt.map_or_else(
-                        || "N/A".to_string(),
-                        |l_s| format!("{:.0} ms", l_s * 1000.0),
-                    );
+                    let latency_str = latency_opt
+                        .map_or_else(|| "N/A".to_string(), |l_s| format!("{:.1}ms", l_s * 1000.0));
                     series.push(PlotSeries {
                         data: response_time
                             .iter()
@@ -275,10 +269,8 @@ pub fn plot_step_response(
                     let latency_opt = calc_step_response::calculate_delay_time(resp, sr);
                     let peak_str =
                         peak_val_opt.map_or_else(|| "N/A".to_string(), |p| format!("{p:.2}"));
-                    let latency_str = latency_opt.map_or_else(
-                        || "N/A".to_string(),
-                        |l_s| format!("{:.0} ms", l_s * 1000.0),
-                    );
+                    let latency_str = latency_opt
+                        .map_or_else(|| "N/A".to_string(), |l_s| format!("{:.1}ms", l_s * 1000.0));
                     series.push(PlotSeries {
                         data: response_time
                             .iter()
@@ -489,62 +481,8 @@ pub fn plot_step_response(
                             stroke_width: 0,
                         });
 
-                        // Td measurement
-                        series.push(PlotSeries {
-                            data: vec![],
-                            label: format!(
-                                "  Td: {:.1}ms (target: {:.1}±{:.1}ms, windows={})",
-                                analysis.td_stats.mean_ms,
-                                analysis.td_target_ms,
-                                analysis.td_tolerance_ms,
-                                analysis.td_stats.num_samples,
-                            ),
-                            color: COLOR_OPTIMAL_P_TEXT,
-                            stroke_width: 0,
-                        });
-
-                        series.push(PlotSeries {
-                            data: vec![],
-                            label: format!("  Td source: {}", analysis.source_summary()),
-                            color: COLOR_OPTIMAL_P_TEXT,
-                            stroke_width: 0,
-                        });
-
-                        // Noise
-                        series.push(PlotSeries {
-                            data: vec![],
-                            label: format!("  Noise: {}", analysis.noise_level.name()),
-                            color: COLOR_OPTIMAL_P_TEXT,
-                            stroke_width: 0,
-                        });
-
-                        // Deviation
-                        let deviation_sign = if analysis.td_deviation_percent > 0.0 {
-                            "+"
-                        } else {
-                            ""
-                        };
-                        series.push(PlotSeries {
-                            data: vec![],
-                            label: format!(
-                                "  Deviation: {}{:.1}% ({})",
-                                deviation_sign,
-                                analysis.td_deviation_percent,
-                                analysis.td_deviation.name(),
-                            ),
-                            color: COLOR_OPTIMAL_P_TEXT,
-                            stroke_width: 0,
-                        });
-
-                        // Current P
-                        series.push(PlotSeries {
-                            data: vec![],
-                            label: format!("  Current P={}", analysis.current_p),
-                            color: COLOR_OPTIMAL_P_TEXT,
-                            stroke_width: 0,
-                        });
-
-                        // Recommendation — D-suffix helper
+                        // Order: recommendation first, then the evidence behind it. The axis
+                        // title already shows the current P, so it is not repeated here.
                         let d_range = pid_metadata
                             .get_axis(axis_index)
                             .and_then(|ax| ax.d_range_for_display(dmax_enabled));
@@ -552,9 +490,9 @@ pub fn plot_step_response(
                             |recommended_p: u32| analysis.d_target_suffix(recommended_p, d_range);
 
                         let rec_label = match &analysis.recommendation {
-                            PRecommendation::Optimal { .. } => format!(
-                                "  Recommendation: Current P is optimal (P={})",
-                                analysis.current_p
+                            rec @ PRecommendation::Optimal { .. } => format!(
+                                "  Recommendation: {}",
+                                rec.optimal_short_text().unwrap_or_default()
                             ),
                             PRecommendation::Increase { conservative_p, .. } => {
                                 let p_delta =
@@ -586,7 +524,62 @@ pub fn plot_step_response(
                             stroke_width: 0,
                         });
 
-                        // Reliability — always shown, after recommendation; orange when poor
+                        // Td measurement
+                        series.push(PlotSeries {
+                            data: vec![],
+                            label: format!(
+                                "  Td (median): {:.1}ms (target: {:.1}±{:.1}ms)",
+                                analysis.td_stats.median_ms,
+                                analysis.td_target_ms,
+                                analysis.td_tolerance_ms,
+                            ),
+                            color: COLOR_OPTIMAL_P_TEXT,
+                            stroke_width: 0,
+                        });
+
+                        if let Some(clip) = analysis.flight_clip_text() {
+                            series.push(PlotSeries {
+                                data: vec![],
+                                label: format!("  Flight clip: {clip}"),
+                                color: COLOR_OPTIMAL_P_TEXT,
+                                stroke_width: 0,
+                            });
+                        }
+
+                        // Deviation
+                        let deviation_sign = if analysis.td_deviation_percent > 0.0 {
+                            "+"
+                        } else {
+                            ""
+                        };
+                        series.push(PlotSeries {
+                            data: vec![],
+                            label: format!(
+                                "  Deviation: {}{:.1}% ({})",
+                                deviation_sign,
+                                analysis.td_deviation_percent,
+                                analysis.td_deviation.name(),
+                            ),
+                            color: COLOR_OPTIMAL_P_TEXT,
+                            stroke_width: 0,
+                        });
+
+                        // Noise
+                        series.push(PlotSeries {
+                            data: vec![],
+                            label: format!("  Noise: {}", analysis.noise_level.name()),
+                            color: COLOR_OPTIMAL_P_TEXT,
+                            stroke_width: 0,
+                        });
+
+                        series.push(PlotSeries {
+                            data: vec![],
+                            label: format!("  Td source: {}", analysis.source_summary()),
+                            color: COLOR_OPTIMAL_P_TEXT,
+                            stroke_width: 0,
+                        });
+
+                        // Reliability — always shown, last; orange when poor
                         {
                             let rel_text = format!(
                                 "  {}: {}",

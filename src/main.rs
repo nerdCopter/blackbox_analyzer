@@ -26,7 +26,9 @@ use tempfile::TempDir;
 use ndarray::Array1;
 
 use crate::axis_names::AXIS_COUNT;
-use crate::data_analysis::torque_inertia_profiler::{extract_punch_ratios, AircraftProfile};
+use crate::data_analysis::torque_inertia_profiler::{
+    add_axis_file_counts, extract_punch_ratios, AircraftProfile,
+};
 use crate::data_input::bbl_reader::print_block_separator;
 use crate::types::{InputExpansionResult, LogParseResult, StepResponseResults};
 
@@ -886,71 +888,168 @@ fn drop_repeated_inputs(files: Vec<String>) -> Vec<String> {
     kept
 }
 
-fn print_usage_and_exit(program_name: &str) {
-    eprintln!(
+/// The full `--help` text. The README usage block is the same text (checked by a test).
+fn usage_text(program_name: &str) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    let _ =
+        writeln!(out,
         "Analyze Betaflight/EmuFlight Blackbox logs (BBL, BFL, or CSV); render plots and a report."
     );
-    eprintln!("\nUsage: {program_name} <input1> [<input2> ...] [OPTIONS]");
-    eprintln!();
-    eprintln!("--- INPUT/OUTPUT OPTIONS ---");
-    eprintln!();
-    eprintln!(
+    let _ = writeln!(
+        out,
+        "\nUsage: {program_name} <input1> [<input2> ...] [OPTIONS]"
+    );
+    let _ = writeln!(out);
+    let _ = writeln!(out, "--- INPUT/OUTPUT OPTIONS ---");
+    let _ = writeln!(out);
+    let _ = writeln!(out,
         "  <inputX>: CSV, BBL, or BFL files, directories, or wildcards (*.csv, *.bbl, *.bfl). Header"
     );
-    eprintln!("            files auto-excluded. A multi-flight .bbl/.bfl can produce one report per eligible flight.");
-    eprintln!("            An input with the same bytes as an earlier one is skipped; a different log with the");
-    eprintln!(
+    let _ = writeln!(out, "            files auto-excluded. A multi-flight .bbl/.bfl can produce one report per eligible flight.");
+    let _ = writeln!(out, "            An input with the same bytes as an earlier one is skipped; a different log with the");
+    let _ =
+        writeln!(out,
         "            same file name gets a `_2` suffix. Output names never get a folder prefix."
     );
-    eprintln!("  -O, --output-dir <directory>: Output directory (default: source folder).");
-    eprintln!("  -R, --recursive: Recursively find CSV/BBL/BFL files in subdirectories.");
-    eprintln!("  -F, --force-export: Export .bbl/.bfl flights bbl_parser would otherwise skip as");
-    eprintln!("            low-value (very short / low data density / minimal gyro activity).");
-    eprintln!("  -K, --keep: Keep the exported .csv/.headers.csv files (source folder, or");
-    eprintln!(
+    let _ = writeln!(
+        out,
+        "  -O, --output-dir <directory>: Output directory (default: source folder)."
+    );
+    let _ = writeln!(
+        out,
+        "  -R, --recursive: Recursively find CSV/BBL/BFL files in subdirectories."
+    );
+    let _ = writeln!(
+        out,
+        "  -F, --force-export: Export .bbl/.bfl flights bbl_parser would otherwise skip as"
+    );
+    let _ = writeln!(
+        out,
+        "            low-value (very short / low data density / minimal gyro activity)."
+    );
+    let _ = writeln!(
+        out,
+        "  -K, --keep: Keep the exported .csv/.headers.csv files (source folder, or"
+    );
+    let _ = writeln!(
+        out,
         "              -O/--output-dir). A later --keep run uses an existing export (CSV and"
     );
-    eprintln!("              .headers.csv) instead of decoding; -F/--force-export re-extracts.");
-    eprintln!();
-    eprintln!("--- PLOT TYPE SELECTION ---");
-    eprintln!();
-    eprintln!("  --core           [default] Step Response, Gyro Spectrums, D-term Spectrums,");
-    eprintln!("                   Setpoint vs Gyro, Gyro vs Unfiltered, Motor Spectrums,");
-    eprintln!("                   RC Command Activity.");
-    eprintln!("  --extended       All plots except Bode — adds PIDsum/Error, PID Activity,");
-    eprintln!("                   Setpoint Derivative, Gyro PSD, D-term PSD, heatmaps, and");
-    eprintln!("                   Motor vs eRPM (requires bidirectional DShot telemetry).");
-    eprintln!("  --step           Step response only.");
-    eprintln!("  --bode           Bode only (requires chirp/sweep system-id test flight).");
-    eprintln!("  --desync         Motor vs eRPM plot only (needs eRPM telemetry). Desync");
-    eprintln!("                   detection itself (Fallback tier) still runs without it.");
-    eprintln!();
-    eprintln!("--- ANALYSIS OPTIONS ---");
-    eprintln!();
-    eprintln!("  --butterworth    Show Butterworth PT1 cutoffs on gyro/D-term spectrum plots.");
-    eprintln!(
+    let _ = writeln!(
+        out,
+        "              .headers.csv) instead of decoding; -F/--force-export re-extracts."
+    );
+    let _ = writeln!(out);
+    let _ = writeln!(out, "--- PLOT TYPE SELECTION ---");
+    let _ = writeln!(out);
+    let _ = writeln!(
+        out,
+        "  --core           [default] Step Response, Gyro Spectrums, D-term Spectrums,"
+    );
+    let _ = writeln!(
+        out,
+        "                   Setpoint vs Gyro, Gyro vs Unfiltered, Motor Spectrums,"
+    );
+    let _ = writeln!(out, "                   RC Command Activity.");
+    let _ = writeln!(
+        out,
+        "  --extended       All plots except Bode — adds PIDsum/Error, PID Activity,"
+    );
+    let _ = writeln!(
+        out,
+        "                   Setpoint Derivative, Gyro PSD, D-term PSD, heatmaps, and"
+    );
+    let _ = writeln!(
+        out,
+        "                   Motor vs eRPM (requires bidirectional DShot telemetry)."
+    );
+    let _ = writeln!(out, "  --step           Step response only.");
+    let _ = writeln!(
+        out,
+        "  --bode           Bode only (requires chirp/sweep system-id test flight)."
+    );
+    let _ = writeln!(
+        out,
+        "  --desync         Motor vs eRPM plot only (needs eRPM telemetry). Desync"
+    );
+    let _ = writeln!(
+        out,
+        "                   detection itself (Fallback tier) still runs without it."
+    );
+    let _ = writeln!(out);
+    let _ = writeln!(out, "--- ANALYSIS OPTIONS ---");
+    let _ = writeln!(out);
+    let _ = writeln!(
+        out,
+        "  --butterworth    Show Butterworth PT1 cutoffs on gyro/D-term spectrum plots."
+    );
+    let _ =
+        writeln!(out,
         "  --dps <value>    Deg/s threshold for detailed step response plots (positive number)."
     );
-    eprintln!("  --estimate-optimal-p  [EXPERIMENTAL] Optimal P estimation from throttle-punch");
-    eprintln!("                        dynamics. Requires .headers.csv; skips if absent.");
-    eprintln!("                        Its Td target always profiles the full file, ignoring");
-    eprintln!("                        --start/--end; only its Td measurement is trimmed.");
-    eprintln!();
-    eprintln!("--- TIME WINDOW ---");
-    eprintln!();
-    eprintln!("  --start <seconds>  Trim analysis to this offset onward, relative to the");
-    eprintln!("                     start of the log. Omit to start at the log start.");
-    eprintln!("  --end <seconds>    Trim analysis up to this offset, relative to the");
-    eprintln!("                     start of the log. Omit to end at the log end.");
-    eprintln!("                     Independent — use either or both. Applies before every");
-    eprintln!("                     analysis and plot (step response may skip if the");
-    eprintln!("                     trimmed window is too short).");
-    eprintln!();
-    eprintln!("--- GENERAL ---");
-    eprintln!();
-    eprintln!("  --debug          Show detailed metadata during processing.");
-    eprintln!("  -h, --help       Show this help message and exit.");
-    eprintln!("  -V, --version    Show version information.");
+    let _ = writeln!(
+        out,
+        "  --estimate-optimal-p  [EXPERIMENTAL] Optimal P estimation from throttle-punch"
+    );
+    let _ = writeln!(
+        out,
+        "                        dynamics; needs 5+ punches (one log or pooled group)."
+    );
+    let _ = writeln!(
+        out,
+        "                        Requires header metadata (.headers.csv or embedded); skips if absent."
+    );
+    let _ = writeln!(
+        out,
+        "                        Its Td target always profiles the full file, ignoring"
+    );
+    let _ = writeln!(
+        out,
+        "                        --start/--end; only its Td measurement is trimmed."
+    );
+    let _ = writeln!(out);
+    let _ = writeln!(out, "--- TIME WINDOW ---");
+    let _ = writeln!(out);
+    let _ = writeln!(
+        out,
+        "  --start <seconds>  Trim analysis to this offset onward, relative to the"
+    );
+    let _ = writeln!(
+        out,
+        "                     start of the log. Omit to start at the log start."
+    );
+    let _ = writeln!(
+        out,
+        "  --end <seconds>    Trim analysis up to this offset, relative to the"
+    );
+    let _ = writeln!(
+        out,
+        "                     start of the log. Omit to end at the log end."
+    );
+    let _ = writeln!(
+        out,
+        "                     Independent — use either or both. Applies before every"
+    );
+    let _ = writeln!(
+        out,
+        "                     analysis and plot (step response may skip if the"
+    );
+    let _ = writeln!(out, "                     trimmed window is too short).");
+    let _ = writeln!(out);
+    let _ = writeln!(out, "--- GENERAL ---");
+    let _ = writeln!(out);
+    let _ = writeln!(
+        out,
+        "  --debug          Show detailed metadata during processing."
+    );
+    let _ = writeln!(out, "  -h, --help       Show this help message and exit.");
+    let _ = writeln!(out, "  -V, --version    Show version information.");
+    out
+}
+
+fn print_usage_and_exit(program_name: &str) {
+    eprint!("{}", usage_text(program_name));
     std::process::exit(1);
 }
 
@@ -1111,6 +1210,7 @@ fn profile_aircraft_group(
     let mut all_axis_ratios: [Vec<f64>; crate::axis_names::AXIS_COUNT] =
         std::array::from_fn(|_| Vec::new());
     let mut files_profiled: usize = 0;
+    let mut axis_files = [0usize; crate::axis_names::AXIS_COUNT];
     let mut parsed_cache: Vec<LogParseResult> = Vec::with_capacity(files.len());
 
     for file_str in files {
@@ -1120,6 +1220,7 @@ fn profile_aircraft_group(
             Ok((log_data, Some(sr), ..)) => {
                 let ratios = extract_punch_ratios(log_data, *sr);
                 let total_events: usize = ratios.iter().map(|v| v.len()).sum();
+                add_axis_file_counts(&ratios, &mut axis_files);
                 for (axis, axis_ratio_vec) in all_axis_ratios.iter_mut().enumerate() {
                     axis_ratio_vec.extend_from_slice(&ratios[axis]);
                 }
@@ -1162,6 +1263,9 @@ fn profile_aircraft_group(
 
     let mut profile = AircraftProfile::from_axis_ratios(all_axis_ratios);
     profile.file_count = files_profiled;
+    for (axis, count) in axis_files.iter().enumerate() {
+        profile.axes[axis].file_count = *count;
+    }
     (profile, parsed_cache)
 }
 
@@ -2041,7 +2145,15 @@ INFO: Skipping Step Response input data filtering for {input_file_str}: {reason}
                                 Ok(mut analysis) => {
                                     analysis.source_events =
                                         aircraft_profile.axes[axis_index].event_count;
-                                    analysis.source_files = aircraft_profile.file_count;
+                                    analysis.source_files = aircraft_profile.axes[axis_index].file_count;
+                                    analysis.source_spread =
+                                        aircraft_profile.axes[axis_index].ratio_spread_fraction;
+                                    analysis.analysed_seconds = match (first_time, last_time) {
+                                        (Some(first), Some(last)) => {
+                                            Some((last - first - EXCLUDE_START_S - EXCLUDE_END_S).max(0.0))
+                                        }
+                                        _ => None,
+                                    };
                                     // Print console output
                                     let d_range = pid_metadata
                                         .get_axis(axis_index)
@@ -2071,6 +2183,7 @@ INFO: Skipping Step Response input data filtering for {input_file_str}: {reason}
     }
 
     let optimal_p_for_report = optimal_p_analyses.clone();
+    let optimal_p_skip_for_report = optimal_p_skip_reasons.clone();
 
     // Create RAII guard BEFORE changing directory if needed
     let _cwd_guard = if let Some(output_dir) = output_dir {
@@ -2518,6 +2631,7 @@ INFO: Skipping Step Response input data filtering for {input_file_str}: {reason}
         d_ranges: d_ranges_for_report,
         step_reports,
         optimal_p: optimal_p_for_report,
+        optimal_p_skip: optimal_p_skip_for_report,
         gyro_analysis,
         dterm_results,
         bode_results,
@@ -3631,5 +3745,33 @@ mod output_name_tests {
         let two = find_colliding_bbl_stems(&[file, folder], true);
         assert_eq!(two, HashSet::from(["log".to_string()]));
         std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+#[cfg(test)]
+mod usage_tests {
+    use super::usage_text;
+
+    // Spec: the README usage block holds the `--help` text verbatim. Only the binary name
+    // differs (README shows ./blackbox_analyzer).
+    #[test]
+    fn readme_usage_block_matches_help_text() {
+        let readme = include_str!("../README.md");
+        let usage = readme
+            .find("### Usage")
+            .expect("README has a Usage section");
+        let start = readme[usage..]
+            .find("```shell\n")
+            .expect("usage code block")
+            + usage
+            + 9;
+        let end = readme[start..].find("\n```").expect("usage block end") + start;
+        let block = readme[start..end].trim_end_matches('\n');
+        let help = usage_text("./blackbox_analyzer");
+        assert_eq!(
+            block,
+            help.trim_end_matches('\n'),
+            "README usage block differs from --help; update README.md to match"
+        );
     }
 }

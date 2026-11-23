@@ -117,6 +117,9 @@ impl TdDeviation {
 pub enum PRecommendation {
     Optimal {
         reasoning: String,
+        /// True when Td is already faster than the physics target: more P headroom is likely
+        /// but cannot be quantified, so the short text says so instead of "optimal".
+        headroom_unquantified: bool,
     },
     Increase {
         conservative_p: u32,
@@ -131,66 +134,93 @@ pub enum PRecommendation {
     },
 }
 
+impl PRecommendation {
+    /// Short text for an `Optimal` recommendation, shared by the console, the legend and the
+    /// report, so all three say the same thing. `None` for the other variants.
+    pub fn optimal_short_text(&self) -> Option<String> {
+        match self {
+            PRecommendation::Optimal {
+                headroom_unquantified: true,
+                ..
+            } => Some("No change suggested, headroom possible".to_string()),
+            PRecommendation::Optimal { .. } => Some("Current P is optimal".to_string()),
+            _ => None,
+        }
+    }
+}
+
 /// Statistics for Td measurements across multiple step responses
 #[derive(Debug, Clone)]
 pub struct TdStatistics {
-    pub mean_ms: f64,
+    /// Median Td in ms. The median is used because single windows can fail deconvolution and
+    /// return Td values many times the typical one; a mean would follow those outliers.
+    pub median_ms: f64,
+    /// Robust coefficient of variation: `TD_MAD_TO_SIGMA * MAD / median`. `None` when there are
+    /// too few samples.
     pub coefficient_of_variation: Option<f64>,
     pub num_samples: usize,
-    pub consistency: f64, // Fraction of samples within ±1 std dev
+    /// Fraction of samples within `TD_COEFFICIENT_OF_VARIATION_MAX * median` of the median.
+    pub consistency: f64,
+}
+
+/// Median of a non-empty slice already sorted ascending.
+fn sorted_median(sorted: &[f64]) -> f64 {
+    let n = sorted.len();
+    if n.is_multiple_of(PARITY_DIVISOR) {
+        (sorted[n / 2 - 1] + sorted[n / 2]) / 2.0
+    } else {
+        sorted[n / 2]
+    }
 }
 
 impl TdStatistics {
     /// Calculate statistics from array of Td values (in milliseconds)
     pub fn from_samples(td_samples_ms: &[f64]) -> Option<Self> {
-        let td_samples_ms: Vec<f64> = td_samples_ms
+        let mut sorted: Vec<f64> = td_samples_ms
             .iter()
             .copied()
             .filter(|x| x.is_finite())
             .collect();
 
-        if td_samples_ms.is_empty() {
+        if sorted.is_empty() {
             return None;
         }
+        sorted.sort_by(|a, b| a.total_cmp(b));
 
-        let n = td_samples_ms.len() as f64;
-        let mean = td_samples_ms.iter().sum::<f64>() / n;
+        let n = sorted.len() as f64;
+        let median = sorted_median(&sorted);
 
         // Use epsilon-based comparison to avoid division by near-zero values
-        if mean.abs() <= TD_MEAN_EPSILON {
+        if median.abs() <= TD_MEAN_EPSILON {
             return None;
         }
 
-        // Calculate sample variance with Bessel's correction (divide by n-1)
-        // For small samples, set coefficient_of_variation to None to indicate insufficient data
-        let coefficient_of_variation = if td_samples_ms.len() < TD_SAMPLES_MIN_FOR_STDDEV {
+        // Robust spread: median absolute deviation, scaled to match a standard deviation for
+        // normally distributed data. A few outlier windows do not inflate it.
+        // Too few samples: no spread estimate (coefficient_of_variation None).
+        let coefficient_of_variation = if sorted.len() < TD_SAMPLES_MIN_FOR_STDDEV {
             None
         } else {
-            let sum_sq_dev = td_samples_ms
-                .iter()
-                .map(|&x| (x - mean).powi(2))
-                .sum::<f64>();
-            let variance = sum_sq_dev / (n - 1.0);
-            let std_dev = variance.sqrt();
-            Some(std_dev / mean)
+            let mut abs_dev: Vec<f64> = sorted.iter().map(|&x| (x - median).abs()).collect();
+            abs_dev.sort_by(|a, b| a.total_cmp(b));
+            Some(TD_MAD_TO_SIGMA * sorted_median(&abs_dev) / median)
         };
 
-        // Calculate consistency: fraction within ±1 std dev
-        // When coefficient_of_variation is None (too few samples), consistency is perfect (1.0)
-        // Otherwise, tolerance = cv * mean and calculate fraction within range
-        let consistency = coefficient_of_variation.map_or(1.0, |cv| {
-            let tolerance = cv * mean;
-            let within_range = td_samples_ms
+        // Consistency: fraction of samples within the allowed relative spread of the median.
+        // When coefficient_of_variation is None (too few samples), consistency is perfect (1.0).
+        let consistency = coefficient_of_variation.map_or(1.0, |_| {
+            let tolerance = TD_COEFFICIENT_OF_VARIATION_MAX * median.abs();
+            let within_range = sorted
                 .iter()
-                .filter(|&&x| (x - mean).abs() <= tolerance)
+                .filter(|&&x| (x - median).abs() <= tolerance)
                 .count();
             within_range as f64 / n
         });
 
         Some(TdStatistics {
-            mean_ms: mean,
+            median_ms: median,
             coefficient_of_variation,
-            num_samples: td_samples_ms.len(),
+            num_samples: sorted.len(),
             consistency,
         })
     }
@@ -254,6 +284,12 @@ pub struct OptimalPAnalysis {
     pub source_events: usize,
     /// Number of flight files that contributed to the physics Td target.
     pub source_files: usize,
+    /// Spread of the throttle-punch torque/inertia ratios (half inter-quartile range / median).
+    /// A wide spread means the punches disagree, so the Td target is less certain.
+    pub source_spread: Option<f64>,
+    /// Seconds of flight data the step-response windows came from (log time after the --start/--end
+    /// trim and the fixed start/end margins). Shown on the reliability line.
+    pub analysed_seconds: Option<f64>,
 }
 
 impl OptimalPAnalysis {
@@ -305,7 +341,7 @@ impl OptimalPAnalysis {
         }
 
         // Calculate deviation from target (safe: td_target_ms validated above)
-        let td_deviation_percent = ((td_stats.mean_ms - td_target_ms) / td_target_ms) * 100.0;
+        let td_deviation_percent = ((td_stats.median_ms - td_target_ms) / td_target_ms) * 100.0;
 
         // Classify deviation
         let td_deviation = if td_deviation_percent > TD_DEVIATION_SIGNIFICANTLY_SLOWER_THRESHOLD {
@@ -353,6 +389,8 @@ impl OptimalPAnalysis {
             td_tolerance_ms,
             source_events: 0,
             source_files: 0,
+            source_spread: None,
+            analysed_seconds: None,
         })
     }
 
@@ -400,10 +438,12 @@ impl OptimalPAnalysis {
                 ),
             },
 
-            // Case 3: Td within target + low noise = slight headroom available
+            // Case 3: Td within target + low noise = slight headroom, but only when Td is not
+            // already faster than the target (deviation >= 0). A faster-than-target response
+            // has no headroom left by the physics target.
             (TdDeviation::WithinTarget, NoiseLevel::Low) => {
                 let conservative = safe_scaled_p(current_p, P_HEADROOM_CONSERVATIVE_MULTIPLIER);
-                if conservative > current_p {
+                if td_deviation_percent >= 0.0 && conservative > current_p {
                     PRecommendation::Increase {
                         conservative_p: conservative,
                         reasoning: "Response time is in target range with low noise. \
@@ -411,10 +451,11 @@ impl OptimalPAnalysis {
                     }
                 } else {
                     PRecommendation::Optimal {
+                headroom_unquantified: false,
                         reasoning: format!(
                             "Response time is in target range ({:.1}ms) with low noise levels. \
                              Current P ({}) appears optimal.",
-                            td_stats.mean_ms, current_p
+                            td_stats.median_ms, current_p
                         ),
                     }
                 }
@@ -422,15 +463,17 @@ impl OptimalPAnalysis {
 
             // Case 4: Td within target + moderate noise = likely optimal
             (TdDeviation::WithinTarget, NoiseLevel::Moderate) => PRecommendation::Optimal {
+                headroom_unquantified: false,
                 reasoning: format!(
                     "Response time is in target range ({:.1}ms) with moderate noise levels. \
                      Current P ({}) appears optimal for this aircraft.",
-                    td_stats.mean_ms, current_p
+                    td_stats.median_ms, current_p
                 ),
             },
 
             // Case 5: Td within target + high noise = optimal but monitor
             (TdDeviation::WithinTarget, NoiseLevel::High) => PRecommendation::Optimal {
+                headroom_unquantified: false,
                 reasoning: format!(
                     "Response time is in target range but noise levels are high. \
                      Current P ({}) is at or near physical limits. Monitor motor temperatures.",
@@ -453,6 +496,7 @@ impl OptimalPAnalysis {
 
             // Case 7: Td faster than target + moderate noise = at optimal limit
             (TdDeviation::SignificantlyFaster, NoiseLevel::Moderate) => PRecommendation::Optimal {
+                headroom_unquantified: false,
                 reasoning: format!(
                     "Response is {:.1}% faster than target with moderate noise. \
                      Current P ({}) is at or near optimal limit for this aircraft.",
@@ -460,32 +504,19 @@ impl OptimalPAnalysis {
                 ),
             },
 
-            // Case 8: Td faster than target + low noise = headroom available for P increase
-            // This is GOOD - faster response + low noise means the prop size might be 
-            // slightly smaller than specified, or the build is exceptionally clean.
-            // Either way, there's headroom to push P higher if desired.
-            (TdDeviation::SignificantlyFaster, NoiseLevel::Low) => {
-                let conservative = safe_scaled_p(current_p, P_HEADROOM_CONSERVATIVE_MULTIPLIER);
-                if conservative > current_p {
-                    PRecommendation::Increase {
-                        conservative_p: conservative,
-                        reasoning: format!(
-                            "Response is {:.1}% faster than target with low noise levels. \
-                             This indicates excellent build quality with headroom for P increase. \
-                             Note: Verify prop size is correct (may be smaller than specified).",
-                            td_deviation_percent
-                        ),
-                    }
-                } else {
-                    PRecommendation::Optimal {
-                        reasoning: format!(
-                            "Response is {:.1}% faster than target with low noise. \
-                             Current P ({}) is optimal. Excellent build quality or prop size may differ from spec.",
-                            td_deviation_percent, current_p
-                        ),
-                    }
-                }
-            }
+            // Case 8: Td faster than target + low noise = no P change suggested. The target is
+            // conservative for this aircraft, so more headroom is likely but cannot be
+            // quantified (the target depends on the punch pool and an empirical factor).
+            (TdDeviation::SignificantlyFaster, NoiseLevel::Low) => PRecommendation::Optimal {
+                headroom_unquantified: true,
+                reasoning: format!(
+                    "Response is {:.1}% faster than target with low noise. \
+                     The target may be conservative for this aircraft, so more P headroom is \
+                     possible but not quantified. Test any increase in small steps and check \
+                     motor temperature and noise. The prop or build may differ from the spec.",
+                    td_deviation_percent
+                ),
+            },
 
             // Case 9: Td significantly slower + moderate/high noise = investigate
             (TdDeviation::SignificantlySlower, NoiseLevel::Moderate | NoiseLevel::High) => {
@@ -514,13 +545,15 @@ impl OptimalPAnalysis {
                     }
                 }
                 TdDeviation::WithinTarget => PRecommendation::Optimal {
+                headroom_unquantified: false,
                     reasoning: format!(
                         "Response time ({:.1}ms) is in target range. Current P ({}) appears appropriate, \
                          but monitor motor temperatures (D-term data unavailable for noise analysis).",
-                        td_stats.mean_ms, current_p
+                        td_stats.median_ms, current_p
                     ),
                 },
                 TdDeviation::SignificantlyFaster => PRecommendation::Optimal {
+                headroom_unquantified: false,
                     reasoning: format!(
                         "Response is {:.1}% faster than target. Current P ({}) may be at limits, \
                          monitor motor temperatures (D-term data unavailable for noise analysis).",
@@ -531,17 +564,27 @@ impl OptimalPAnalysis {
         }
     }
 
+    /// Flight clip text shared by the legend, console and report, for example `218s`: the seconds
+    /// of log time the step-response windows came from. `None` when unknown.
+    pub fn flight_clip_text(&self) -> Option<String> {
+        self.analysed_seconds.map(|s| format!("{s:.0}s"))
+    }
+
     /// Td source text shared by the legend, console and report, for example
-    /// `File Group — 11 flights, 94 throttle-punches`.
+    /// `4 flights, 14 punches, spread 32%`. The spread is the half inter-quartile range of the
+    /// punch ratios over their median; it is omitted when there are too few punches to compute it.
     pub fn source_summary(&self) -> String {
-        let label = if self.source_files > 1 {
-            "File Group"
+        let flights = if self.source_files == 1 {
+            "flight"
         } else {
-            "Single File"
+            "flights"
         };
+        let spread = self
+            .source_spread
+            .map_or_else(String::new, |f| format!(", spread {:.0}%", f * 100.0));
         format!(
-            "{} — {} flights, {} throttle-punches",
-            label, self.source_files, self.source_events
+            "{} {}, {} punches{}",
+            self.source_files, flights, self.source_events, spread
         )
     }
 
@@ -581,43 +624,19 @@ impl OptimalPAnalysis {
         format!(", D≈{} ({:+})", rec_d, rec_d as i64 - current_d as i64)
     }
 
-    /// Format analysis as human-readable console output
+    /// Format analysis as human-readable console output.
+    ///
+    /// Order: recommendation first, then the evidence behind it (same order as the legend and
+    /// the report).
     pub fn format_console_output(&self, axis_name: &str, d_range: Option<(u32, u32)>) -> String {
         let mut output = String::new();
-
-        // Header: axis name and Td measurement
-        output.push_str(&format!(
-            "{}: Td={:.1}ms (target: {:.1}±{:.1}ms, windows={})\n",
-            axis_name,
-            self.td_stats.mean_ms,
-            self.td_target_ms,
-            self.td_tolerance_ms,
-            self.td_stats.num_samples,
-        ));
-        output.push_str(&format!("  Td source: {}\n", self.source_summary()));
-        output.push_str(&format!("  Noise: {}\n", self.noise_level.name()));
-
-        // Deviation
-        let deviation_sign = if self.td_deviation_percent > 0.0 {
-            "+"
-        } else {
-            ""
-        };
-        output.push_str(&format!(
-            "  Deviation: {}{:.1}% ({})\n",
-            deviation_sign,
-            self.td_deviation_percent,
-            self.td_deviation.name(),
-        ));
-
-        // Current P
-        output.push_str(&format!("  Current P={}\n", self.current_p));
+        output.push_str(&format!("{axis_name}:\n"));
 
         match &self.recommendation {
-            PRecommendation::Optimal { .. } => {
+            rec @ PRecommendation::Optimal { .. } => {
                 output.push_str(&format!(
-                    "  Recommendation: Current P is optimal (P={})\n",
-                    self.current_p
+                    "  Recommendation: {}\n",
+                    rec.optimal_short_text().unwrap_or_default()
                 ));
             }
             PRecommendation::Increase { conservative_p, .. } => {
@@ -643,7 +662,29 @@ impl OptimalPAnalysis {
             }
         }
 
-        // Reliability — always shown, after recommendation
+        // The console has no axis title, so it keeps the current P (the legend drops it).
+        output.push_str(&format!("  Current P={}\n", self.current_p));
+        output.push_str(&format!(
+            "  Td (median): {:.1}ms (target: {:.1}±{:.1}ms)\n",
+            self.td_stats.median_ms, self.td_target_ms, self.td_tolerance_ms,
+        ));
+        if let Some(clip) = self.flight_clip_text() {
+            output.push_str(&format!("  Flight clip: {clip}\n"));
+        }
+
+        let deviation_sign = if self.td_deviation_percent > 0.0 {
+            "+"
+        } else {
+            ""
+        };
+        output.push_str(&format!(
+            "  Deviation: {}{:.1}% ({})\n",
+            deviation_sign,
+            self.td_deviation_percent,
+            self.td_deviation.name(),
+        ));
+        output.push_str(&format!("  Noise: {}\n", self.noise_level.name()));
+        output.push_str(&format!("  Td source: {}\n", self.source_summary()));
         output.push_str(&format!(
             "  {}: {}\n",
             self.td_stats.reliability_label(),
@@ -711,6 +752,206 @@ mod d_target_tests {
         assert_eq!(spread.reliability_label(), "Unreliable");
     }
 
+    fn low_noise_recommendation(td_ms: f64) -> PRecommendation {
+        // Target 25 +- 3 ms, P 60, D 20, low D-term noise (1% high-frequency energy).
+        OptimalPAnalysis::analyze(
+            &[td_ms; 40],
+            60,
+            Some(20),
+            Some(0.01),
+            Some(2.0),
+            Some((25.0, 3.0)),
+        )
+        .expect("analysis")
+        .recommendation
+    }
+
+    #[test]
+    fn within_target_low_noise_slower_than_target_gets_headroom() {
+        // 26 ms is +4% against the 25 ms target.
+        assert!(matches!(
+            low_noise_recommendation(26.0),
+            PRecommendation::Increase { .. }
+        ));
+        // Exactly on target (0%) still gets headroom.
+        assert!(matches!(
+            low_noise_recommendation(25.0),
+            PRecommendation::Increase { .. }
+        ));
+    }
+
+    #[test]
+    fn optimal_short_text_flags_unquantified_headroom() {
+        // 18 ms is -28% against the 25 ms target: Case 8.
+        let faster = low_noise_recommendation(18.0);
+        assert_eq!(
+            faster.optimal_short_text().as_deref(),
+            Some("No change suggested, headroom possible")
+        );
+        // Within the band and slightly faster than target: plain optimal wording.
+        let within = low_noise_recommendation(23.5);
+        assert_eq!(
+            within.optimal_short_text().as_deref(),
+            Some("Current P is optimal")
+        );
+        // Increase has no Optimal short text.
+        assert_eq!(low_noise_recommendation(26.0).optimal_short_text(), None);
+    }
+
+    // Spec: the recommendation follows Td zone x noise level. Synthetic inputs only: target 25 ms
+    // (+-3 ms), P 60, so +5% P is 63, +10% is 66 and -5% is 57. Zones: faster than -15% is
+    // SignificantlyFaster, +-15% is WithinTarget, +15% to +30% is ModeratelySlower, beyond +30% is
+    // SignificantlySlower.
+    #[test]
+    fn recommendation_table_follows_td_zone_and_noise() {
+        #[derive(Debug, PartialEq)]
+        enum Kind {
+            Optimal,
+            OptimalHeadroom,
+            Increase(u32),
+            Decrease(u32),
+            Investigate,
+        }
+        let low = Some(DTERM_HF_ENERGY_MODERATE * 0.5);
+        let moderate = Some((DTERM_HF_ENERGY_MODERATE + DTERM_HF_ENERGY_THRESHOLD) / 2.0);
+        let high = Some(DTERM_HF_ENERGY_THRESHOLD * 1.5);
+        let kind = |td_ms: f64, hf: Option<f64>| {
+            let a = OptimalPAnalysis::analyze(
+                &[td_ms; 40],
+                60,
+                Some(20),
+                hf,
+                Some(2.0),
+                Some((25.0, 3.0)),
+            )
+            .expect("analysis");
+            match a.recommendation {
+                PRecommendation::Optimal {
+                    headroom_unquantified: true,
+                    ..
+                } => Kind::OptimalHeadroom,
+                PRecommendation::Optimal { .. } => Kind::Optimal,
+                PRecommendation::Increase { conservative_p, .. } => Kind::Increase(conservative_p),
+                PRecommendation::Decrease { recommended_p, .. } => Kind::Decrease(recommended_p),
+                PRecommendation::Investigate { .. } => Kind::Investigate,
+            }
+        };
+        // 18 ms is -28%, 21.5 is -14%, 25 is 0%, 28.7 is +14.8%, 30 is +20%, 33 is +32%.
+        let table: [(f64, Option<f64>, Kind); 22] = [
+            (18.0, low, Kind::OptimalHeadroom),
+            (21.5, low, Kind::Optimal),
+            (25.0, low, Kind::Increase(63)),
+            (28.7, low, Kind::Increase(63)),
+            (30.0, low, Kind::Increase(63)),
+            (33.0, low, Kind::Increase(66)),
+            (18.0, moderate, Kind::Optimal),
+            (21.5, moderate, Kind::Optimal),
+            (25.0, moderate, Kind::Optimal),
+            (30.0, moderate, Kind::Increase(63)),
+            (33.0, moderate, Kind::Investigate),
+            (18.0, high, Kind::Decrease(57)),
+            (21.5, high, Kind::Optimal),
+            (25.0, high, Kind::Optimal),
+            (28.7, high, Kind::Optimal),
+            (30.0, high, Kind::Investigate),
+            (33.0, high, Kind::Investigate),
+            (18.0, None, Kind::Optimal),
+            (25.0, None, Kind::Optimal),
+            (28.7, None, Kind::Optimal),
+            (30.0, None, Kind::Increase(63)),
+            (33.0, None, Kind::Increase(63)),
+        ];
+        for (td, hf, expected) in table {
+            assert_eq!(kind(td, hf), expected, "Td {td} ms, noise {hf:?}");
+        }
+    }
+
+    #[test]
+    fn significantly_faster_than_target_low_noise_is_optimal() {
+        // 18 ms is -28% against the 25 ms target (below the -15% line).
+        assert!(matches!(
+            low_noise_recommendation(18.0),
+            PRecommendation::Optimal { .. }
+        ));
+    }
+
+    #[test]
+    fn within_target_low_noise_faster_than_target_is_optimal() {
+        // 23.5 ms is -6% against the 25 ms target: already faster, no headroom.
+        assert!(matches!(
+            low_noise_recommendation(23.5),
+            PRecommendation::Optimal { .. }
+        ));
+    }
+
+    #[test]
+    fn flight_clip_text_shows_whole_seconds() {
+        let samples = vec![30.0; 40];
+        let mut a =
+            OptimalPAnalysis::analyze(&samples, 40, Some(20), None, Some(2.0), Some((25.0, 3.0)))
+                .expect("analysis");
+        assert_eq!(a.flight_clip_text(), None);
+        a.analysed_seconds = Some(217.6);
+        assert_eq!(a.flight_clip_text().as_deref(), Some("218s"));
+    }
+
+    #[test]
+    fn td_statistics_median_ignores_outlier_windows() {
+        // 100 windows at 20 ms plus 3 failed windows at 200 ms.
+        let mut samples = vec![20.0; 100];
+        samples.extend([200.0; 3]);
+        let stats = TdStatistics::from_samples(&samples).expect("stats");
+        assert_eq!(stats.median_ms, 20.0);
+        assert_eq!(stats.coefficient_of_variation, Some(0.0));
+        assert!(
+            stats.is_consistent(),
+            "outliers must not make it Unreliable"
+        );
+    }
+
+    #[test]
+    fn td_statistics_median_of_even_count_is_midpoint() {
+        let stats = TdStatistics::from_samples(&[40.0, 10.0, 30.0, 20.0]).expect("stats");
+        assert_eq!(stats.median_ms, 25.0);
+        // MAD of [15, 5, 5, 15] about 25 is 10; CV = 1.4826 * 10 / 25.
+        let cv = stats.coefficient_of_variation.expect("cv");
+        assert!((cv - TD_MAD_TO_SIGMA * 10.0 / 25.0).abs() < 1e-12, "{cv}");
+    }
+
+    #[test]
+    fn td_statistics_wide_spread_stays_unreliable() {
+        // Half the windows near 10 ms and half near 50 ms is a real spread, not outliers.
+        let samples: Vec<f64> = (0..40)
+            .map(|i| if i % 2 == 0 { 10.0 } else { 50.0 })
+            .collect();
+        let stats = TdStatistics::from_samples(&samples).expect("stats");
+        assert!(!stats.is_consistent());
+        assert_eq!(stats.consistency, 0.0);
+    }
+
+    #[test]
+    fn td_statistics_rejects_empty_non_finite_and_zero_median_input() {
+        assert!(TdStatistics::from_samples(&[]).is_none());
+        assert!(TdStatistics::from_samples(&[f64::NAN, f64::INFINITY]).is_none());
+        // Non-finite values are dropped; the rest are used.
+        let stats = TdStatistics::from_samples(&[f64::NAN, 20.0, 30.0]).expect("stats");
+        assert_eq!(stats.num_samples, 2);
+        assert_eq!(stats.median_ms, 25.0);
+        // A zero median has no relative spread.
+        assert!(TdStatistics::from_samples(&[0.0, 0.0, 0.0]).is_none());
+    }
+
+    #[test]
+    fn td_statistics_single_sample_has_no_spread() {
+        let stats = TdStatistics::from_samples(&[22.0]).expect("stats");
+        assert_eq!(stats.median_ms, 22.0);
+        assert_eq!(stats.coefficient_of_variation, None);
+        assert!(
+            !stats.is_consistent(),
+            "one sample is below the minimum count"
+        );
+    }
+
     #[test]
     fn d_target_suffix_shows_a_single_d_when_the_target_rounds_to_zero() {
         // P 40, D 20, P:D 2.0; recommended P 0 needs D 0, so a range cannot be shown.
@@ -729,20 +970,16 @@ mod d_target_tests {
     }
 
     #[test]
-    fn source_summary_names_single_and_group_files() {
+    fn source_summary_names_flights_punches_and_spread() {
         let mut a = analysis(Some(20), Some(2.0));
         a.source_files = 1;
         a.source_events = 5;
-        assert_eq!(
-            a.source_summary(),
-            "Single File — 1 flights, 5 throttle-punches"
-        );
+        assert_eq!(a.source_summary(), "1 flight, 5 punches");
         a.source_files = 11;
         a.source_events = 94;
-        assert_eq!(
-            a.source_summary(),
-            "File Group — 11 flights, 94 throttle-punches"
-        );
+        assert_eq!(a.source_summary(), "11 flights, 94 punches");
+        a.source_spread = Some(0.214);
+        assert_eq!(a.source_summary(), "11 flights, 94 punches, spread 21%");
     }
 
     #[test]

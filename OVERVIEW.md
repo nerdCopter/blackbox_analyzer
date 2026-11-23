@@ -57,7 +57,7 @@ All analysis parameters, thresholds, plot dimensions, and algorithmic constants 
                     * If `APPLY_INDIVIDUAL_RESPONSE_Y_CORRECTION` is true, each individual step response window is normalized. The mean of its steady-state portion (defined by `STEADY_STATE_START_S` and `STEADY_STATE_END_S`) is calculated. If this mean is significant (abs > `Y_CORRECTION_MIN_UNNORMALIZED_MEAN_ABS`), the entire response window is divided by this mean, aiming to make its steady-state value approach 1.0.
                 * **Quality Control (QC):**
                     * Each (potentially Y-corrected) step response window undergoes QC. The minimum and maximum values of its steady-state portion are checked against `NORMALIZED_STEADY_STATE_MIN_VAL` and `NORMALIZED_STEADY_STATE_MAX_VAL`.
-                    * Optionally (`ENABLE_NORMALIZED_STEADY_STATE_MEAN_CHECK`), the mean of the steady-state portion is also checked against `NORMALIZED_STEADY_STATE_MEAN_MIN` and `NORMALIZED_STEADY_STATE_MEAN_MAX`.
+                    * No mean check: Y-correction sets each window's steady-state mean to 1.0, so a mean bound could never reject a window. PIDtoolbox has none either.
                     * Only windows passing QC are kept.
                 * **Launch / landing / collision handling:**
                     * **Fixed edge trim:** the first `EXCLUDE_START_S` and last `EXCLUDE_END_S` (3 s each) of the analyzed interval are dropped before windowing. If `--start`/`--end` is given, the interval is the trimmed one, not the whole log. This is a fixed time, not a detection.
@@ -76,7 +76,6 @@ All analysis parameters, thresholds, plot dimensions, and algorithmic constants 
                     * The averaged response is not smoothed. A trailing or centered moving average would delay or blur the rise, and PIDtoolbox plots the raw average.
                     * No first-sample shift is applied, as in PIDtoolbox. The time axis is `i / sample_rate`.
                     * A **final normalization** step is performed: the mean of the steady-state portion of this *averaged* response is calculated. The entire response is then divided by this mean to ensure the plotted average response aims for a steady-state of 1.0.
-                    * The final response is only plotted if its steady-state mean (after this final normalization) is within `FINAL_NORMALIZED_STEADY_STATE_TOLERANCE` of 1.0.
                 * The peak is read on this unsmoothed, renormalized curve. The combined legend Peak (the only legend entry without `--dps`), the console "Actual Peak" and report "Peak Value", and the P:D zones all use the same value. With `--dps`, the low- and high-setpoint legend entries use subset masks, so their peaks can differ from the combined peak. The legend prints two decimals; console and report print three.
                 * Calculates peak value and delay time (Td) for each plotted average response using `calc_step_response::find_peak_value` and `calc_step_response::calculate_delay_time`.
                     * **Delay Time (Td) Calculation:** The delay time is calculated as the time for the step response to reach 50% of its final value. Linear interpolation is used for precise determination of the 50% threshold crossing. A fixed offset of -1ms is applied to the calculated time (in milliseconds) before converting to seconds, and the result is constrained to be non-negative.
@@ -257,8 +256,10 @@ The system provides intelligent P:D tuning recommendations based on step-respons
 
 Physics-derived P gain optimization using a Torque-Inertia Profiler that measures aircraft-specific dynamics directly from flight log throttle-punch events. No prop-size input is required — the aircraft's torque-to-inertia ratio is derived from the logs.
 
+Needs step-response windows, header metadata with the P gain (`.headers.csv` or embedded header lines) and at least `TORQUE_PROFILER_MIN_EVENTS` punches. D-term data is optional: it enables the noise assessment, and without it the noise level is `UNKNOWN` and the recommendation uses Td only. The P:D recommendation does not depend on it; it needs valid step-response windows and the P and D gains from the PID metadata.
+
 - **Activation:** Disabled by default; enable with `--estimate-optimal-p` flag.
-- **Requires:** A `.headers.csv` metadata file alongside each input CSV (produced by `blackbox_decode`, or automatically by BBL/BFL input expansion — see above). Without it, P gain values are unavailable and optimal P estimation is skipped with a skip-reason shown in console and PNG. All other analyses (step response, spectrums, P:D recommendations) remain unaffected.
+- **Requires:** Header metadata with the P gain (D gain is optional: without it the D target is omitted): a `.headers.csv` file alongside each input CSV (produced by `blackbox_decode`, or automatically by BBL/BFL input expansion — see above) or embedded header lines in the CSV. Without the P gain, optimal P estimation is skipped with a skip-reason shown in console and PNG. P:D recommendations need both gains and a nonzero D. Other analyses (step response, spectrums) remain unaffected.
 - **⚠️ Status:** Experimental. `TORQUE_PROFILER_ACHIEVABILITY_FACTOR` bridges the gap between the theoretical physics formula and real-world flight performance (ESC lag, prop-wash, motor startup). It is empirically calibrated and may need adjustment for aircraft significantly different from a mid-size freestyle build.
 
 ##### Torque-Inertia Profiler (`src/data_analysis/torque_inertia_profiler.rs`)
@@ -282,36 +283,49 @@ Physics-derived P gain optimization using a Torque-Inertia Profiler that measure
 
 - **Key Constants (`src/constants.rs`):**
   - `THROTTLE_PUNCH_MIN_DELTA` — minimum throttle step (0–1000 units) to qualify as a punch
-  - `THROTTLE_PUNCH_WINDOW_MS` — detection window for the throttle rise
+  - `THROTTLE_PUNCH_WINDOW_MS` — detection window for the throttle rise (100 ms; a manually applied throttle rise takes 100–250 ms, so a 50 ms window missed most punches)
   - `THROTTLE_RESPONSE_WINDOW_MS` — gyro response measurement window
   - `TORQUE_PROFILER_SETTLE_MS` — settle time (ms) skipped at response start (ESC/motor lag allowance); converted to samples at runtime so it is correct at all loop rates
   - `TORQUE_PROFILER_MIN_EVENTS` — minimum punches required for a reliable profile
   - `TORQUE_PROFILER_P_SCALE` — converts raw firmware P gain to physical units
   - `TORQUE_PROFILER_TD_CALC_K` — Td numerator constant (π × 500)
-  - `TORQUE_PROFILER_ACHIEVABILITY_FACTOR` — empirical calibration coefficient
+  - `TORQUE_PROFILER_ACHIEVABILITY_FACTOR` — empirical calibration coefficient (currently 2.0), set from a limited set of logs; one value cannot centre every aircraft, so Optimal P stays experimental
 
 - **Recommendation Types:**
   - **P Increase:** Td slower than target with acceptable noise → P is conservative
-  - **Optimal:** Td within target range or at physical limits → P is well-matched
+  - **Optimal:** Td within target range or at physical limits → P is well-matched. The low-noise cases are in the table below.
   - **P Decrease:** Td faster than target with high noise → P is too high (rare)
   - **Investigate:** Measurements suggest mechanical issues or abnormal dynamics
+  - **Recommendation table** (Td deviation = (measured − target) / target; noise from D-term energy above `DTERM_HF_CUTOFF_HZ`: LOW below `DTERM_HF_ENERGY_MODERATE`, MODERATE below `DTERM_HF_ENERGY_THRESHOLD`, else HIGH; pinned by the unit test `recommendation_table_follows_td_zone_and_noise`):
 
-- **Output:** Console and PNG legend overlay (identical content) per axis:
-  - `Td:` — measured Td mean with target `±tolerance` and `windows=` count
-  - `Td source:` — `File Group` (multi-file run) or `Single File`, with flight count and throttle-punch count that produced the physics target
-  - `Noise:` — HF D-term energy level (`LOW` / `MODERATE` / `HIGH` / `UNKNOWN`) for the current flight
+    | Td vs target | LOW noise | MODERATE | HIGH | Unknown |
+    |---|---|---|---|---|
+    | more than 30% slower | P +10% | Investigate | Investigate | P +5%, watch motor heat |
+    | 15–30% slower | P +5% | P +5% | Investigate | P +5%, watch motor heat |
+    | within ±15% | P +5% only at 0% or slower; faster is Optimal | Optimal | Optimal, watch motor heat | Optimal |
+    | more than 15% faster | Optimal, headroom possible (not quantified) | Optimal | P −5% | Optimal |
+
+    Increases carry the matching D (D follows the recommended P:D ratio when one is available, otherwise the current P:D ratio); the multipliers are `P_HEADROOM_CONSERVATIVE_MULTIPLIER` (+5%), `P_HEADROOM_MODERATE_MULTIPLIER` (+10%) and `P_REDUCTION_MODERATE_MULTIPLIER` (−5%). Td is measured against a per-axis physics target, so a slower axis is judged against its own target, not against another axis.
+
+- **Output:** the console, report and PNG legend show these lines per axis, in this order. The legend omits `Current P=` (the axis title shows it); the console prints it after `Recommendation`; the report uses bullets:
+  - `Recommendation` — one of `(Conservative)` (P increase), `(Decrease)`, `Current P is optimal`, `No change suggested, headroom possible` (Td faster than target with low noise; headroom is not quantified), or `Investigate —` with reason. Increases and decreases include the calculated D adjustment.
+  - `Td (median):` — measured Td, the median of the per-window Td values, with the target `±tolerance`. The first legend line `Td:` is the Td of the averaged curve, so the two can differ slightly.
+  - `Flight clip:` — seconds of log time available to the step-response windows (the span between the first and last retained rows after `--start`/`--end` and the 3 s start/end margins), for example `218s`; rejected windows can leave part of it unused
   - `Deviation:` — % difference between measured Td and physics target, with zone label
-  - `Current P=` — P gain value from the flight's metadata
-  - `Recommendation` — one of `(Conservative)`, `(Decrease)`, `Current P is optimal`, or `Investigate —` with reason; includes calculated D adjustment
+  - `Noise:` — HF D-term energy level (`LOW` / `MODERATE` / `HIGH` / `UNKNOWN`) for the current flight
+  - `Td source:` — flights, punches and spread of the throttle punches that produced the physics target, for example `4 flights, 14 punches, spread 32%`. The spread is the half inter-quartile range of the punch ratios over their median; a wide spread means the punches disagree and the target is less certain.
   - `Reliable:` / `Unreliable:` — always shows both `Consistency=N% (⊢≥70%)` and `CV=N% (⊢≤40%)`; `Unreliable` is highlighted in orange when either threshold is not met
   - `Setpoint Authority:` — always shown; classifies flight inputs as `LOW`, `MODERATE`, or `HIGH` based on the **mean** of per-window max setpoints (see below). Orange for `LOW`.
-  - When profiling is skipped (insufficient punch events), a skip reason replaces the above. See **Consistency and Reliability Interpretation** below.
+  - When profiling is skipped (insufficient punch events), a skip reason replaces the above in the console, PNG and report. See **Consistency and Reliability Interpretation** below.
+  - The window count is not shown: neighbouring windows overlap (stride = 2 s / `SUPERPOSITION_FACTOR`), so it overstates independent data. `Flight clip` gives the log time used.
 
 - **Consistency and Reliability Interpretation (CV):**
-  - **CV (Coefficient of Variation)** = standard deviation / mean of individual Td measurements across all valid step-response windows. It quantifies how scattered the measurements are relative to their average.
+  - **Td value:** the **median** of the individual Td measurements across all valid step-response windows (a plain mean follows the few windows that fail deconvolution and return Td of 100 ms or more).
+  - **CV (robust coefficient of variation)** = `TD_MAD_TO_SIGMA` (1.4826) × median absolute deviation / median. It quantifies how scattered the typical windows are, and a few outlier windows do not inflate it.
+  - **Consistency** = fraction of windows within `TD_COEFFICIENT_OF_VARIATION_MAX` (40%) of the median. It must be at least `TD_CONSISTENCY_MIN_THRESHOLD`.
   - **Low CV:** Td measurements are tightly clustered — the log contains clean, repeatable dynamics and recommendations are trustworthy.
   - **High CV (exceeds `TD_COEFFICIENT_OF_VARIATION_MAX`):** Td measurements vary widely across windows — `Unreliable:` is shown (orange) in both console and PNG. Recommendations should be treated with caution.
-  - **CV = N/A:** Fewer than `TD_SAMPLES_MIN_FOR_STDDEV` valid Td samples were available; standard deviation cannot be computed. The mean is still reported and `CV=N/A` appears in the reliability line.
+  - **CV = N/A:** Fewer than `TD_SAMPLES_MIN_FOR_STDDEV` valid Td samples were available; the spread cannot be computed. The median is still reported and `CV=N/A` appears in the reliability line.
   - **Setpoint Authority classification:** Always-visible line in both console and PNG. Uses the **mean** of per-window max setpoints (not the maximum) to classify the flight:
     - `LOW` (`mean < 100 dps`, orange) — hover/slow-cruise inputs; all P:D recommendations are still shown, but the pilot should treat them with caution.
     - `MODERATE` (`100–250 dps`) — normal sport/freestyle inputs.
@@ -321,8 +335,8 @@ Physics-derived P gain optimization using a Torque-Inertia Profiler that measure
   - **Over-P limitation:** **When P is already too high and the aircraft oscillates, the profiler may report "Optimal" rather than "Decrease P."** An oscillatory step response produces a short, aggressive measured Td — which, fed into the physics formula, yields a P_optimal close to the current (excessive) P. The profiler cannot reliably distinguish a well-tuned fast response from an over-tuned oscillating one using Td alone. The indirect signal is CV: severe oscillation typically scatters Td samples widely and triggers the consistency warning. **If your gains feel high or the craft exhibits oscillation, start from a lower P before relying on these recommendations.** Optimal P estimation is most accurate when the craft is in a reasonable tuning range — it is a validator and refinement tool, not a recovery tool for badly mis-tuned aircraft. Only experienced pilots are likely to recognise this situation by feel.
   - **High CV without LOW authority:** If the consistency warning fires but `Setpoint Authority` is `MODERATE` or `HIGH`, the scatter is not caused by low-energy hover inputs. Remaining causes include propwash, inconsistent maneuvers, and oscillation from over-P. **If gains feel high, treat this combination as a prompt to verify the craft is not oscillating before acting on any recommendation.**
   - **Summary of dependability signals in output:**
-    - `windows=` on the Td line — number of valid step-response windows contributing to the Td mean; more windows = more statistical weight
-    - `Td source:` — flight and throttle-punch counts that calibrated the physics target; `File Group` means data was pooled across multiple logs
+    - `Flight clip:` — seconds of log time available for the Td; rejected windows can leave part of it unused
+    - `Td source:` — flight and punch counts that calibrated the physics target; more than one flight means data was pooled across multiple logs
     - `Reliable:` / `Unreliable:` with `Consistency %` and `CV` — how repeatable the per-flight step-response measurements are (independent of how many punches fed the physics target)
     - `Setpoint Authority:` — mean setpoint level across valid windows; `LOW` indicates hover/gentle inputs that may reduce step-response quality
     - Noise level (`LOW` / `MODERATE` / `HIGH`) — HF D-term energy for the current flight; high noise limits safe P increase
@@ -342,9 +356,9 @@ This implementation provides detailed and configurable analysis of flight contro
     * **Smoothing:** Neither implementation smooths the averaged response, and this implementation applies no gyro smoothing. Matlab can smooth the raw gyro (centered lowess) when the user selects it; its default is off.
     * **Time axis:** This implementation uses the log's mean sample rate (`1e6 / mean(dt)`). Matlab uses `round(1000/median(diff(time_us)) * 10) / 10` kHz, rounded to 0.1 kHz. A 1.88 kHz log is plotted at 1.9 kHz, so Matlab's axis is about 1% compressed (features appear ~1 ms earlier per 100 ms).
     * **Normalization/Y-Correction:**
-        * This implementation: Optional individual response Y-correction (normalize by own steady-state mean, `APPLY_INDIVIDUAL_RESPONSE_Y_CORRECTION`, `Y_CORRECTION_MIN_UNNORMALIZED_MEAN_ABS`) followed by final normalization of the averaged response to target 1.0 (within `FINAL_NORMALIZED_STEADY_STATE_TOLERANCE`).
+        * This implementation: Optional individual response Y-correction (normalize by own steady-state mean, `APPLY_INDIVIDUAL_RESPONSE_Y_CORRECTION`, `Y_CORRECTION_MIN_UNNORMALIZED_MEAN_ABS`) followed by final normalization of the averaged response to target 1.0.
         * Matlab: Optional Y-correction on individual responses by calculating an offset to make the mean 1.0.
-    * **Quality Control (QC):** Both apply QC to individual responses based on steady-state characteristics. This implementation uses `NORMALIZED_STEADY_STATE_MIN_VAL`, `NORMALIZED_STEADY_STATE_MAX_VAL`, and optionally `NORMALIZED_STEADY_STATE_MEAN_MIN`, `NORMALIZED_STEADY_STATE_MEAN_MAX`. Matlab uses `min(steadyStateResp) > 0.5 && max(steadyStateResp) < 3`.
+    * **Quality Control (QC):** Both apply QC to individual responses based on steady-state characteristics. This implementation uses `NORMALIZED_STEADY_STATE_MIN_VAL`, `NORMALIZED_STEADY_STATE_MAX_VAL`. Matlab uses `min(steadyStateResp) > 0.5 && max(steadyStateResp) < 3`.
     * **Output:** This implementation can plot low/high/combined responses based on `setpoint_threshold` if `--dps` is provided with a value. Matlab stacks all valid responses.
 
 #### Compared to PlasmaTree/Python (`PID-Analyzer.py`)

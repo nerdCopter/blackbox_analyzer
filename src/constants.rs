@@ -36,16 +36,10 @@ pub const Y_CORRECTION_MIN_UNNORMALIZED_MEAN_ABS: f32 = 0.1; // Tune this thresh
 pub const NORMALIZED_STEADY_STATE_MIN_VAL: f32 = 0.5; // From PTB
 pub const NORMALIZED_STEADY_STATE_MAX_VAL: f32 = 3.0; // From PTB
 
-// Optional: Additional check on the mean of the Y-corrected steady-state.
-pub const ENABLE_NORMALIZED_STEADY_STATE_MEAN_CHECK: bool = true;
-pub const NORMALIZED_STEADY_STATE_MEAN_MIN: f32 = 0.75; // e.g., mean should be > 0.75 after Y-correction
-pub const NORMALIZED_STEADY_STATE_MEAN_MAX: f32 = 1.25; // e.g., mean should be < 1.25 after Y-correction
-
 // Steady-state definition for Y-correction and QC (matches PTB PTstepcalc.m: 200ms to end of response)
 pub const STEADY_STATE_START_S: f64 = 0.2; // Start time for steady-state check (200ms into the response)
 pub const STEADY_STATE_END_S: f64 = RESPONSE_LENGTH_S; // End time for steady-state check (to the end of RESPONSE_LENGTH_S); can be decoupled if desired, but do NOT exceed RESPONSE_LENGTH_S
 
-pub const FINAL_NORMALIZED_STEADY_STATE_TOLERANCE: f64 = 0.15; // Final tolerance for normalized steady-state mean in step response plot
 pub const DEFAULT_SETPOINT_THRESHOLD: f64 = 500.0; // Default setpoint threshold, can be overridden at runtime for categorizing responses
 
 // Constants for filtering data based on movement and flight phase.
@@ -306,6 +300,7 @@ pub const COLOR_OPTIMAL_P_SKIP: RGBColor = RGBColor(120, 60, 60);
 
 // Stroke widths for lines
 pub const LINE_WIDTH_PLOT: u32 = 1; // Width for plot lines
+pub const LINE_WIDTH_STEP_RESPONSE: u32 = 2; // Width for the step-response curves (other plots use LINE_WIDTH_PLOT)
 pub const LINE_WIDTH_LEGEND: u32 = 2; // Width for legend lines
 pub const LEGEND_BACKGROUND_OPACITY: f64 = 0.7; // Opacity of the white legend box behind series labels; lower lets a spectrum spike under the box show through, higher keeps the text readable
 pub const HEATMAP_LEGEND_BACKGROUND_OPACITY: f64 = 0.7; // Opacity of the white legend box on heatmaps; separate from the line plots because the colored cells are darker behind the text
@@ -383,9 +378,10 @@ pub const DTERM_HF_ENERGY_THRESHOLD: f64 = 0.15; // 15% of total D-term energy (
 pub const DTERM_HF_ENERGY_MODERATE: f64 = 0.10; // 10% of total D-term energy (moderate noise level)
 
 // Response consistency quality control
-// Ensures Td measurements are reliable across multiple step responses
-pub const TD_CONSISTENCY_MIN_THRESHOLD: f64 = 0.70; // 70% of responses within tolerance (was 85%)
-pub const TD_COEFFICIENT_OF_VARIATION_MAX: f64 = 0.40; // 40% CV (std/mean) is acceptable for noisy flight logs (was 20%)
+// Ensures Td measurements are reliable across multiple step responses.
+// Spread is robust: median absolute deviation about the median, so a few failed windows do not dominate.
+pub const TD_CONSISTENCY_MIN_THRESHOLD: f64 = 0.70; // 70% of responses within TD_COEFFICIENT_OF_VARIATION_MAX of the median (was 85%)
+pub const TD_COEFFICIENT_OF_VARIATION_MAX: f64 = 0.40; // 40% robust CV (1.4826*MAD/median) is acceptable for noisy flight logs (was 20%)
 
 // P headroom estimation multipliers
 // Conservative approach for users who want safe incremental improvements
@@ -404,7 +400,8 @@ pub const P_REDUCTION_AGGRESSIVE_MULTIPLIER: f64 = 0.90; // -10% from current P
 // Td statistics computation constants
 pub const MIN_TD_MS: f64 = 0.1; // Minimum valid Td (time to 50%) in milliseconds (domain-appropriate threshold)
 pub const TD_MEAN_EPSILON: f64 = 1e-12; // Threshold for near-zero mean values (avoid division by zero)
-pub const TD_SAMPLES_MIN_FOR_STDDEV: usize = 2; // Minimum samples needed for std dev calculation
+pub const TD_SAMPLES_MIN_FOR_STDDEV: usize = 2; // Minimum samples needed for the spread (MAD) calculation
+pub const TD_MAD_TO_SIGMA: f64 = 1.4826; // Scales a median absolute deviation to a standard deviation for normally distributed data
 
 // Td deviation thresholds (percentage deviation from target)
 // Deviation thresholds for classifying Td behavior
@@ -439,7 +436,9 @@ pub const TORQUE_PROFILER_MIN_DT_S: f64 = 1e-9;
 pub const THROTTLE_PUNCH_MIN_DELTA: f64 = 200.0;
 
 /// Time window (ms) within which the throttle increase must occur to count as a punch.
-pub const THROTTLE_PUNCH_WINDOW_MS: f64 = 50.0;
+/// 100 ms: a manually applied throttle rise takes 100-250 ms, so a 50 ms window missed most
+/// punches.
+pub const THROTTLE_PUNCH_WINDOW_MS: f64 = 100.0;
 
 /// Window (ms) after punch onset in which to measure peak angular acceleration.
 pub const THROTTLE_RESPONSE_WINDOW_MS: f64 = 150.0;
@@ -470,9 +469,9 @@ pub const TORQUE_PROFILER_P_SCALE: f64 = 100.0;
 /// Bridges the gap between theoretical torque capacity and actual flight performance
 /// (accounts for ESC lag, motor startup, prop-wash efficiency, etc).
 /// Higher values = more relaxed targets.
-/// Empirically calibrated on a 5" 6S freestyle build (HELIO H7); may need
-/// adjustment for significantly heavier or lighter aircraft classes.
-pub const TORQUE_PROFILER_ACHIEVABILITY_FACTOR: f64 = 2.50;
+/// Empirical, set from a limited set of logs. One value cannot centre every aircraft, so treat
+/// the Optimal P target as experimental and revisit with more independent known-good tunes.
+pub const TORQUE_PROFILER_ACHIEVABILITY_FACTOR: f64 = 2.00;
 
 /// Betaflight/EmuFlight debug_mode value for GYRO_SCALED.
 /// Only this mode populates debug[0-2] with raw unfiltered gyro data,

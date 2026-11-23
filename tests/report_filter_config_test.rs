@@ -23,6 +23,7 @@ fn base_report(filter_config: Option<AllFilterConfigs>) -> FlightReport {
         d_ranges: Default::default(),
         step_reports: vec![],
         optimal_p: [None, None, None],
+        optimal_p_skip: Default::default(),
         gyro_analysis: None,
         dterm_results: vec![],
         bode_results: vec![],
@@ -367,7 +368,7 @@ fn optimal_p_source_line_uses_the_shared_summary() {
     analysis.source_files = 11;
     analysis.source_events = 94;
     let expected = analysis.source_summary();
-    assert_eq!(expected, "File Group — 11 flights, 94 throttle-punches");
+    assert_eq!(expected, "11 flights, 94 punches");
 
     let mut report = base_report(None);
     report.optimal_p[1] = Some(analysis);

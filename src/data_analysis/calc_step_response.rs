@@ -6,12 +6,10 @@ use std::error::Error;
 use crate::types::StepResponseResult;
 
 use crate::constants::{
-    APPLY_INDIVIDUAL_RESPONSE_Y_CORRECTION, ENABLE_NORMALIZED_STEADY_STATE_MEAN_CHECK,
-    FINAL_NORMALIZED_STEADY_STATE_TOLERANCE, FRAME_LENGTH_S,
+    APPLY_INDIVIDUAL_RESPONSE_Y_CORRECTION, FRAME_LENGTH_S,
     HIGH_AUTHORITY_SETPOINT_THRESHOLD_DEG_S, LOW_AUTHORITY_SETPOINT_THRESHOLD_DEG_S,
-    MOVEMENT_THRESHOLD_DEG_S, NORMALIZED_STEADY_STATE_MAX_VAL, NORMALIZED_STEADY_STATE_MEAN_MAX,
-    NORMALIZED_STEADY_STATE_MEAN_MIN, NORMALIZED_STEADY_STATE_MIN_VAL, RESPONSE_LENGTH_S,
-    STEADY_STATE_END_S, STEADY_STATE_START_S, SUPERPOSITION_FACTOR, TUKEY_ALPHA,
+    MOVEMENT_THRESHOLD_DEG_S, NORMALIZED_STEADY_STATE_MAX_VAL, NORMALIZED_STEADY_STATE_MIN_VAL,
+    RESPONSE_LENGTH_S, STEADY_STATE_END_S, STEADY_STATE_START_S, SUPERPOSITION_FACTOR, TUKEY_ALPHA,
     WIENER_REGULARIZATION, Y_CORRECTION_MIN_UNNORMALIZED_MEAN_ABS,
 };
 
@@ -377,27 +375,17 @@ pub fn calculate_step_response(
                 let max_val_ss = qc_ss_segment
                     .iter()
                     .fold(f32::NEG_INFINITY, |a, &b| a.max(b));
-                let mean_val_ss_opt = qc_ss_segment.mean();
 
-                // Check min/max bounds for steady-state region
+                // Check min/max bounds for steady-state region. A mean check is not needed:
+                // Y-correction sets the steady-state mean to 1.0 by construction, and QC only runs
+                // after a successful correction. With APPLY_INDIVIDUAL_RESPONSE_Y_CORRECTION set to
+                // false this no longer holds and a mean check would be needed.
                 if min_val_ss.is_finite()
                     && max_val_ss.is_finite()
                     && min_val_ss > NORMALIZED_STEADY_STATE_MIN_VAL
                     && max_val_ss < NORMALIZED_STEADY_STATE_MAX_VAL
                 {
-                    // Optional additional check on steady-state mean
-                    if ENABLE_NORMALIZED_STEADY_STATE_MEAN_CHECK {
-                        if let Some(mean_val_ss) = mean_val_ss_opt {
-                            if mean_val_ss.is_finite()
-                                && mean_val_ss > NORMALIZED_STEADY_STATE_MEAN_MIN
-                                && mean_val_ss < NORMALIZED_STEADY_STATE_MEAN_MAX
-                            {
-                                current_window_passes_qc = true;
-                            }
-                        }
-                    } else {
-                        current_window_passes_qc = true;
-                    }
+                    current_window_passes_qc = true;
                 }
             }
         }
@@ -521,7 +509,7 @@ pub fn calculate_delay_time(normalized_response: &Array1<f64>, sample_rate: f64)
 /// Averages the masked QC windows, then renormalizes so the steady-state mean is 1.0.
 /// PIDtoolbox applies no first-sample shift, so none is applied here.
 /// Returns None when no window is selected, the steady-state window is empty or has a
-/// zero mean, or the result misses `FINAL_NORMALIZED_STEADY_STATE_TOLERANCE`.
+/// or zero mean.
 pub fn displayed_response(
     stacked_responses: &Array2<f32>,
     mask: &Array1<f32>,
@@ -544,13 +532,7 @@ pub fn displayed_response(
     if ss_mean.abs() <= 1e-9 {
         return None;
     }
-    let normalized = avg_resp.mapv(|v| v / ss_mean);
-    let check_mean = normalized.slice(s![ss_start..ss_end]).mean()?;
-    if (check_mean - 1.0).abs() <= FINAL_NORMALIZED_STEADY_STATE_TOLERANCE {
-        Some(normalized)
-    } else {
-        None
-    }
+    Some(avg_resp.mapv(|v| v / ss_mean))
 }
 
 /// Finds the peak (maximum) value in a 1D response data array.
