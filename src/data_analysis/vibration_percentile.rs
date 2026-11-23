@@ -24,6 +24,24 @@ pub struct VibrationPercentileResult {
     pub unfiltered: Option<VibrationSeries>,
 }
 
+/// Signal label of the filtered series, shared by console, report and plot.
+pub const SIGNAL_FILTERED: &str = "Filtered";
+/// Signal label of the unfiltered series, shared by console, report and plot.
+pub const SIGNAL_UNFILTERED: &str = "Unfiltered";
+
+impl VibrationPercentileResult {
+    /// Present `(signal label, series)` pairs in output order (filtered first); absent series skipped.
+    pub fn present_series(&self) -> Vec<(&'static str, &VibrationSeries)> {
+        [
+            (SIGNAL_FILTERED, &self.filtered),
+            (SIGNAL_UNFILTERED, &self.unfiltered),
+        ]
+        .into_iter()
+        .filter_map(|(label, series)| series.as_ref().map(|s| (label, s)))
+        .collect()
+    }
+}
+
 /// Value at percentile `pct` (0..=100) of ascending `sorted`: `sorted[(n - 1) * pct / 100]`
 /// with integer division. `None` when `sorted` is empty. The motor-desync and stick-distribution
 /// percentiles are private to their modules and use a float index; this one needs an exact index
@@ -86,16 +104,14 @@ pub fn percentile_summary_text(series: &VibrationSeries) -> String {
 pub fn console_lines(results: &[VibrationPercentileResult]) -> Vec<String> {
     let mut lines = Vec::new();
     for r in results {
-        for (signal, series) in [("Filtered", &r.filtered), ("Unfiltered", &r.unfiltered)] {
-            if let Some(s) = series {
-                lines.push(format!(
-                    "  {} {} |gyro| ({} samples): {}",
-                    r.axis_name,
-                    signal,
-                    s.count,
-                    percentile_summary_text(s)
-                ));
-            }
+        for (signal, s) in r.present_series() {
+            lines.push(format!(
+                "  {} {} |gyro| ({} samples): {}",
+                r.axis_name,
+                signal,
+                s.count,
+                percentile_summary_text(s)
+            ));
         }
     }
     lines
@@ -131,6 +147,34 @@ mod tests {
 
     fn one_to_hundred() -> Vec<f64> {
         (1..=100).map(f64::from).collect()
+    }
+
+    // Spec: both signals present -> filtered then unfiltered with the shared labels; absent skipped.
+    #[test]
+    fn present_series_uses_shared_labels_and_skips_absent() {
+        let r = VibrationPercentileResult {
+            axis_name: "Roll".to_string(),
+            filtered: build_series(one_to_hundred().into_iter()),
+            unfiltered: build_series(one_to_hundred().into_iter()),
+        };
+        let labels: Vec<&str> = r.present_series().iter().map(|(l, _)| *l).collect();
+        assert_eq!(labels, [SIGNAL_FILTERED, SIGNAL_UNFILTERED]);
+        let lines = console_lines(&[r]);
+        assert!(
+            lines[0].contains(" Roll Filtered |gyro| (100 samples)"),
+            "{lines:?}"
+        );
+        assert!(
+            lines[1].contains(" Roll Unfiltered |gyro| (100 samples)"),
+            "{lines:?}"
+        );
+        let r2 = VibrationPercentileResult {
+            axis_name: "Pitch".to_string(),
+            filtered: None,
+            unfiltered: build_series(one_to_hundred().into_iter()),
+        };
+        assert_eq!(r2.present_series().len(), 1);
+        assert_eq!(r2.present_series()[0].0, SIGNAL_UNFILTERED);
     }
 
     // Definition: value at percentile p is sorted[(n-1)*p/100]; for 1..=100 that is the value p.

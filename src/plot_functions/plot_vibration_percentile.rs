@@ -8,6 +8,7 @@ use crate::constants::{
 };
 use crate::data_analysis::vibration_percentile::{
     percentile_summary_text, series_ecdf_points, VibrationPercentileResult, VibrationSeries,
+    SIGNAL_FILTERED, SIGNAL_UNFILTERED,
 };
 use crate::plot_framework::{draw_stacked_plot, PlotSeries};
 
@@ -29,10 +30,12 @@ pub fn plot_vibration_percentile(
     let plot_type_name = "Gyro Vibration Percentile";
 
     let unfilt_signal = super::format_debug_suffix(
-        "Unfiltered Gyro (gyroUnfilt)",
+        &format!("{SIGNAL_UNFILTERED} Gyro (gyroUnfilt)"),
         using_debug_fallback,
         debug_mode_name,
     );
+
+    let filt_signal = format!("{SIGNAL_FILTERED} Gyro (gyroADC)");
 
     // (chart title, x max, series) per axis; owned so the draw closure can be 'static.
     let axis_plots: Vec<Option<(String, f64, Vec<PlotSeries>)>> = results
@@ -47,7 +50,7 @@ pub fn plot_vibration_percentile(
                     &r.unfiltered,
                 ),
                 (
-                    "Filtered Gyro (gyroADC)",
+                    filt_signal.as_str(),
                     *COLOR_VIBRATION_PERCENTILE_FILT,
                     &r.filtered,
                 ),

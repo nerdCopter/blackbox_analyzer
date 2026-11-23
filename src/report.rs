@@ -828,20 +828,21 @@ pub fn generate_markdown_report(
     if has_vibration_data {
         writeln!(md, "## Gyro Vibration Percentile Analysis")?;
         writeln!(md)?;
-        writeln!(md, "| Axis | Signal | Samples | Percentiles of |gyro| |")?;
+        writeln!(
+            md,
+            "| Axis | Signal | Samples | Percentiles of \\|gyro\\| |"
+        )?;
         writeln!(md, "|------|--------|---------|------------------------|")?;
         for r in &report.vibration_percentile_results {
-            for (signal, series) in [("Filtered", &r.filtered), ("Unfiltered", &r.unfiltered)] {
-                if let Some(s) = series {
-                    writeln!(
-                        md,
-                        "| {} | {} | {} | {} |",
-                        r.axis_name,
-                        signal,
-                        s.count,
-                        percentile_summary_text(s)
-                    )?;
-                }
+            for (signal, s) in r.present_series() {
+                writeln!(
+                    md,
+                    "| {} | {} | {} | {} |",
+                    r.axis_name,
+                    signal,
+                    s.count,
+                    percentile_summary_text(s)
+                )?;
             }
         }
         writeln!(md)?;
@@ -1116,5 +1117,20 @@ mod tests {
             "{text}"
         );
         assert!(!text.contains("| Roll | Unfiltered |"), "{text}");
+
+        // Spec: header and delimiter rows have the same cell count (unescaped pipes only).
+        let cells = |line: &str| {
+            let b = line.as_bytes();
+            (0..b.len())
+                .filter(|&i| b[i] == b'|' && (i == 0 || b[i - 1] != b'\\'))
+                .count()
+        };
+        let mut lines = text.lines();
+        let header = lines
+            .find(|l| l.starts_with("| Axis | Signal | Samples |"))
+            .expect("header");
+        let delim = lines.next().expect("delimiter");
+        assert_eq!(cells(header), cells(delim), "{header}\n{delim}");
+        assert_eq!(cells(header), 5, "{header}");
     }
 }
