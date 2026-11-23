@@ -358,8 +358,53 @@ pub fn plot_step_response(
                     });
                 }
 
+                // Which tiers name a D that differs from the current one (shared decision).
+                let aggressive_target = (current.assessments[axis_index]
+                    == Some("Significant overshoot"))
+                .then(|| {
+                    let axis_pid_data = pid_metadata.get_axis(axis_index)?;
+                    let current_pd = current.pd_ratios[axis_index]?;
+                    let agg = axis_pid_data.aggressive_recommendation(current_pd, dmax_enabled);
+                    Some((agg.d, agg.d_min, agg.d_max))
+                })
+                .flatten();
+                let tiers = pid_metadata.get_axis(axis_index).map(|axis_pid_data| {
+                    axis_pid_data.d_tier_visibility(
+                        conservative.0.pd_ratios[axis_index].map(|_| {
+                            (
+                                conservative.0.d_values[axis_index],
+                                conservative.0.d_min_values[axis_index],
+                                conservative.0.d_max_values[axis_index],
+                            )
+                        }),
+                        moderate.0.pd_ratios[axis_index].map(|_| {
+                            (
+                                moderate.0.d_values[axis_index],
+                                moderate.0.d_min_values[axis_index],
+                                moderate.0.d_max_values[axis_index],
+                            )
+                        }),
+                        aggressive_target,
+                        dmax_enabled,
+                    )
+                });
+                let show_conservative = tiers.is_none_or(|t| t.conservative);
+                let show_moderate = tiers.is_none_or(|t| t.moderate);
+                let show_aggressive = tiers.is_none_or(|t| t.aggressive);
+
                 // Conservative recommendation (uses dmax_enabled computed at function start)
                 if let Some(rec_pd) = conservative.0.pd_ratios[axis_index] {
+                    if tiers.is_some_and(|t| t.within_rounding_note) {
+                        series.push(PlotSeries {
+                            data: vec![],
+                            label: format!(
+                                "  Recommendation (none): {}",
+                                crate::constants::D_TARGET_WITHIN_ROUNDING_NOTE
+                            ),
+                            color: RGBColor(100, 100, 100),
+                            stroke_width: 0,
+                        });
+                    }
                     let recommendation_label = match format_d_target(
                         conservative.0.d_values[axis_index],
                         conservative.0.d_min_values[axis_index],
@@ -374,12 +419,14 @@ pub fn plot_step_response(
                         }
                         None => format!("  Recommendation (conservative): P:D={:.2}", rec_pd),
                     };
-                    series.push(PlotSeries {
-                        data: vec![],
-                        label: recommendation_label,
-                        color: RGBColor(100, 100, 100), // Medium gray for conservative
-                        stroke_width: 0,                // Invisible legend line
-                    });
+                    if show_conservative {
+                        series.push(PlotSeries {
+                            data: vec![],
+                            label: recommendation_label,
+                            color: RGBColor(100, 100, 100), // Medium gray for conservative
+                            stroke_width: 0,                // Invisible legend line
+                        });
+                    }
                 } else if current.assessments[axis_index] == Some("Near optimal") {
                     // Near optimal (1.00–1.02): D−1 hint replaces the "none" label —
                     // showing "none" and a concrete suggestion together is contradictory.
@@ -422,15 +469,19 @@ pub fn plot_step_response(
                         }
                         None => format!("  Recommendation (moderate): P:D={:.2}", rec_pd),
                     };
-                    series.push(PlotSeries {
-                        data: vec![],
-                        label: recommendation_label,
-                        color: RGBColor(70, 70, 70), // Darker gray for moderate
-                        stroke_width: 0,             // Invisible legend line
-                    });
+                    if show_moderate {
+                        series.push(PlotSeries {
+                            data: vec![],
+                            label: recommendation_label,
+                            color: RGBColor(70, 70, 70), // Darker gray for moderate
+                            stroke_width: 0,             // Invisible legend line
+                        });
+                    }
 
                     // Aggressive (third) recommendation for significant overshoot only
-                    if current.assessments[axis_index] == Some("Significant overshoot") {
+                    if show_aggressive
+                        && current.assessments[axis_index] == Some("Significant overshoot")
+                    {
                         if let Some(current_pd) = current.pd_ratios[axis_index] {
                             if let Some(axis_pid_data) = pid_metadata.get_axis(axis_index) {
                                 let agg = axis_pid_data

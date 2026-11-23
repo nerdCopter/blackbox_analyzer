@@ -1884,13 +1884,39 @@ INFO: Skipping Step Response input data filtering for {input_file_str}: {reason}
                                             ));
                                         }
 
+                                        let agg =
+                                            (assessment == "Significant overshoot").then(|| {
+                                                axis_pid.aggressive_recommendation(
+                                                    current_pd_ratio,
+                                                    dmax_enabled,
+                                                )
+                                            });
+                                        let tiers = axis_pid.d_tier_visibility(
+                                            Some((
+                                                recommended_d_conservative[axis_index],
+                                                recommended_d_min_conservative[axis_index],
+                                                recommended_d_max_conservative[axis_index],
+                                            )),
+                                            recommended_pd_aggressive[axis_index].map(|_| {
+                                                (
+                                                    recommended_d_aggressive[axis_index],
+                                                    recommended_d_min_aggressive[axis_index],
+                                                    recommended_d_max_aggressive[axis_index],
+                                                )
+                                            }),
+                                            agg.map(|a| (a.d, a.d_min, a.d_max)),
+                                            dmax_enabled,
+                                        );
+
                                         // Show conservative recommendation
                                         if let Some(d_text) = format_d_target(
                                             recommended_d_conservative[axis_index],
                                             recommended_d_min_conservative[axis_index],
                                             recommended_d_max_conservative[axis_index],
                                             dmax_enabled,
-                                        ) {
+                                        )
+                                        .filter(|_| tiers.conservative)
+                                        {
                                             println!(
                                                 "  Recommendation (conservative): P:D={:.2} ({})",
                                                 recommended_pd_conservative[axis_index].unwrap(),
@@ -1904,7 +1930,9 @@ INFO: Skipping Step Response input data filtering for {input_file_str}: {reason}
                                             recommended_d_min_aggressive[axis_index],
                                             recommended_d_max_aggressive[axis_index],
                                             dmax_enabled,
-                                        ) {
+                                        )
+                                        .filter(|_| tiers.moderate)
+                                        {
                                             println!(
                                                 "  Recommendation (moderate): P:D={:.2} ({})",
                                                 recommended_pd_aggressive[axis_index].unwrap(),
@@ -1913,11 +1941,7 @@ INFO: Skipping Step Response input data filtering for {input_file_str}: {reason}
                                         }
 
                                         // Show tertiary (aggressive) recommendation for significant overshoot only
-                                        if assessment == "Significant overshoot" {
-                                            let agg = axis_pid.aggressive_recommendation(
-                                                current_pd_ratio,
-                                                dmax_enabled,
-                                            );
+                                        if let Some(agg) = agg.filter(|_| tiers.aggressive) {
                                             if let Some(d_text) = format_d_target(
                                                 agg.d,
                                                 agg.d_min,
@@ -1929,6 +1953,13 @@ INFO: Skipping Step Response input data filtering for {input_file_str}: {reason}
                                                     agg.pd_ratio, d_text
                                                 );
                                             }
+                                        }
+
+                                        if tiers.within_rounding_note {
+                                            println!(
+                                                "  Recommendation (none): {}",
+                                                crate::constants::D_TARGET_WITHIN_ROUNDING_NOTE
+                                            );
                                         }
                                     } else if assessment == "Near optimal" {
                                         // Near optimal (1.00–1.02): D−1 hint only — no "none" line,
@@ -1993,6 +2024,27 @@ INFO: Skipping Step Response input data filtering for {input_file_str}: {reason}
                 } else {
                     None
                 };
+                // One shared decision (console and plot legend use the same call): tiers that
+                // name the current D are not recommendations.
+                let target_of = |r: &report::DTermRec| (r.d, r.d_min, r.d_max);
+                let tiers = pid_metadata.get_axis(axis_index).map(|axis| {
+                    axis.d_tier_visibility(
+                        conservative.as_ref().map(target_of),
+                        moderate.as_ref().map(target_of),
+                        aggressive.as_ref().map(target_of),
+                        dmax_enabled,
+                    )
+                });
+                let (conservative, moderate, aggressive, d_note) = match tiers {
+                    Some(t) => (
+                        conservative.filter(|_| t.conservative),
+                        moderate.filter(|_| t.moderate),
+                        aggressive.filter(|_| t.aggressive),
+                        t.within_rounding_note
+                            .then_some(crate::constants::D_TARGET_WITHIN_ROUNDING_NOTE),
+                    ),
+                    None => (conservative, moderate, aggressive, None),
+                };
                 step_reports.push(report::StepAxisReport {
                     axis_name: crate::axis_names::AXIS_NAMES[axis_index],
                     peak_value,
@@ -2001,6 +2053,7 @@ INFO: Skipping Step Response input data filtering for {input_file_str}: {reason}
                     conservative,
                     moderate,
                     aggressive,
+                    d_note,
                     near_optimal_hint: if assessment == "Near optimal" {
                         pid_metadata
                             .get_axis(axis_index)

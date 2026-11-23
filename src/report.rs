@@ -48,6 +48,8 @@ pub struct StepAxisReport {
     pub conservative: Option<DTermRec>,
     pub moderate: Option<DTermRec>,
     pub aggressive: Option<DTermRec>,
+    /// Shown instead of the tiers when every tier names the current D (`AxisPid::d_tier_visibility`).
+    pub d_note: Option<&'static str>,
     /// Optional D-1 hint shown for the near-optimal zone, which has no P:D recommendation.
     pub near_optimal_hint: Option<String>,
     pub setpoint_authority_name: Option<&'static str>,
@@ -274,6 +276,9 @@ pub fn generate_markdown_report(
                     fmt_dterm_rec(rec)
                 )?;
             }
+            if let Some(note) = axis_report.d_note {
+                writeln!(md, "- **Recommendation:** {}", note)?;
+            }
             if let Some(hint) = &axis_report.near_optimal_hint {
                 writeln!(md, "- **Recommendation (conservative):** {}", hint)?;
             }
@@ -281,6 +286,7 @@ pub fn generate_markdown_report(
                 && axis_report.moderate.is_none()
                 && axis_report.aggressive.is_none()
                 && axis_report.near_optimal_hint.is_none()
+                && axis_report.d_note.is_none()
             {
                 writeln!(
                     md,
@@ -988,6 +994,7 @@ mod tests {
             conservative: None,
             moderate: None,
             aggressive: None,
+            d_note: None,
             near_optimal_hint: None,
             setpoint_authority_name: None,
             setpoint_authority_mean: None,
