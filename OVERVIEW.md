@@ -256,7 +256,7 @@ The system provides intelligent P:D tuning recommendations based on step-respons
 
 Physics-derived P gain optimization using a Torque-Inertia Profiler that measures aircraft-specific dynamics directly from flight log throttle-punch events. No prop-size input is required — the aircraft's torque-to-inertia ratio is derived from the logs.
 
-Needs step-response windows, `.headers.csv` and at least `TORQUE_PROFILER_MIN_EVENTS` punches. D-term data is optional: it enables the noise assessment, and without it the noise level is `UNKNOWN` and the recommendation uses Td only. The P:D recommendation does not depend on it and works on any log with step-response windows.
+Needs step-response windows, `.headers.csv` and at least `TORQUE_PROFILER_MIN_EVENTS` punches. D-term data is optional: it enables the noise assessment, and without it the noise level is `UNKNOWN` and the recommendation uses Td only. The P:D recommendation does not depend on it; it needs valid step-response windows and the P and D gains from the PID metadata.
 
 - **Activation:** Disabled by default; enable with `--estimate-optimal-p` flag.
 - **Requires:** A `.headers.csv` metadata file alongside each input CSV (produced by `blackbox_decode`, or automatically by BBL/BFL input expansion — see above). Without it, P gain values are unavailable and optimal P estimation is skipped with a skip-reason shown in console and PNG. All other analyses (step response, spectrums, P:D recommendations) remain unaffected.
@@ -305,7 +305,7 @@ Needs step-response windows, `.headers.csv` and at least `TORQUE_PROFILER_MIN_EV
     | within ±15% | P +5% only at 0% or slower; faster is Optimal | Optimal | Optimal, watch motor heat | Optimal |
     | more than 15% faster | Optimal, headroom possible (not quantified) | Optimal | P −5% | Optimal |
 
-    Increases carry the matching D (D scales with P to keep the P:D ratio); the multipliers are `P_HEADROOM_CONSERVATIVE_MULTIPLIER` (+5%), `P_HEADROOM_MODERATE_MULTIPLIER` (+10%) and `P_REDUCTION_MODERATE_MULTIPLIER` (−5%). Td is measured against a per-axis physics target, so a slower axis is judged against its own target, not against another axis.
+    Increases carry the matching D (D follows the recommended P:D ratio when one is available, otherwise the current P:D ratio); the multipliers are `P_HEADROOM_CONSERVATIVE_MULTIPLIER` (+5%), `P_HEADROOM_MODERATE_MULTIPLIER` (+10%) and `P_REDUCTION_MODERATE_MULTIPLIER` (−5%). Td is measured against a per-axis physics target, so a slower axis is judged against its own target, not against another axis.
 
 - **Output:** the console, report and PNG legend show these lines per axis, in this order. The legend omits `Current P=` (the axis title shows it); the console prints it after `Recommendation`; the report uses bullets:
   - `Recommendation` — one of `(Conservative)` (P increase), `(Decrease)`, `Current P is optimal`, `No change suggested, headroom possible` (Td faster than target with low noise; headroom is not quantified), or `Investigate —` with reason. Increases and decreases include the calculated D adjustment.
