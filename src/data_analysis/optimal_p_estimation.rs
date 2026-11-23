@@ -62,6 +62,16 @@ fn safe_scaled_p(base: u32, multiplier: f64) -> u32 {
     }
 }
 
+/// Scales `base` up by `multiplier` and guarantees a real increase.
+///
+/// `safe_scaled_p` truncates, so a small `base` (for example P 10 with +5%) scales to the
+/// same integer. An increase recommendation must name a higher P, so the result is at least
+/// `base + 1` (saturating at `u32::MAX`). For larger `base` the scaled value is already higher
+/// and is returned unchanged.
+fn safe_raised_p(base: u32, multiplier: f64) -> u32 {
+    safe_scaled_p(base, multiplier).max(base.saturating_add(1))
+}
+
 /// Noise level classification
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum NoiseLevel {
@@ -405,7 +415,7 @@ impl OptimalPAnalysis {
         match (td_deviation, noise_level) {
             // Case 1: Td significantly slower + low noise = clear headroom to increase P
             (TdDeviation::SignificantlySlower, NoiseLevel::Low) => {
-                let conservative = safe_scaled_p(current_p, P_HEADROOM_MODERATE_MULTIPLIER);
+                let conservative = safe_raised_p(current_p, P_HEADROOM_MODERATE_MULTIPLIER);
                 PRecommendation::Increase {
                     conservative_p: conservative,
                     reasoning: format!(
@@ -418,7 +428,7 @@ impl OptimalPAnalysis {
 
             // Case 2: Td moderately slower + low/moderate noise = modest headroom
             (TdDeviation::ModeratelySlower, NoiseLevel::Low | NoiseLevel::Moderate) => {
-                let conservative = safe_scaled_p(current_p, P_HEADROOM_CONSERVATIVE_MULTIPLIER);
+                let conservative = safe_raised_p(current_p, P_HEADROOM_CONSERVATIVE_MULTIPLIER);
                 PRecommendation::Increase {
                     conservative_p: conservative,
                     reasoning: format!(
@@ -442,6 +452,8 @@ impl OptimalPAnalysis {
             // already faster than the target (deviation >= 0). A faster-than-target response
             // has no headroom left by the physics target.
             (TdDeviation::WithinTarget, NoiseLevel::Low) => {
+                // Plain scaling: the `conservative > current_p` guard below must stay able to
+                // reject a step that truncates to the same P (no headroom to claim).
                 let conservative = safe_scaled_p(current_p, P_HEADROOM_CONSERVATIVE_MULTIPLIER);
                 if td_deviation_percent >= 0.0 && conservative > current_p {
                     PRecommendation::Increase {
@@ -534,7 +546,7 @@ impl OptimalPAnalysis {
             (_, NoiseLevel::Unknown) => match td_deviation {
                 TdDeviation::SignificantlySlower | TdDeviation::ModeratelySlower => {
                     let conservative =
-                        safe_scaled_p(current_p, P_HEADROOM_CONSERVATIVE_MULTIPLIER);
+                        safe_raised_p(current_p, P_HEADROOM_CONSERVATIVE_MULTIPLIER);
                     PRecommendation::Increase {
                         conservative_p: conservative,
                         reasoning: format!(
@@ -986,5 +998,57 @@ mod d_target_tests {
     fn d_target_suffix_empty_without_d_or_ratio() {
         assert_eq!(analysis(None, None).d_target_suffix(44, Some((20, 30))), "");
         assert_eq!(analysis(Some(0), Some(2.0)).d_target_suffix(44, None), "");
+    }
+
+    // Spec: an Increase recommendation names a P higher than the current P. Target 25 ms
+    // (+-3 ms): 30 ms is +20% (moderately slower, +5% step), 33 ms is +32% (significantly
+    // slower, +10% step). Low noise is a small D-term HF share; `None` is unknown noise.
+    fn increase_target(p: u32, td_ms: f64, hf: Option<f64>) -> Option<u32> {
+        let a =
+            OptimalPAnalysis::analyze(&[td_ms; 40], p, Some(20), hf, Some(2.0), Some((25.0, 3.0)))
+                .expect("analysis");
+        match a.recommendation {
+            PRecommendation::Increase { conservative_p, .. } => Some(conservative_p),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn small_p_increase_always_names_a_higher_p() {
+        let low = Some(DTERM_HF_ENERGY_MODERATE * 0.5);
+        for p in [0u32, 1, 5, 9, 10, 19, 20, 21, 60] {
+            for (td, hf) in [(30.0, low), (33.0, low), (30.0, None)] {
+                let target = increase_target(p, td, hf).expect("increase");
+                assert!(target > p, "P {p}, Td {td} ms: Increase to {target}");
+            }
+        }
+    }
+
+    #[test]
+    fn small_p_increase_boundaries_at_5_and_10_percent() {
+        let low = Some(DTERM_HF_ENERGY_MODERATE * 0.5);
+        // +5% (30 ms): 19 -> 19.95 truncates to 19, so the step is raised to 20;
+        // 20 -> 21 and 21 -> 22 (22.05) are plain scaling; 0 -> 1 and 1 -> 2 take the minimum step.
+        for (p, want) in [(0, 1), (1, 2), (19, 20), (20, 21), (21, 22)] {
+            assert_eq!(increase_target(p, 30.0, low), Some(want), "P {p}");
+        }
+        // +10% (33 ms): 9 -> 9.9 truncates to 9, so 10; 10 -> 11; 20 -> 22.
+        for (p, want) in [(9, 10), (10, 11), (20, 22)] {
+            assert_eq!(increase_target(p, 33.0, low), Some(want), "P {p}");
+        }
+    }
+
+    #[test]
+    fn within_target_small_p_stays_without_increase() {
+        // Spec: Td on target (25 ms), low noise: no increase when the 5% step truncates to the
+        // same P (P 10 -> 10.5 -> 10). P 21 -> 22.05 is a real step.
+        let low = Some(DTERM_HF_ENERGY_MODERATE * 0.5);
+        assert_eq!(increase_target(10, 25.0, low), None);
+        assert_eq!(increase_target(19, 25.0, low), None);
+    }
+
+    #[test]
+    fn raised_p_saturates_at_u32_max() {
+        assert_eq!(safe_raised_p(u32::MAX, 1.05), u32::MAX);
     }
 }
