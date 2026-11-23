@@ -59,6 +59,20 @@ pub fn d_target_is_current(current: DTarget, target: DTarget, range_shown: bool)
     }
 }
 
+/// True when step-response P:D advice is shown. Console, plot legend and report all use this
+/// one decision. "Acceptable" and "Undershoot" always pass (their delta is small by design);
+/// other zones need a P:D change above `PD_RATIO_MIN_CHANGE_THRESHOLD`.
+pub fn pd_advice_passes_change_gate(
+    assessment: &str,
+    current_pd_ratio: f64,
+    recommended_ratio: f64,
+) -> bool {
+    assessment == "Acceptable"
+        || assessment == "Undershoot"
+        || (recommended_ratio - current_pd_ratio).abs()
+            > crate::constants::PD_RATIO_MIN_CHANGE_THRESHOLD
+}
+
 /// PID values for a single axis
 #[derive(Debug, Clone, Default)]
 pub struct AxisPid {
@@ -762,6 +776,27 @@ fn parse_comma_separated_values(value_str: &str) -> Vec<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_pd_advice_change_gate() {
+        // Low P:D with significant overshoot: the 2% conservative step is below the 5% gate.
+        assert!(!pd_advice_passes_change_gate(
+            "Significant overshoot",
+            0.32,
+            0.32 * 0.98
+        ));
+        // Normal P:D: the same step clears the gate.
+        assert!(pd_advice_passes_change_gate(
+            "Significant overshoot",
+            2.0,
+            2.0 * 0.5
+        ));
+        // Zones with a small delta by design always pass.
+        assert!(pd_advice_passes_change_gate("Acceptable", 1.0, 1.0));
+        assert!(pd_advice_passes_change_gate("Undershoot", 1.0, 1.0));
+        // Just under the threshold does not pass (strict >).
+        assert!(!pd_advice_passes_change_gate("Overshoot", 1.0, 1.05 - 1e-9));
+    }
 
     #[test]
     fn test_betaflight_parsing() {
