@@ -166,7 +166,7 @@ pub struct TdStatistics {
 /// Median of a non-empty slice already sorted ascending.
 fn sorted_median(sorted: &[f64]) -> f64 {
     let n = sorted.len();
-    if n % 2 == 0 {
+    if n.is_multiple_of(PARITY_DIVISOR) {
         (sorted[n / 2 - 1] + sorted[n / 2]) / 2.0
     } else {
         sorted[n / 2]
