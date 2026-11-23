@@ -452,7 +452,9 @@ impl OptimalPAnalysis {
             // already faster than the target (deviation >= 0). A faster-than-target response
             // has no headroom left by the physics target.
             (TdDeviation::WithinTarget, NoiseLevel::Low) => {
-                let conservative = safe_raised_p(current_p, P_HEADROOM_CONSERVATIVE_MULTIPLIER);
+                // Plain scaling: the `conservative > current_p` guard below must stay able to
+                // reject a step that truncates to the same P (no headroom to claim).
+                let conservative = safe_scaled_p(current_p, P_HEADROOM_CONSERVATIVE_MULTIPLIER);
                 if td_deviation_percent >= 0.0 && conservative > current_p {
                     PRecommendation::Increase {
                         conservative_p: conservative,
@@ -1034,6 +1036,15 @@ mod d_target_tests {
         for (p, want) in [(9, 10), (10, 11), (20, 22)] {
             assert_eq!(increase_target(p, 33.0, low), Some(want), "P {p}");
         }
+    }
+
+    #[test]
+    fn within_target_small_p_stays_without_increase() {
+        // Spec: Td on target (25 ms), low noise: no increase when the 5% step truncates to the
+        // same P (P 10 -> 10.5 -> 10). P 21 -> 22.05 is a real step.
+        let low = Some(DTERM_HF_ENERGY_MODERATE * 0.5);
+        assert_eq!(increase_target(10, 25.0, low), None);
+        assert_eq!(increase_target(19, 25.0, low), None);
     }
 
     #[test]
