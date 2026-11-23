@@ -266,9 +266,6 @@ fn create_bode_grid_plot(
         .margin(60, 10, 10, 10)
         .split_evenly((tf_results.len(), 3));
 
-    // Draw legend for confidence colors
-    draw_confidence_legend(&root, PLOT_WIDTH, PLOT_HEIGHT)?;
-
     // Plot grid: rows are axes, columns are plot types (Mag, Phase, Coh)
     for axis_index in 0..tf_results.len() {
         let tf = &tf_results[axis_index];
@@ -318,6 +315,9 @@ fn create_bode_grid_plot(
             freq_max,
         )?;
     }
+
+    // Draw legend last so it sits above the subplots
+    draw_confidence_legend(&root, PLOT_WIDTH, PLOT_HEIGHT)?;
 
     root.present()?;
     record_written_this_run(output_file);
