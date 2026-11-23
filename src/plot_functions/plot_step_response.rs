@@ -207,10 +207,8 @@ pub fn plot_step_response(
                     let latency_opt = calc_step_response::calculate_delay_time(&resp, sr);
                     let peak_str =
                         peak_val_opt.map_or_else(|| "N/A".to_string(), |p| format!("{p:.2}"));
-                    let latency_str = latency_opt.map_or_else(
-                        || "N/A".to_string(),
-                        |l_s| format!("{:.0} ms", l_s * 1000.0),
-                    );
+                    let latency_str = latency_opt
+                        .map_or_else(|| "N/A".to_string(), |l_s| format!("{:.1}ms", l_s * 1000.0));
                     series.push(PlotSeries {
                         data: response_time
                             .iter()
@@ -230,10 +228,8 @@ pub fn plot_step_response(
                     let latency_opt = calc_step_response::calculate_delay_time(&resp, sr);
                     let peak_str =
                         peak_val_opt.map_or_else(|| "N/A".to_string(), |p| format!("{p:.2}"));
-                    let latency_str = latency_opt.map_or_else(
-                        || "N/A".to_string(),
-                        |l_s| format!("{:.0} ms", l_s * 1000.0),
-                    );
+                    let latency_str = latency_opt
+                        .map_or_else(|| "N/A".to_string(), |l_s| format!("{:.1}ms", l_s * 1000.0));
                     series.push(PlotSeries {
                         data: response_time
                             .iter()
@@ -253,10 +249,8 @@ pub fn plot_step_response(
                     let latency_opt = calc_step_response::calculate_delay_time(resp, sr);
                     let peak_str =
                         peak_val_opt.map_or_else(|| "N/A".to_string(), |p| format!("{p:.2}"));
-                    let latency_str = latency_opt.map_or_else(
-                        || "N/A".to_string(),
-                        |l_s| format!("{:.0} ms", l_s * 1000.0),
-                    );
+                    let latency_str = latency_opt
+                        .map_or_else(|| "N/A".to_string(), |l_s| format!("{:.1}ms", l_s * 1000.0));
                     series.push(PlotSeries {
                         data: response_time
                             .iter()
@@ -275,10 +269,8 @@ pub fn plot_step_response(
                     let latency_opt = calc_step_response::calculate_delay_time(resp, sr);
                     let peak_str =
                         peak_val_opt.map_or_else(|| "N/A".to_string(), |p| format!("{p:.2}"));
-                    let latency_str = latency_opt.map_or_else(
-                        || "N/A".to_string(),
-                        |l_s| format!("{:.0} ms", l_s * 1000.0),
-                    );
+                    let latency_str = latency_opt
+                        .map_or_else(|| "N/A".to_string(), |l_s| format!("{:.1}ms", l_s * 1000.0));
                     series.push(PlotSeries {
                         data: response_time
                             .iter()
