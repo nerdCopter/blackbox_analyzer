@@ -32,7 +32,8 @@ pub fn percentile_of_sorted(sorted: &[f64], pct: usize) -> Option<f64> {
     if sorted.is_empty() {
         return None;
     }
-    let idx = (sorted.len() - 1) * pct.min(100) / 100;
+    // u128 product cannot overflow, also on 32-bit usize; the quotient is <= len - 1.
+    let idx = ((sorted.len() - 1) as u128 * pct.min(100) as u128 / 100) as usize;
     Some(sorted[idx])
 }
 
@@ -147,6 +148,24 @@ mod tests {
         for pct in 0..=100usize {
             assert_eq!(percentile_of_sorted(&sorted, pct), Some(pct as f64));
         }
+    }
+
+    // Definition on n=2: index (n-1)*p/100 is 0 for p<100 and 1 for p=100.
+    #[test]
+    fn two_samples_pick_lower_until_p100() {
+        let s = [1.0, 2.0];
+        for pct in [50, 90, 95, 99] {
+            assert_eq!(percentile_of_sorted(&s, pct), Some(1.0));
+        }
+        assert_eq!(percentile_of_sorted(&s, 100), Some(2.0));
+        assert_eq!(percentile_of_sorted(&s, 0), Some(1.0));
+    }
+
+    #[test]
+    fn pct_above_100_clamps_and_huge_pct_does_not_overflow() {
+        let s = [1.0, 2.0, 3.0];
+        assert_eq!(percentile_of_sorted(&s, 101), Some(3.0));
+        assert_eq!(percentile_of_sorted(&s, usize::MAX), Some(3.0));
     }
 
     #[test]

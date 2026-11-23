@@ -9,7 +9,6 @@ use std::fs;
 use std::path::Path;
 
 use crate::axis_names::{AXIS_COUNT, AXIS_NAMES};
-use crate::constants::VIBRATION_PERCENTILES_PCT;
 use crate::constants::{
     MOTOR_DESYNC_REPORT_MAX_TIMES, MOTOR_OSCILLATION_FREQ_MAX_HZ, MOTOR_OSCILLATION_FREQ_MIN_HZ,
     MOTOR_OSCILLATION_SECONDS_TO_MS, MOTOR_OSCILLATION_WINDOW_S, RATIO_TO_PERCENT,
@@ -23,7 +22,7 @@ use crate::data_analysis::optimal_p_estimation::{OptimalPAnalysis, PRecommendati
 use crate::data_analysis::stick_distribution::StickDistributionResult;
 use crate::data_analysis::transfer_function_estimation::Confidence;
 use crate::data_analysis::vibration_percentile::{
-    format_percentile_value, VibrationPercentileResult,
+    percentile_summary_text, VibrationPercentileResult,
 };
 use crate::data_input::pid_metadata::format_d_target;
 use crate::plot_functions::motor_desync::{
@@ -829,35 +828,18 @@ pub fn generate_markdown_report(
     if has_vibration_data {
         writeln!(md, "## Gyro Vibration Percentile Analysis")?;
         writeln!(md)?;
-        let header_cols: Vec<String> = VIBRATION_PERCENTILES_PCT
-            .iter()
-            .map(|p| format!("P{p} (deg/s)"))
-            .collect();
-        writeln!(
-            md,
-            "| Axis | Signal | Samples | {} |",
-            header_cols.join(" | ")
-        )?;
-        writeln!(
-            md,
-            "|------|--------|---------|{}",
-            "------|".repeat(VIBRATION_PERCENTILES_PCT.len())
-        )?;
+        writeln!(md, "| Axis | Signal | Samples | Percentiles of |gyro| |")?;
+        writeln!(md, "|------|--------|---------|------------------------|")?;
         for r in &report.vibration_percentile_results {
             for (signal, series) in [("Filtered", &r.filtered), ("Unfiltered", &r.unfiltered)] {
                 if let Some(s) = series {
-                    let cells: Vec<String> = s
-                        .percentiles
-                        .iter()
-                        .map(|v| format_percentile_value(*v))
-                        .collect();
                     writeln!(
                         md,
                         "| {} | {} | {} | {} |",
                         r.axis_name,
                         signal,
                         s.count,
-                        cells.join(" | ")
+                        percentile_summary_text(s)
                     )?;
                 }
             }
@@ -865,7 +847,7 @@ pub fn generate_markdown_report(
         writeln!(md)?;
         writeln!(
             md,
-            "Percentiles of |gyro| over all finite samples of the flight, value at sorted index (n-1)*p/100. They describe the whole signal, including intentional maneuvers, not noise alone: compare Filtered with Unfiltered, and compare flights flown the same way. A P99 far above P95 means rare large excursions; P50 close to P99 means steady vibration."
+            "Percentiles of |gyro| over all finite samples of the analyzed data (the whole flight, or the --start/--end window when one is set), value at sorted index (n-1)*p/100. They describe the whole signal, including intentional maneuvers, not noise alone: compare Filtered with Unfiltered, and compare flights flown the same way. A P99 far above P95 means rare large excursions; P50 close to P99 means a steady |gyro| magnitude (steady vibration or steady intentional rotation)."
         )?;
         writeln!(md)?;
     }
@@ -1107,6 +1089,7 @@ mod tests {
     #[test]
     fn report_carries_the_shared_vibration_percentiles() {
         use crate::data_analysis::vibration_percentile::build_series;
+        let series = &build_series((1..=100).map(f64::from)).expect("series");
         let mut report = empty_report(Vec::new());
         report.vibration_percentile_results = vec![VibrationPercentileResult {
             axis_name: "Roll".to_string(),
@@ -1122,7 +1105,14 @@ mod tests {
             "{text}"
         );
         assert!(
-            text.contains("| Roll | Filtered | 100 | 50.0 | 90.0 | 95.0 | 99.0 |"),
+            text.contains(&format!(
+                "| Roll | Filtered | 100 | {} |",
+                percentile_summary_text(series)
+            )),
+            "{text}"
+        );
+        assert!(
+            text.contains("P50 50.0 / P90 90.0 / P95 95.0 / P99 99.0 deg/s"),
             "{text}"
         );
         assert!(!text.contains("| Roll | Unfiltered |"), "{text}");

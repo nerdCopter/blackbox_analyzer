@@ -96,4 +96,25 @@ pub fn plot_vibration_percentile(
     })
 }
 
-// src/plot_functions/plot_vibration_percentile.rs
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // All axes empty: nothing to plot, so no PNG is created and the call succeeds.
+    #[test]
+    fn all_missing_input_creates_no_png() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().join("log").to_string_lossy().into_owned();
+        let results: Vec<VibrationPercentileResult> = ["Roll", "Pitch", "Yaw"]
+            .iter()
+            .map(|n| VibrationPercentileResult {
+                axis_name: n.to_string(),
+                filtered: None,
+                unfiltered: None,
+            })
+            .collect();
+        plot_vibration_percentile(&results, &root, false, None).expect("ok");
+        let png = format!("{root}_Gyro_Vibration_Percentile_stacked.png");
+        assert!(!std::path::Path::new(&png).exists());
+    }
+}
