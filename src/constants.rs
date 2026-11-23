@@ -437,7 +437,7 @@ pub const THROTTLE_PUNCH_MIN_DELTA: f64 = 200.0;
 
 /// Time window (ms) within which the throttle increase must occur to count as a punch.
 /// 100 ms: a manually applied throttle rise takes 100-250 ms, so a 50 ms window missed most
-/// punches (median 2 per log against 8 at 100 ms).
+/// punches.
 pub const THROTTLE_PUNCH_WINDOW_MS: f64 = 100.0;
 
 /// Window (ms) after punch onset in which to measure peak angular acceleration.
