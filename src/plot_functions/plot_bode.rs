@@ -8,14 +8,14 @@ use plotters::element::{Circle, Text};
 use plotters::prelude::IntoLogRange;
 use plotters::series::LineSeries;
 use plotters::style::colors::{BLACK, GREEN, RED, WHITE};
-use plotters::style::{IntoFont, RGBColor, ShapeStyle};
+use plotters::style::{Color, IntoFont, RGBColor, ShapeStyle};
 use std::error::Error;
 
 use crate::axis_names::AXIS_NAMES;
 use crate::constants::{
-    FONT_SIZE_CHART_TITLE, FONT_SIZE_LEGEND, FREQUENCY_EPSILON, LINE_WIDTH_PLOT,
-    MAGNITUDE_PLOT_MARGIN_DB, MIN_PLOT_FREQUENCY_HZ, NYQUIST_DIVISOR, PHASE_PLOT_MARGIN_DEG,
-    PLOT_HEIGHT, PLOT_WIDTH,
+    FONT_SIZE_CHART_TITLE, FONT_SIZE_LEGEND, FREQUENCY_EPSILON, LEGEND_BACKGROUND_OPACITY,
+    LINE_WIDTH_PLOT, MAGNITUDE_PLOT_MARGIN_DB, MIN_PLOT_FREQUENCY_HZ, NYQUIST_DIVISOR,
+    PHASE_PLOT_MARGIN_DEG, PLOT_HEIGHT, PLOT_WIDTH,
 };
 use crate::data_analysis::transfer_function_estimation::{
     calculate_stability_margins, estimate_transfer_function_h1, Confidence, StabilityMargins,
@@ -586,25 +586,22 @@ fn draw_confidence_legend(
     let box_offset = 10; // Vertical offset to align box with text baseline
     let text_offset = 9; // Vertical offset to center text with box
 
-    // Legend background (white rectangle with border) - increased bottom padding for whitespace
+    let box_left = legend_x - 10;
+    let box_top = legend_y - 10;
+    let box_right = width as i32 - 10;
+    let box_bottom = legend_y + 110; // increased bottom padding for whitespace
+    let border_width = 1;
+
+    // Translucent background so plot data under the box stays visible, same opacity as other legends
     root.draw(&plotters::element::Rectangle::new(
-        [
-            (legend_x - 10, legend_y - 10),
-            (width as i32 - 10, legend_y + 110),
-        ],
-        plotters::style::ShapeStyle::from(&BLACK)
-            .stroke_width(1)
-            .filled(),
+        [(box_left, box_top), (box_right, box_bottom)],
+        WHITE.mix(LEGEND_BACKGROUND_OPACITY).filled(),
     ))?;
 
+    // Border drawn as an outline so it stays opaque over the translucent fill
     root.draw(&plotters::element::Rectangle::new(
-        [
-            (legend_x - 8, legend_y - 8),
-            (width as i32 - 12, legend_y + 108),
-        ],
-        plotters::style::ShapeStyle::from(&WHITE)
-            .stroke_width(0)
-            .filled(),
+        [(box_left, box_top), (box_right, box_bottom)],
+        ShapeStyle::from(&BLACK).stroke_width(border_width),
     ))?;
 
     // Title
