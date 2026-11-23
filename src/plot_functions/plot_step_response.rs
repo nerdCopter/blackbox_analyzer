@@ -536,7 +536,7 @@ pub fn plot_step_response(
                         series.push(PlotSeries {
                             data: vec![],
                             label: format!(
-                                "  Td: {:.1}ms (target: {:.1}±{:.1}ms)",
+                                "  Td (median): {:.1}ms (target: {:.1}±{:.1}ms)",
                                 analysis.td_stats.median_ms,
                                 analysis.td_target_ms,
                                 analysis.td_tolerance_ms,

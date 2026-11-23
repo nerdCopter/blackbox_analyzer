@@ -461,7 +461,7 @@ pub fn generate_markdown_report(
                 }
                 writeln!(
                     md,
-                    "- **Td measured:** {:.1} ms",
+                    "- **Td measured (median):** {:.1} ms",
                     analysis.td_stats.median_ms
                 )?;
                 writeln!(
