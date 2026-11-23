@@ -779,17 +779,22 @@ mod tests {
 
     #[test]
     fn test_pd_advice_change_gate() {
-        // Low P:D with significant overshoot: the 2% conservative step is below the 5% gate.
+        // Significant overshoot applies the conservative multiplier. At a low P:D the change is
+        // below the gate; at a normal P:D the same multiplier clears it.
+        let m = crate::constants::PD_RATIO_CONSERVATIVE_MULTIPLIER;
+        let low = 0.32; // P 8, D 25
+        assert!((low - low * m).abs() <= crate::constants::PD_RATIO_MIN_CHANGE_THRESHOLD);
         assert!(!pd_advice_passes_change_gate(
             "Significant overshoot",
-            0.32,
-            0.32 * 0.98
+            low,
+            low * m
         ));
-        // Normal P:D: the same step clears the gate.
+        let normal = 1.5;
+        assert!((normal - normal * m).abs() > crate::constants::PD_RATIO_MIN_CHANGE_THRESHOLD);
         assert!(pd_advice_passes_change_gate(
             "Significant overshoot",
-            2.0,
-            2.0 * 0.5
+            normal,
+            normal * m
         ));
         // Zones with a small delta by design always pass.
         assert!(pd_advice_passes_change_gate("Acceptable", 1.0, 1.0));
