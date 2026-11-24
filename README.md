@@ -60,8 +60,9 @@ Usage: ./blackbox_analyzer <input1> [<input2> ...] [OPTIONS]
                    Setpoint vs Gyro, Gyro vs Unfiltered, Motor Spectrums,
                    RC Command Activity.
   --extended       All plots except Bode — adds PIDsum/Error, PID Activity,
-                   Setpoint Derivative, Gyro PSD, D-term PSD, heatmaps, and
-                   Motor vs eRPM (requires bidirectional DShot telemetry).
+                   Setpoint Derivative, Gyro PSD, D-term PSD, heatmaps,
+                   Motor vs eRPM (requires bidirectional DShot telemetry), and
+                   Gyro Vibration Percentile (|gyro| distribution, P50-P99).
   --step           Step response only.
   --bode           Bode only (requires chirp/sweep system-id test flight).
   --desync         Motor vs eRPM plot only (needs eRPM telemetry). Desync
@@ -186,6 +187,7 @@ per-tier baseline mechanics.
 - `*_Gyro_PSD_Spectrogram_comparative.png` — Gyro spectrogram (PSD vs. time)
 - `*_Throttle_Freq_Heatmap_comparative.png` — Throttle/frequency heatmap analysis
 - `*_Motor_vs_eRPM_stacked.png` — One row per motor, commanded output and eRPM telemetry overlaid, each normalized to its own 0-100% range; vertical markers at every Motor Desync Detection event timestamp. Skipped when the log has no eRPM telemetry.
+- `*_Gyro_Vibration_Percentile_stacked.png` — Cumulative distribution of |gyro| per axis, filtered vs. unfiltered, with P50/P90/P95/P99 in the legend; the same values go to the console and the report
 
 #### Markdown Report (always generated)
 

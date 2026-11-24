@@ -13,5 +13,6 @@ pub mod stick_distribution;
 pub mod threshold_events;
 pub mod torque_inertia_profiler;
 pub mod transfer_function_estimation;
+pub mod vibration_percentile;
 
 // src/data_analysis/mod.rs
