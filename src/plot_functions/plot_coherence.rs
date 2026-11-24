@@ -12,6 +12,20 @@ use crate::plot_framework::{draw_stacked_plot, PlotSeries};
 
 /// Stroke width of the threshold reference lines.
 const REFERENCE_LINE_WIDTH: u32 = 1;
+/// A bin spans half its spacing on each side of its center frequency.
+const BIN_HALF_DIVISOR: f64 = 2.0;
+
+/// A one-bin run is a single point, which a line series does not draw. It becomes a flat
+/// segment across the bin's width (half a bin each side, kept within `0..=x_max`).
+fn bin_wide_if_single(data: Vec<(f64, f64)>, bin_hz: f64, x_max: f64) -> Vec<(f64, f64)> {
+    match data.as_slice() {
+        &[(f, c)] => {
+            let half = bin_hz / BIN_HALF_DIVISOR;
+            vec![((f - half).max(0.0), c), ((f + half).min(x_max), c)]
+        }
+        _ => data,
+    }
+}
 
 /// Per-axis series for one result: coherence curve and the two threshold reference lines,
 /// plus the X-axis upper limit. `None` when the result holds no bin.
@@ -42,7 +56,7 @@ fn axis_series(r: &CoherenceResult) -> Option<(f64, Vec<PlotSeries>)> {
         .into_iter()
         .enumerate()
         .map(|(i, data)| PlotSeries {
-            data,
+            data: bin_wide_if_single(data, r.bin_hz, x_max),
             label: if i == 0 {
                 format!("Coherence ({})", summary_text(r))
             } else {
@@ -162,8 +176,24 @@ mod tests {
         let (_, series) = axis_series(&r).expect("series");
         assert_eq!(series.len(), 4);
         assert_eq!(series[0].data, [(2.0, 0.9), (4.0, 0.8)]);
-        assert_eq!(series[1].data, [(8.0, 0.7)]);
+        // The one-bin run is drawn across its bin width (7 to 9 Hz), since a point is invisible.
+        assert_eq!(series[1].data, [(7.0, 0.7), (8.0, 0.7)]);
         assert!(!series[0].label.is_empty() && series[1].label.is_empty());
+    }
+
+    // Spec: a single bin not at the range end spans f -/+ bin_hz / 2 and is no longer a point.
+    #[test]
+    fn single_bin_run_has_width() {
+        let r = result("Roll", vec![2.0, 4.0, 8.0, 12.0], vec![0.9, 0.8, 0.7, 0.6]);
+        let (x_max, series) = axis_series(&r).expect("series");
+        assert_eq!(x_max, 12.0);
+        assert_eq!(series[0].data, [(2.0, 0.9), (4.0, 0.8)]);
+        assert_eq!(series[1].data, [(7.0, 0.7), (9.0, 0.7)]);
+        assert_eq!(series[2].data, [(11.0, 0.6), (12.0, 0.6)]);
+        // A lone first bin stays within the axis start.
+        let lone = result("Roll", vec![1.0], vec![0.5]);
+        let (_, s) = axis_series(&lone).expect("series");
+        assert_eq!(s[0].data, [(0.0, 0.5), (1.0, 0.5)]);
     }
 
     #[test]
