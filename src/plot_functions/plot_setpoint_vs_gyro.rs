@@ -204,7 +204,7 @@ pub fn plot_setpoint_vs_gyro(
             if !ff_series_by_axis[axis_index].is_empty() {
                 series.push(PlotSeries {
                     data: ff_series_by_axis[axis_index].clone(),
-                    label: "Feedforward (axisF, P-equivalent)".to_string(),
+                    label: "Feedforward (axisF, nominal P-equivalent)".to_string(),
                     color: *COLOR_SETPOINT_VS_GYRO_FF,
                     stroke_width: line_stroke_plot,
                 });

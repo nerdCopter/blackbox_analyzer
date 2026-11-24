@@ -5,14 +5,15 @@ use crate::constants::{BETAFLIGHT_PTERM_SCALE, FEEDFORWARD_ACTIVE_EPSILON};
 use crate::data_input::log_data::LogRowData;
 use crate::data_input::pid_metadata::{FirmwareType, PidMetadata};
 
-/// Feedforward contribution of one axis, expressed as the setpoint-error the P term would
-/// need to produce the same output.
+/// Feedforward contribution of one axis, expressed as the nominal setpoint-error the P term
+/// would need to produce the same output.
 ///
 /// Logged `axisP` and `axisF` share one unit (PID controller output). Betaflight computes
 /// `axisP = P_gain * PTERM_SCALE * (setpoint - gyro)`, so `axisF / (P_gain * PTERM_SCALE)` is
-/// the error in deg/s that would make P push as hard as F does. This is a unit conversion
-/// for display, not a model of how the aircraft would fly with feedforward off; TPA (which
-/// scales P in flight) is not applied.
+/// the nominal error in deg/s that would make P push as hard as F does. This is a unit
+/// conversion for display, not a model of how the aircraft would fly with feedforward off.
+/// In-flight P also varies with TPA, anti-gravity, the yaw P filter and crash recovery; none
+/// of these is applied.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FeedforwardResult {
     pub axis_name: String,
@@ -53,7 +54,7 @@ pub fn axis_has_feedforward(log_data: &[LogRowData], axis_index: usize) -> bool 
 }
 
 /// Per-axis feedforward figures. An axis is omitted when it has no scale (see
-/// `ff_equivalent_scale`), logged no non-zero axisF, or has no complete sample.
+/// `ff_equivalent_scale`), has no complete sample with non-zero axisF, or the sums overflow.
 pub fn analyze_feedforward(
     log_data: &[LogRowData],
     pid_metadata: &PidMetadata,
@@ -63,9 +64,6 @@ pub fn analyze_feedforward(
         let Some(scale) = ff_equivalent_scale(pid_metadata, axis_index) else {
             continue;
         };
-        if !axis_has_feedforward(log_data, axis_index) {
-            continue;
-        }
         let (mut n, mut active) = (0usize, 0usize);
         let (mut ff_sq, mut err_sq) = (0.0f64, 0.0f64);
         for row in log_data {
@@ -86,7 +84,10 @@ pub fn analyze_feedforward(
             ff_sq += (f * scale).powi(2);
             err_sq += (sp - gyro).powi(2);
         }
-        if n == 0 {
+        // Activity is judged on the rows the figures cover, so an active sample that lacks
+        // setpoint or gyro cannot enable a result that describes other rows; overflow of the
+        // squared sums (finite inputs near f64::MAX) gives no result.
+        if active == 0 || !ff_sq.is_finite() || !err_sq.is_finite() {
             continue;
         }
         let nf = n as f64;
@@ -195,6 +196,12 @@ mod tests {
         missing.gyro[0] = None;
         let nan = row(f64::NAN, 4.0, 1.0);
         assert!(analyze_feedforward(&[missing, nan], &md).is_empty());
+        // The only active sample lacks gyro; the complete row has F = 0.
+        let mut active_incomplete = row(5.0, 4.0, 1.0);
+        active_incomplete.gyro[0] = None;
+        assert!(analyze_feedforward(&[active_incomplete, row(5.0, 4.0, 0.0)], &md).is_empty());
+        // Finite inputs whose squares overflow give no result.
+        assert!(analyze_feedforward(&[row(1e200, 0.0, 1e200)], &md).is_empty());
         assert!(analyze_feedforward(&[], &md).is_empty());
     }
 }

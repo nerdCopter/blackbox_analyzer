@@ -842,7 +842,7 @@ pub fn generate_markdown_report(
         writeln!(md)?;
         writeln!(
             md,
-            "Logged axisF and axisP share one unit, and Betaflight computes axisP = P gain * 0.032029 * (setpoint - gyro). FF-equivalent is axisF / (P gain * 0.032029): the error in deg/s that would make P push as hard as feedforward does. FF active is the share of samples with non-zero axisF. FF:error is the RMS FF-equivalent divided by the RMS of (setpoint - gyro) over the same samples. These describe how large the feedforward contribution is next to the tracking error; they do not show what tracking would be with feedforward off. TPA is not applied. Betaflight logs only."
+            "Logged axisF and axisP share one unit, and Betaflight's nominal P coefficient is P gain * 0.032029. FF-equivalent is axisF / (P gain * 0.032029): the nominal error in deg/s that would make P push as hard as feedforward does. In-flight P also varies with TPA, anti-gravity, the yaw P filter and crash recovery; none is applied. FF active is the share of samples with non-zero axisF. FF:error is the whole-sample RMS FF-equivalent divided by the RMS of (setpoint - gyro) over the same samples; sparse feedforward lowers it, so read it with FF active. It is a size measure, not a tuning verdict. These describe how large the feedforward contribution is next to the tracking error; they do not show what tracking would be with feedforward off. Betaflight logs only."
         )?;
         writeln!(md)?;
     }
