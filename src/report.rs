@@ -18,6 +18,9 @@ use crate::data_analysis::filter_response::{
     rpm_motor_frequency_lines, AllFilterConfigs, DynamicNotchConfig, RpmFilterConfig,
     RpmMotorFrequencies,
 };
+use crate::data_analysis::motor_symmetry::{
+    deviation_text, imbalance_summary_text, MotorSymmetryResult,
+};
 use crate::data_analysis::optimal_p_estimation::{OptimalPAnalysis, PRecommendation};
 use crate::data_analysis::stick_distribution::StickDistributionResult;
 use crate::data_analysis::transfer_function_estimation::Confidence;
@@ -80,6 +83,8 @@ pub struct FlightReport {
     pub motor_desync_results: Vec<MotorDesyncResult>,
     pub rc_command_steps: Vec<RcCommandStepResult>,
     pub stick_distribution_results: Vec<StickDistributionResult>,
+    /// Empty unless the Motor Symmetry plot is enabled.
+    pub motor_symmetry: MotorSymmetryResult,
     pub png_links: Vec<String>,
     /// Human-readable labels of plot types that were enabled but produced no plottable data.
     pub skipped_plots: Vec<String>,
@@ -821,6 +826,43 @@ pub fn generate_markdown_report(
         writeln!(md)?;
     }
 
+    // --- Motor Command Symmetry ---
+    if !report.motor_symmetry.motors.is_empty() {
+        writeln!(md, "## Motor Command Symmetry")?;
+        writeln!(md)?;
+        writeln!(md, "{}", imbalance_summary_text(&report.motor_symmetry))?;
+        writeln!(md)?;
+        writeln!(
+            md,
+            "| Motor | Samples | Mean | Deviation | P5 | P25 | Median | P75 | P95 |"
+        )?;
+        writeln!(
+            md,
+            "|-------|---------|------|-----------|----|-----|--------|-----|-----|"
+        )?;
+        for m in &report.motor_symmetry.motors {
+            writeln!(
+                md,
+                "| {} | {} | {:.0} | {} | {:.0} | {:.0} | {:.0} | {:.0} | {:.0} |",
+                m.motor_idx,
+                m.count,
+                m.mean,
+                deviation_text(m),
+                m.whisker_low(),
+                m.q1(),
+                m.median(),
+                m.q3(),
+                m.whisker_high()
+            )?;
+        }
+        writeln!(md)?;
+        writeln!(
+            md,
+            "Command values are the logged motor[N] units. Imbalance is (highest motor mean - lowest motor mean) / mean of the motor means. It covers every analyzed sample (the whole flight, or the --start/--end window), so it includes intentional maneuvers and ground time. A single log cannot tell a worn motor, a damaged prop, an uneven center of gravity or a calibration offset apart."
+        )?;
+        writeln!(md)?;
+    }
+
     // --- Generated Plots ---
     if !report.png_links.is_empty() {
         writeln!(md, "## Generated Plots")?;
@@ -965,6 +1007,7 @@ mod tests {
             motor_desync_results: Vec::new(),
             rc_command_steps: Vec::new(),
             stick_distribution_results: Vec::new(),
+            motor_symmetry: Default::default(),
             png_links: Vec::new(),
             skipped_plots: Vec::new(),
             filter_config: None,
@@ -1051,5 +1094,40 @@ mod tests {
             text.contains("more P headroom is possible but not quantified"),
             "{text}"
         );
+    }
+
+    // Spec: the report carries the shared imbalance and per-motor deviation text
+    // (motors 100,100,100,120 -> mean 105, spread 20).
+    #[test]
+    fn report_carries_the_shared_motor_symmetry_text() {
+        use crate::data_analysis::motor_symmetry::{analyze_motor_symmetry, deviation_text};
+        use crate::data_input::log_data::LogRowData;
+        let rows = vec![LogRowData {
+            motors: [100.0, 100.0, 100.0, 120.0]
+                .iter()
+                .map(|v| Some(*v))
+                .collect(),
+            ..Default::default()
+        }];
+        let result = analyze_motor_symmetry(&rows);
+        let mut report = empty_report(Vec::new());
+        report.motor_symmetry = result.clone();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("report.md");
+        generate_markdown_report(&report, &path).expect("report");
+        let text = fs::read_to_string(&path).expect("read");
+        assert!(text.contains("## Motor Command Symmetry"), "{text}");
+        assert!(text.contains(&imbalance_summary_text(&result)), "{text}");
+        assert!(text.contains(&deviation_text(&result.motors[3])), "{text}");
+        assert!(
+            text.contains("| 3 | 1 | 120 | +14.3% vs fleet mean |"),
+            "{text}"
+        );
+
+        // No motor data: no section.
+        let empty = empty_report(Vec::new());
+        generate_markdown_report(&empty, &path).expect("report");
+        let text = fs::read_to_string(&path).expect("read");
+        assert!(!text.contains("## Motor Command Symmetry"), "{text}");
     }
 }

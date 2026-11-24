@@ -61,7 +61,8 @@ Usage: ./blackbox_analyzer <input1> [<input2> ...] [OPTIONS]
                    RC Command Activity.
   --extended       All plots except Bode — adds PIDsum/Error, PID Activity,
                    Setpoint Derivative, Gyro PSD, D-term PSD, heatmaps, and
-                   Motor vs eRPM (requires bidirectional DShot telemetry).
+                   Motor vs eRPM (requires bidirectional DShot telemetry),
+                   Motor Symmetry (per-motor command distribution).
   --step           Step response only.
   --bode           Bode only (requires chirp/sweep system-id test flight).
   --desync         Motor vs eRPM plot only (needs eRPM telemetry). Desync
@@ -186,6 +187,7 @@ per-tier baseline mechanics.
 - `*_Gyro_PSD_Spectrogram_comparative.png` — Gyro spectrogram (PSD vs. time)
 - `*_Throttle_Freq_Heatmap_comparative.png` — Throttle/frequency heatmap analysis
 - `*_Motor_vs_eRPM_stacked.png` — One row per motor, commanded output and eRPM telemetry overlaid, each normalized to its own 0-100% range; vertical markers at every Motor Desync Detection event timestamp. Skipped when the log has no eRPM telemetry.
+- `*_Motor_Symmetry.png` — Box plot of each motor's command (box P25-P75, median line, whiskers P5-P95, red mean marker) with the imbalance in the title (`--extended`). Any motor count (6 and 8 motor craft included). Skipped when the log has no motor data.
 
 #### Markdown Report (always generated)
 
