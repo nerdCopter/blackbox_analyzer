@@ -2,8 +2,9 @@
 
 use crate::axis_names::AXIS_NAMES;
 use crate::constants::{
-    COHERENCE_MEDIUM_THRESHOLD, COHERENCE_MIN_SEGMENTS, COHERENCE_MIN_SIGNAL_STD,
-    COHERENCE_OVERLAP_FRACTION, COHERENCE_SEGMENT_SECONDS, COHERENCE_SUMMARY_MAX_HZ, PSD_EPSILON,
+    COHERENCE_BIN_MATCH_TOLERANCE, COHERENCE_MEDIUM_THRESHOLD, COHERENCE_MIN_SEGMENTS,
+    COHERENCE_MIN_SIGNAL_STD, COHERENCE_OVERLAP_FRACTION, COHERENCE_SEGMENT_SECONDS,
+    COHERENCE_SUMMARY_MAX_HZ, PSD_EPSILON,
 };
 use crate::data_analysis::spectral_analysis::{coherence, welch_cpsd, welch_psd, WelchConfig};
 use crate::data_analysis::transfer_function_estimation::calculate_signal_variation;
@@ -25,7 +26,7 @@ pub struct CoherenceResult {
     pub mean_coherence: Option<(f64, f64, f64)>,
     /// Highest frequency reached by the unbroken run of bins at or above
     /// `COHERENCE_MEDIUM_THRESHOLD`, starting at the first bin above DC. `None` when that
-    /// first bin is already below the threshold.
+    /// first bin is below the threshold or omitted.
     pub coherent_bandwidth_hz: Option<f64>,
 }
 
@@ -130,16 +131,18 @@ fn mean_in_band(freq: &[f64], coh: &[f64]) -> Option<(f64, f64, f64)> {
     ))
 }
 
-/// Highest frequency of the unbroken run of bins at or above `COHERENCE_MEDIUM_THRESHOLD`,
-/// starting at the first bin above DC.
-fn coherent_bandwidth(freq: &[f64], coh: &[f64]) -> Option<f64> {
-    let mut top = None;
-    for (&f, &c) in freq.iter().zip(coh).filter(|(&f, _)| f > 0.0) {
-        if c >= COHERENCE_MEDIUM_THRESHOLD {
-            top = Some(f);
-        } else {
+/// Highest frequency of the unbroken run of bins at or above `COHERENCE_MEDIUM_THRESHOLD`.
+/// The run starts at the first positive FFT bin (`bin_hz`) and ends at the first bin that is
+/// below the threshold or missing (omitted for lack of signal power).
+fn coherent_bandwidth(freq: &[f64], coh: &[f64], bin_hz: f64) -> Option<f64> {
+    let tolerance = bin_hz * COHERENCE_BIN_MATCH_TOLERANCE;
+    let mut top: Option<f64> = None;
+    for (&f, &c) in freq.iter().zip(coh) {
+        let expected = top.map_or(bin_hz, |t| t + bin_hz);
+        if (f - expected).abs() > tolerance || c < COHERENCE_MEDIUM_THRESHOLD {
             break;
         }
+        top = Some(f);
     }
     top
 }
@@ -154,9 +157,16 @@ pub fn analyze_axis(
         .get(axis)
         .ok_or_else(|| format!("invalid axis index {axis}"))?;
     let (mut setpoint, mut gyro) = (Vec::new(), Vec::new());
-    for row in log_data {
+    let mut previous_row: Option<usize> = None;
+    for (i, row) in log_data.iter().enumerate() {
         if let (Some(sp), Some(gy)) = (row.setpoint[axis], row.gyro[axis]) {
             if sp.is_finite() && gy.is_finite() {
+                // The estimate assumes uniform sampling, so a skipped row between two kept rows
+                // would stretch the time axis and shift every frequency.
+                if previous_row.is_some_and(|prev| i != prev + 1) {
+                    return Err("setpoint or gyro samples missing inside the log".to_string());
+                }
+                previous_row = Some(i);
                 setpoint.push(sp as f32);
                 gyro.push(gy as f32);
             }
@@ -166,7 +176,11 @@ pub fn analyze_axis(
     Ok(CoherenceResult {
         axis_name: name.to_string(),
         mean_coherence: mean_in_band(&frequency_hz, &coh),
-        coherent_bandwidth_hz: coherent_bandwidth(&frequency_hz, &coh),
+        coherent_bandwidth_hz: coherent_bandwidth(
+            &frequency_hz,
+            &coh,
+            sample_rate / segment_length_for(sample_rate) as f64,
+        ),
         frequency_hz,
         coherence: coh,
         segment_count,
@@ -399,14 +413,28 @@ mod tests {
 
     #[test]
     fn bandwidth_is_the_unbroken_run_above_the_medium_threshold() {
-        // bins 0..5 at 0, 10, ..., 50 Hz; DC is skipped, the run breaks at 40 Hz
-        let freq = [0.0, 10.0, 20.0, 30.0, 40.0, 50.0];
-        let coh = [0.0, 0.9, 0.4, 0.39, 0.95, 0.95];
-        assert_eq!(coherent_bandwidth(&freq, &coh), Some(20.0));
+        // 10 Hz bins; the run breaks at 40 Hz in the first case
+        let freq = [10.0, 20.0, 30.0, 40.0, 50.0];
         assert_eq!(
-            coherent_bandwidth(&freq, &[0.0, 0.1, 0.9, 0.9, 0.9, 0.9]),
+            coherent_bandwidth(&freq, &[0.9, 0.4, 0.39, 0.95, 0.95], 10.0),
+            Some(20.0)
+        );
+        assert_eq!(
+            coherent_bandwidth(&freq, &[0.1, 0.9, 0.9, 0.9, 0.9], 10.0),
             None
         );
+        assert_eq!(coherent_bandwidth(&freq, &[0.9; 5], 10.0), Some(50.0));
+    }
+
+    // An omitted bin ends the run: 10, 20 and 40 Hz are above the threshold but 30 Hz is missing.
+    // A first bin above the first positive FFT bin gives no run.
+    #[test]
+    fn bandwidth_stops_at_an_omitted_bin() {
+        assert_eq!(
+            coherent_bandwidth(&[10.0, 20.0, 40.0], &[0.9, 0.9, 0.9], 10.0),
+            Some(20.0)
+        );
+        assert_eq!(coherent_bandwidth(&[20.0, 30.0], &[0.9, 0.9], 10.0), None);
     }
 
     #[test]
@@ -449,6 +477,28 @@ mod tests {
         assert!(analyze_axis(&rows, TEST_SAMPLE_RATE, 3).is_err());
         assert!(analyze_coherence(&rows, None).is_empty());
         assert_eq!(analyze_coherence(&rows, Some(TEST_SAMPLE_RATE)).len(), 1);
+    }
+
+    // Spec: a row without a setpoint/gyro pair between kept rows breaks the uniform sample
+    // spacing, so the axis is rejected instead of showing doubled frequencies.
+    #[test]
+    fn missing_row_inside_the_log_rejects_the_axis() {
+        let mut rows: Vec<LogRowData> = noise(18, TEST_LEN)
+            .iter()
+            .map(|&v| LogRowData {
+                setpoint: [Some(f64::from(v)), None, None, None],
+                gyro: [Some(f64::from(v)), None, None],
+                ..Default::default()
+            })
+            .collect();
+        assert!(analyze_axis(&rows, TEST_SAMPLE_RATE, 0).is_ok());
+        rows[TEST_LEN / 2].gyro[0] = None;
+        let e = analyze_axis(&rows, TEST_SAMPLE_RATE, 0).unwrap_err();
+        assert!(e.contains("missing inside the log"), "{e}");
+        // Missing rows at the ends are not internal gaps.
+        rows[TEST_LEN / 2].gyro[0] = Some(1.0);
+        rows[0].gyro[0] = None;
+        assert!(analyze_axis(&rows, TEST_SAMPLE_RATE, 0).is_ok());
     }
 
     #[test]

@@ -385,6 +385,9 @@ pub const COHERENCE_MIN_SEGMENTS: usize = 16;
 pub const COHERENCE_MIN_SIGNAL_STD: f64 = 1e-6;
 // Band for the mean-coherence summary, Hz; the DC bin is excluded (the mean is removed first)
 pub const COHERENCE_SUMMARY_MAX_HZ: f64 = 100.0;
+// A bin counts as the expected next bin when its frequency is within this fraction of the bin
+// spacing of the expected value
+pub const COHERENCE_BIN_MATCH_TOLERANCE: f64 = 0.5;
 // Plot X-axis upper limit, Hz (also capped at Nyquist)
 pub const COHERENCE_PLOT_MAX_HZ: f64 = 500.0;
 pub const COLOR_COHERENCE: &RGBColor = &LIGHTBLUE;
