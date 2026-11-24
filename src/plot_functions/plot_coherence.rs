@@ -32,6 +32,10 @@ fn axis_series(r: &CoherenceResult) -> Option<(f64, Vec<PlotSeries>)> {
         runs.last_mut()?.push((f, c));
         previous = Some(f);
     }
+    // Every bin was beyond the plotted range: no measurement to draw.
+    if runs.is_empty() {
+        return None;
+    }
     let line = |level: f64| vec![(0.0, level), (x_max, level)];
     // Only the first run carries the legend entry.
     let mut series: Vec<PlotSeries> = runs
@@ -165,6 +169,20 @@ mod tests {
     #[test]
     fn empty_result_has_no_series() {
         assert!(axis_series(&result("Roll", vec![], vec![])).is_none());
+    }
+
+    // Spec: when every bin lies above the plotted range there is no measurement, so no series
+    // (and no reference-line-only PNG); a bin exactly at the limit is kept.
+    #[test]
+    fn bins_all_above_the_plot_range_have_no_series() {
+        let above = COHERENCE_PLOT_MAX_HZ + 2.0;
+        assert!(axis_series(&result("Roll", vec![above, above + 2.0], vec![0.5, 0.5])).is_none());
+        assert!(axis_series(&result("Roll", vec![COHERENCE_PLOT_MAX_HZ], vec![0.5])).is_some());
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().join("log").to_string_lossy().into_owned();
+        let r = result("Roll", vec![above], vec![0.5]);
+        plot_coherence(&[r], &root).expect("ok");
+        assert!(!std::path::Path::new(&format!("{root}_Coherence_stacked.png")).exists());
     }
 
     // The PNG is written when an axis has data.
