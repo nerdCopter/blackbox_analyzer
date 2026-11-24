@@ -14,6 +14,7 @@ use crate::constants::{
     MOTOR_OSCILLATION_SECONDS_TO_MS, MOTOR_OSCILLATION_WINDOW_S, RATIO_TO_PERCENT,
     STICK_DIST_FULL_STICK_RC_COMMAND,
 };
+use crate::data_analysis::filter_group_delay::{delays_text, stages_text, AxisGroupDelay};
 use crate::data_analysis::filter_response::{
     rpm_motor_frequency_lines, AllFilterConfigs, DynamicNotchConfig, RpmFilterConfig,
     RpmMotorFrequencies,
@@ -80,6 +81,8 @@ pub struct FlightReport {
     pub motor_desync_results: Vec<MotorDesyncResult>,
     pub rc_command_steps: Vec<RcCommandStepResult>,
     pub stick_distribution_results: Vec<StickDistributionResult>,
+    /// Theoretical per-axis filter group delay chains; empty unless the plot is enabled.
+    pub filter_group_delay_results: Vec<AxisGroupDelay>,
     pub png_links: Vec<String>,
     /// Human-readable labels of plot types that were enabled but produced no plottable data.
     pub skipped_plots: Vec<String>,
@@ -214,6 +217,36 @@ pub fn generate_markdown_report(
             write_rpm_filter_lines(&mut md, rpm, report.rpm_motor_frequencies.as_ref())?;
             writeln!(md)?;
         }
+    }
+
+    // --- Filter Group Delay ---
+    if report
+        .filter_group_delay_results
+        .iter()
+        .any(|r| r.gyro.is_some() || r.dterm.is_some())
+    {
+        writeln!(md, "## Filter Group Delay")?;
+        writeln!(md)?;
+        writeln!(
+            md,
+            "Theoretical delay of the configured lowpass chain from the header settings (not measured). Notch and RPM filters are excluded."
+        )?;
+        writeln!(md)?;
+        writeln!(md, "| Axis | Signal | Stages | Group delay |")?;
+        writeln!(md, "|------|--------|--------|-------------|")?;
+        for r in &report.filter_group_delay_results {
+            for chain in [&r.gyro, &r.dterm].into_iter().flatten() {
+                writeln!(
+                    md,
+                    "| {} | {} | {} | {} |",
+                    r.axis_name,
+                    chain.signal,
+                    stages_text(&chain.stages),
+                    delays_text(chain)
+                )?;
+            }
+        }
+        writeln!(md)?;
     }
 
     // --- PID Tuning ---
@@ -965,6 +998,7 @@ mod tests {
             motor_desync_results: Vec::new(),
             rc_command_steps: Vec::new(),
             stick_distribution_results: Vec::new(),
+            filter_group_delay_results: Vec::new(),
             png_links: Vec::new(),
             skipped_plots: Vec::new(),
             filter_config: None,

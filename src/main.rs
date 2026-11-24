@@ -84,6 +84,7 @@ struct PlotConfig {
     pub d_term_heatmap: bool,
     pub motor_spectrums: bool,
     pub bode: bool,
+    pub filter_group_delay: bool,
     pub pid_activity: bool,
     pub rc_command_activity: bool,
     pub motor_erpm: bool,
@@ -107,6 +108,7 @@ impl Default for PlotConfig {
             d_term_heatmap: false,
             motor_spectrums: true,
             bode: false,
+            filter_group_delay: false,
             pid_activity: false,
             rc_command_activity: true,
             motor_erpm: false,
@@ -131,6 +133,7 @@ impl PlotConfig {
             d_term_heatmap: false,
             motor_spectrums: false,
             bode: false,
+            filter_group_delay: false,
             pid_activity: false,
             rc_command_activity: false,
             motor_erpm: false,
@@ -153,6 +156,7 @@ impl PlotConfig {
             d_term_heatmap: true,
             motor_spectrums: true,
             bode: false, // Bode requires specialized logs
+            filter_group_delay: true,
             pid_activity: true,
             rc_command_activity: true,
             motor_erpm: true,
@@ -188,12 +192,16 @@ use crate::constants::{
 };
 
 // Specific plot function imports
+use crate::data_analysis::filter_group_delay::{
+    analyze_group_delay, console_lines as group_delay_console_lines,
+};
 use crate::data_analysis::stick_distribution::analyze_stick_distribution;
 use crate::plot_functions::motor_desync::{detect_motor_desync, fallback_oscillation_overlaps};
 use crate::plot_functions::plot_bode::plot_bode_analysis;
 use crate::plot_functions::plot_d_term_heatmap::plot_d_term_heatmap;
 use crate::plot_functions::plot_d_term_psd::plot_d_term_psd;
 use crate::plot_functions::plot_d_term_spectrums::plot_d_term_spectrums;
+use crate::plot_functions::plot_filter_group_delay::plot_filter_group_delay;
 use crate::plot_functions::plot_gyro_spectrums::plot_gyro_spectrums;
 use crate::plot_functions::plot_gyro_vs_unfilt::plot_gyro_vs_unfilt;
 use crate::plot_functions::plot_motor_erpm::plot_motor_erpm;
@@ -958,11 +966,15 @@ fn usage_text(program_name: &str) -> String {
     );
     let _ = writeln!(
         out,
-        "                   Setpoint Derivative, Gyro PSD, D-term PSD, heatmaps, and"
+        "                   Setpoint Derivative, Gyro PSD, D-term PSD, heatmaps,"
     );
     let _ = writeln!(
         out,
-        "                   Motor vs eRPM (requires bidirectional DShot telemetry)."
+        "                   Motor vs eRPM (requires bidirectional DShot telemetry), and"
+    );
+    let _ = writeln!(
+        out,
+        "                   Filter Group Delay (theoretical, from header filters)."
     );
     let _ = writeln!(out, "  --step           Step response only.");
     let _ = writeln!(
@@ -2507,6 +2519,22 @@ INFO: Skipping Step Response input data filtering for {input_file_str}: {reason}
 
     // --- Filter configuration (from header metadata, independent of CSV data) ---
     let filter_config = Some(filter_response::parse_filter_config(&header_metadata));
+    let filter_group_delay_results = match (plot_config.filter_group_delay, filter_config.as_ref())
+    {
+        (true, Some(fc)) => {
+            let results = analyze_group_delay(fc);
+            let lines = group_delay_console_lines(&results);
+            if !lines.is_empty() {
+                println!("\n--- Filter Group Delay (theoretical) ---");
+                for line in &lines {
+                    println!("{line}");
+                }
+            }
+            plot_filter_group_delay(&results, &root_name_string)?;
+            results
+        }
+        _ => Vec::new(),
+    };
     let dynamic_notch = filter_response::extract_dynamic_notch_range(Some(&header_metadata));
     let rpm_motor_frequencies = rpm_filter
         .as_ref()
@@ -2619,6 +2647,14 @@ INFO: Skipping Step Response input data filtering for {input_file_str}: {reason}
             format!("{root_name_string}_Motor_vs_eRPM_stacked.png"),
         );
     }
+    if plot_config.filter_group_delay {
+        push_if_written(
+            &mut png_links,
+            &mut skipped_plots,
+            "Filter Group Delay",
+            format!("{root_name_string}_Filter_Group_Delay_stacked.png"),
+        );
+    }
     if plot_config.psd {
         push_if_written(
             &mut png_links,
@@ -2698,6 +2734,7 @@ INFO: Skipping Step Response input data filtering for {input_file_str}: {reason}
         motor_desync_results,
         rc_command_steps,
         stick_distribution_results,
+        filter_group_delay_results,
         png_links,
         skipped_plots,
         filter_config,
