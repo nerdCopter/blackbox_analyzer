@@ -20,7 +20,8 @@ use crate::constants::{
     HEATMAP_LEGEND_BACKGROUND_OPACITY, HEATMAP_MIN_PSD_DB, LEGEND_BACKGROUND_OPACITY,
     LINE_WIDTH_LEGEND, MAX_PEAKS_TO_LABEL, PEAK_LABEL_BOTTOM_MARGIN_PX, PEAK_LABEL_MIN_AMPLITUDE,
     PLOT_HEIGHT, PLOT_WIDTH, PSD_PEAK_LABEL_MIN_VALUE_DB, RIGHT_ALIGN_THRESHOLD,
-    RPM_HEATMAP_LINE_COLOR, RPM_HEATMAP_LINE_WIDTH, TRIANGLE_WIDTH_RATIO,
+    RPM_HEATMAP_LINE_COLOR, RPM_HEATMAP_LINE_WIDTH, SINGLE_POINT_MARKER_RADIUS,
+    TRIANGLE_WIDTH_RATIO,
 };
 use crate::font_config::{
     BUNDLED_FONT_BYTES, FONT_TUPLE_AXIS_LABEL, FONT_TUPLE_CHART_TITLE, FONT_TUPLE_LEGEND,
@@ -402,7 +403,6 @@ fn draw_single_axis_chart_with_config(
                     s.data.iter().cloned(),
                     s.color.stroke_width(s.stroke_width),
                 ))?;
-
                 if !s.label.is_empty() {
                     series.label(&s.label).legend(move |(x, y)| {
                         PathElement::new(
@@ -411,6 +411,14 @@ fn draw_single_axis_chart_with_config(
                         )
                     });
                     legend_series_count += 1;
+                }
+                // A path of one point has no segment and draws nothing: mark the point instead.
+                if s.data.len() == 1 && s.stroke_width > 0 {
+                    chart.draw_series(std::iter::once(Circle::new(
+                        s.data[0],
+                        SINGLE_POINT_MARKER_RADIUS,
+                        s.color.filled(),
+                    )))?;
                 }
             }
         }
@@ -861,6 +869,35 @@ where
     Ok(())
 }
 
+/// Creates an image with one chart that fills the plot area. Nothing is written when the chart has
+/// no plottable data.
+pub fn draw_single_chart_plot(
+    output_filename: &str,
+    root_name: &str,
+    plot_type_name: &str,
+    plot_config: &PlotConfig,
+) -> Result<(), Box<dyn Error>> {
+    if !is_plot_config_valid(plot_config) {
+        print_no_axis_data_skip(plot_type_name);
+        return Ok(());
+    }
+
+    let root_area =
+        BitMapBackend::new(output_filename, (PLOT_WIDTH, PLOT_HEIGHT)).into_drawing_area();
+    root_area.fill(&WHITE)?;
+    root_area.draw(&Text::new(
+        root_name,
+        (10, 10),
+        FONT_TUPLE_MAIN_TITLE.into_font().color(&BLACK),
+    ))?;
+    let margined_root_area = root_area.margin(50, 5, 5, 5);
+    draw_single_axis_chart_with_config(&margined_root_area, plot_config)?;
+    root_area.present()?;
+    record_written_this_run(output_filename);
+    println!("  Plot saved as '{output_filename}'.");
+    Ok(())
+}
+
 /// Creates a stacked plot image with three rows and two columns for subplots.
 pub fn draw_dual_spectrum_plot<'a, F>(
     output_filename: &'a str,
@@ -1285,5 +1322,37 @@ mod tests {
         record_written_this_run("LOG2_SetpointVsGyro_stacked.png");
         let matches = written_this_run_with_prefix("LOG2_SetpointVsGyro_stacked");
         assert_eq!(matches, vec!["LOG2_SetpointVsGyro_stacked.png".to_string()]);
+    }
+
+    // Pixels of `color` in the PNG that `draw_single_chart_plot` writes for one unlabelled series,
+    // so only the series itself (no legend entry) can draw that colour.
+    fn series_pixels(points: &[(f64, f64)]) -> usize {
+        const TEST_COLOR: RGBColor = RGBColor(0, 0, 255);
+        let dir = tempfile::tempdir().expect("tempdir");
+        let png = dir.path().join("series.png").to_string_lossy().into_owned();
+        let config = valid_plot_config(vec![PlotSeries {
+            data: points.to_vec(),
+            label: String::new(),
+            color: TEST_COLOR,
+            stroke_width: TEST_STROKE_WIDTH,
+        }]);
+        draw_single_chart_plot(&png, "test", "test", &config).expect("plot");
+        let img = image::open(&png).expect("png").to_rgb8();
+        img.pixels()
+            .filter(|p| p.0 == [TEST_COLOR.0, TEST_COLOR.1, TEST_COLOR.2])
+            .count()
+    }
+
+    // A path of one point has no segment, so a line alone leaves it invisible; the marker shows it.
+    #[test]
+    fn a_one_point_series_is_visible() {
+        assert!(series_pixels(&[(5.0, 5.0)]) > 0);
+    }
+
+    #[test]
+    fn a_two_point_series_is_a_visible_line() {
+        let line = series_pixels(&[(2.0, 5.0), (8.0, 5.0)]);
+        assert!(line > 0);
+        assert!(line > series_pixels(&[(5.0, 5.0)]));
     }
 }

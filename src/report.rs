@@ -14,6 +14,9 @@ use crate::constants::{
     MOTOR_OSCILLATION_SECONDS_TO_MS, MOTOR_OSCILLATION_WINDOW_S, RATIO_TO_PERCENT,
     STICK_DIST_FULL_STICK_RC_COMMAND,
 };
+use crate::data_analysis::dynamic_notch_activity::{
+    centre_summary_text, debug_axis_text, DynamicNotchActivity,
+};
 use crate::data_analysis::filter_response::{
     rpm_motor_frequency_lines, AllFilterConfigs, DynamicNotchConfig, RpmFilterConfig,
     RpmMotorFrequencies,
@@ -80,6 +83,8 @@ pub struct FlightReport {
     pub motor_desync_results: Vec<MotorDesyncResult>,
     pub rc_command_steps: Vec<RcCommandStepResult>,
     pub stick_distribution_results: Vec<StickDistributionResult>,
+    /// Dynamic notch centres from debug_mode FFT_FREQ; `None` when the log has none.
+    pub dynamic_notch_activity: Option<DynamicNotchActivity>,
     pub png_links: Vec<String>,
     /// Human-readable labels of plot types that were enabled but produced no plottable data.
     pub skipped_plots: Vec<String>,
@@ -821,6 +826,36 @@ pub fn generate_markdown_report(
         writeln!(md)?;
     }
 
+    // --- Dynamic Notch Activity ---
+    if let Some(activity) = &report.dynamic_notch_activity {
+        writeln!(md, "## Dynamic Notch Activity")?;
+        writeln!(md)?;
+        writeln!(
+            md,
+            "Notch centre frequencies logged with debug_mode FFT_FREQ, {} only.",
+            debug_axis_text(activity)
+        )?;
+        writeln!(md)?;
+        writeln!(md, "| Notch | Samples | No peak | Centre frequency |")?;
+        writeln!(md, "|-------|---------|---------|------------------|")?;
+        for n in &activity.notches {
+            writeln!(
+                md,
+                "| {} | {} | {} | {} |",
+                n.notch,
+                n.samples,
+                n.no_peak_samples,
+                centre_summary_text(n)
+            )?;
+        }
+        writeln!(md)?;
+        writeln!(
+            md,
+            "No peak: samples where the firmware logged a centre of 0 for the notch. The span is P95 minus P5 of the centre over samples with a peak; it shows how far the centre moved, not whether the filter hunts, because a centre that follows changing throttle also moves."
+        )?;
+        writeln!(md)?;
+    }
+
     // --- Generated Plots ---
     if !report.png_links.is_empty() {
         writeln!(md, "## Generated Plots")?;
@@ -965,6 +1000,7 @@ mod tests {
             motor_desync_results: Vec::new(),
             rc_command_steps: Vec::new(),
             stick_distribution_results: Vec::new(),
+            dynamic_notch_activity: None,
             png_links: Vec::new(),
             skipped_plots: Vec::new(),
             filter_config: None,
@@ -1051,5 +1087,72 @@ mod tests {
             text.contains("more P headroom is possible but not quantified"),
             "{text}"
         );
+    }
+    #[test]
+    fn report_carries_the_shared_dynamic_notch_text() {
+        use crate::data_analysis::dynamic_notch_activity::{
+            analyze_dynamic_notch_activity, console_lines, FftFreqLayout,
+        };
+        use crate::data_input::log_data::LogRowData;
+        // Betaflight 2025.12 header set: gyro in debug[0], one centre in debug[1].
+        let header = vec![
+            (
+                "Firmware revision".to_string(),
+                "Betaflight 2025.12.2 (79065c96b) STM32F7X2".to_string(),
+            ),
+            ("gyro_debug_axis".to_string(), "0".to_string()),
+        ];
+        let rows: Vec<LogRowData> = [100.0, 200.0, 300.0]
+            .iter()
+            .enumerate()
+            .map(|(i, c)| LogRowData {
+                time_sec: Some(i as f64),
+                debug: [Some(-4.0), Some(*c), Some(0.0), Some(0.0)],
+                ..Default::default()
+            })
+            .collect();
+        let activity =
+            analyze_dynamic_notch_activity(&rows, &header, FftFreqLayout::GyroFirst, None)
+                .expect("activity");
+        let console = console_lines(&activity);
+        let mut report = empty_report(Vec::new());
+        report.dynamic_notch_activity = Some(activity);
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("report.md");
+        generate_markdown_report(&report, &path).expect("report");
+        let text = fs::read_to_string(&path).expect("read");
+        assert!(text.contains("## Dynamic Notch Activity"), "{text}");
+        assert!(text.contains("Roll axis only"), "{text}");
+        assert!(
+            text.contains(
+                "| 1 | 3 | 0 | median 200 Hz, P5-P95 100-200 Hz (span 100 Hz), min-max 100-300 Hz |"
+            ),
+            "{text}"
+        );
+        // Console and report show the same centre text.
+        assert!(
+            console[0]
+                .ends_with("median 200 Hz, P5-P95 100-200 Hz (span 100 Hz), min-max 100-300 Hz"),
+            "{}",
+            console[0]
+        );
+        // Table header and delimiter have the same cell count.
+        let header_line = text
+            .lines()
+            .find(|l| l.starts_with("| Notch |"))
+            .expect("header");
+        let delim = text
+            .lines()
+            .skip_while(|l| !l.starts_with("| Notch |"))
+            .nth(1)
+            .expect("delimiter");
+        assert_eq!(header_line.matches('|').count(), delim.matches('|').count());
+
+        let mut none = empty_report(Vec::new());
+        none.dynamic_notch_activity = None;
+        generate_markdown_report(&none, &path).expect("report");
+        assert!(!fs::read_to_string(&path)
+            .expect("read")
+            .contains("Dynamic Notch Activity"));
     }
 }
