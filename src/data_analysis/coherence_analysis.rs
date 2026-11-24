@@ -2,10 +2,11 @@
 
 use crate::axis_names::AXIS_NAMES;
 use crate::constants::{
-    COHERENCE_BIN_MATCH_TOLERANCE, COHERENCE_MEDIUM_THRESHOLD, COHERENCE_MIN_SEGMENTS,
-    COHERENCE_MIN_SIGNAL_STD, COHERENCE_OVERLAP_FRACTION, COHERENCE_SEGMENT_SECONDS,
-    COHERENCE_SUMMARY_MAX_HZ, FREQUENCY_EPSILON, PSD_EPSILON,
+    COHERENCE_BIN_MATCH_TOLERANCE, COHERENCE_MAX_GAP_TOLERANCE, COHERENCE_MEDIUM_THRESHOLD,
+    COHERENCE_MIN_SEGMENTS, COHERENCE_MIN_SIGNAL_STD, COHERENCE_OVERLAP_FRACTION,
+    COHERENCE_SEGMENT_SECONDS, COHERENCE_SUMMARY_MAX_HZ, FREQUENCY_EPSILON, PSD_EPSILON,
 };
+use crate::data_analysis::sampling::window_spans_gap;
 use crate::data_analysis::spectral_analysis::{coherence, welch_cpsd, welch_psd, WelchConfig};
 use crate::data_analysis::transfer_function_estimation::calculate_signal_variation;
 use crate::data_input::log_data::LogRowData;
@@ -163,6 +164,27 @@ fn coherent_bandwidth(freq: &[f64], coh: &[f64], bin_hz: f64) -> Option<f64> {
     top
 }
 
+/// True when any Welch segment of `times` (same length and hop as the estimate) spans a gap.
+fn has_timestamp_gap(times: &[f64], sample_rate: f64) -> bool {
+    let segment_length = segment_length_for(sample_rate);
+    let hop = hop_size(segment_length);
+    if hop == 0 {
+        return false;
+    }
+    (0..)
+        .map(|k| k * hop)
+        .take_while(|&start| start + segment_length <= times.len())
+        .any(|start| {
+            window_spans_gap(
+                times,
+                start,
+                segment_length,
+                sample_rate,
+                COHERENCE_MAX_GAP_TOLERANCE,
+            )
+        })
+}
+
 /// Coherence for one axis from the paired setpoint and gyro samples of `log_data`.
 pub fn analyze_axis(
     log_data: &[LogRowData],
@@ -172,7 +194,7 @@ pub fn analyze_axis(
     let name = AXIS_NAMES
         .get(axis)
         .ok_or_else(|| format!("invalid axis index {axis}"))?;
-    let (mut setpoint, mut gyro) = (Vec::new(), Vec::new());
+    let (mut setpoint, mut gyro, mut times) = (Vec::new(), Vec::new(), Vec::new());
     let mut previous_row: Option<usize> = None;
     for (i, row) in log_data.iter().enumerate() {
         if let (Some(sp), Some(gy)) = (row.setpoint[axis], row.gyro[axis]) {
@@ -185,8 +207,13 @@ pub fn analyze_axis(
                 previous_row = Some(i);
                 setpoint.push(sp as f32);
                 gyro.push(gy as f32);
+                times.extend(row.time_sec);
             }
         }
+    }
+    // Timestamps are checked only when every kept row has one.
+    if times.len() == setpoint.len() && has_timestamp_gap(&times, sample_rate) {
+        return Err("timestamps show a gap or pause inside the log".to_string());
     }
     let (frequency_hz, coh, segment_count) = estimate_coherence(&setpoint, &gyro, sample_rate)?;
     let bin_hz = sample_rate / segment_length_for(sample_rate) as f64;
@@ -553,6 +580,33 @@ mod tests {
         // Missing rows at the ends are not internal gaps.
         rows[TEST_LEN / 2].gyro[0] = Some(1.0);
         rows[0].gyro[0] = None;
+        assert!(analyze_axis(&rows, TEST_SAMPLE_RATE, 0).is_ok());
+    }
+
+    // Spec: a pause inside the log breaks the uniform spacing, so the axis is rejected; the same
+    // rows with uniform timestamps are accepted, and so are rows without timestamps.
+    #[test]
+    fn pause_inside_the_log_rejects_the_axis() {
+        let mut rows: Vec<LogRowData> = noise(19, TEST_LEN)
+            .iter()
+            .enumerate()
+            .map(|(i, &v)| LogRowData {
+                time_sec: Some(i as f64 / TEST_SAMPLE_RATE),
+                setpoint: [Some(f64::from(v)), None, None, None],
+                gyro: [Some(f64::from(v)), None, None],
+                ..Default::default()
+            })
+            .collect();
+        assert!(analyze_axis(&rows, TEST_SAMPLE_RATE, 0).is_ok());
+        // A 2 s pause between two consecutive rows.
+        for row in &mut rows[TEST_LEN / 2..] {
+            row.time_sec = row.time_sec.map(|t| t + 2.0);
+        }
+        let e = analyze_axis(&rows, TEST_SAMPLE_RATE, 0).unwrap_err();
+        assert!(e.contains("gap or pause"), "{e}");
+        for row in &mut rows {
+            row.time_sec = None;
+        }
         assert!(analyze_axis(&rows, TEST_SAMPLE_RATE, 0).is_ok());
     }
 

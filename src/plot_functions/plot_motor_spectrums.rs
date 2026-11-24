@@ -15,6 +15,7 @@ use crate::constants::{
 use crate::data_analysis::calc_step_response; // For tukeywin
 use crate::data_analysis::fft_utils; // For fft_forward
 use crate::data_analysis::filter_response;
+use crate::data_analysis::sampling::window_spans_gap;
 use crate::data_input::log_data::LogRowData;
 use crate::plot_framework::record_written_this_run;
 use plotters::prelude::*;
@@ -70,17 +71,19 @@ fn detect_windowed_oscillation(
     let window = calc_step_response::tukeywin(win_samples, TUKEY_ALPHA);
     let freq_spacing = sr_value / win_samples as f64;
 
-    // Expected span of a full window if samples are truly contiguous at sr_value — used
-    // below to reject a window whose actual timestamp span is far wider, which means it
-    // silently joined samples across a dropped-frame gap rather than a real oscillation.
-    let expected_span_s = (win_samples - 1) as f64 / sr_value;
-
     // Checks one window starting at `start`, returning its (time, peak, avg) if it clears the
     // oscillation bar. `start` is always a valid window start (caller guarantees
     // start + win_samples <= samples.len()), so `times[start]` never panics.
     let check_window = |start: usize| -> Option<(f64, f64, f64)> {
-        let actual_span_s = times[start + win_samples - 1] - times[start];
-        if actual_span_s > expected_span_s * MOTOR_OSCILLATION_MAX_GAP_TOLERANCE {
+        // A window whose timestamp span is far wider than its uniform span silently joined
+        // samples across a dropped-frame gap rather than a real oscillation.
+        if window_spans_gap(
+            times,
+            start,
+            win_samples,
+            sr_value,
+            MOTOR_OSCILLATION_MAX_GAP_TOLERANCE,
+        ) {
             // A dropped-frame gap sits inside this window — its samples aren't uniformly
             // spaced at sr_value, so the FFT below would misread the gap as content.
             return None;

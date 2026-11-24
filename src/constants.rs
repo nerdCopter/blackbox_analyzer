@@ -388,6 +388,9 @@ pub const COHERENCE_SUMMARY_MAX_HZ: f64 = 100.0;
 // A bin counts as the expected next bin when its frequency is within this fraction of the bin
 // spacing of the expected value
 pub const COHERENCE_BIN_MATCH_TOLERANCE: f64 = 0.5;
+// A Welch segment whose timestamp span exceeds this multiple of its uniform span holds a gap
+// (same criterion as the motor oscillation window)
+pub const COHERENCE_MAX_GAP_TOLERANCE: f64 = MOTOR_OSCILLATION_MAX_GAP_TOLERANCE;
 // Plot X-axis upper limit, Hz (also capped at Nyquist)
 pub const COHERENCE_PLOT_MAX_HZ: f64 = 500.0;
 pub const COLOR_COHERENCE: &RGBColor = &LIGHTBLUE;

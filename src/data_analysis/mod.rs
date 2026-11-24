@@ -9,6 +9,7 @@ pub mod filter_delay;
 pub mod filter_response;
 pub mod optimal_p_estimation;
 pub mod rate_curve;
+pub mod sampling;
 pub mod spectral_analysis;
 pub mod stick_distribution;
 pub mod threshold_events;
