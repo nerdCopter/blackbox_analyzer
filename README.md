@@ -187,7 +187,7 @@ per-tier baseline mechanics.
 - `*_Gyro_PSD_Spectrogram_comparative.png` — Gyro spectrogram (PSD vs. time)
 - `*_Throttle_Freq_Heatmap_comparative.png` — Throttle/frequency heatmap analysis
 - `*_Motor_vs_eRPM_stacked.png` — One row per motor, commanded output and eRPM telemetry overlaid, each normalized to its own 0-100% range; vertical markers at every Motor Desync Detection event timestamp. Skipped when the log has no eRPM telemetry.
-- `*_Dynamic_Notch_Activity.png` — Dynamic notch centre frequency (Hz) against time, one line per notch (up to 3), for the gyro debug axis only. Extended only, and only for logs with `debug_mode` FFT_FREQ on Betaflight 4.3+ or EmuFlight; skipped with a console note otherwise. The same median and P5-P95 spread go to the console and the report.
+- `*_Dynamic_Notch_Activity.png` — Dynamic notch centre frequency (Hz) against time, one line per notch (up to 3), for the gyro debug axis only. Extended only, and only for logs with `debug_mode` FFT_FREQ on Betaflight 4.3+ or EmuFlight 0.4+; skipped with a console note otherwise. The same median and P5-P95 spread go to the console and the report.
 
 #### Markdown Report (always generated)
 

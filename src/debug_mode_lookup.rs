@@ -3,7 +3,10 @@
 // Debug mode lookup tables for various firmware types and versions.
 // Used to decode the debug_mode integer from header metadata into human-readable names.
 
-use crate::constants::{BF_FFT_FREQ_CENTRES_MIN_VERSION, DEBUG_MODE_FFT_FREQ_GYRO_FIRST};
+use crate::constants::{
+    BF_FFT_FREQ_CENTRES_MIN_VERSION, DEBUG_MODE_FFT_FREQ_GYRO_FIRST,
+    EF_FFT_FREQ_CENTRES_MIN_VERSION,
+};
 use crate::data_analysis::dynamic_notch_activity::FftFreqLayout;
 use std::collections::HashMap;
 use std::fmt;
@@ -495,18 +498,21 @@ pub fn lookup_debug_mode(firmware_revision: &str, debug_mode_value: u32) -> Opti
 /// Layout of the FFT_FREQ debug columns for a log, or `None` when `debug_mode` is not FFT_FREQ for
 /// this firmware. FFT_FREQ is 16 in the Betaflight 4.6+ table (centres in debug[1..3]) and 17 in
 /// the older and EmuFlight tables (centres in debug[0..2]); the number selects the layout because
-/// only the 4.6+ table puts FFT_FREQ at 16. Betaflight 4.2 and older also use 17 but log a dynamic
-/// factor in debug[1]; they, and a Betaflight revision with no parsable version, give `None`.
+/// only the 4.6+ table puts FFT_FREQ at 16. Betaflight 4.2 and older and EmuFlight 0.3.x also use 17
+/// but log a dynamic factor in debug[1]; they, and a revision with no parsable version, give `None`.
 pub fn fft_freq_layout(firmware_revision: &str, debug_mode_value: u32) -> Option<FftFreqLayout> {
     if lookup_debug_mode(firmware_revision, debug_mode_value) != Some("FFT_FREQ") {
         return None;
     }
     let (fw_type, _version_str, version) = parse_firmware_revision(firmware_revision);
-    if fw_type == "Betaflight" {
+    let min_version = match fw_type {
+        "Betaflight" => Some(BF_FFT_FREQ_CENTRES_MIN_VERSION),
+        "EmuFlight" => Some(EF_FFT_FREQ_CENTRES_MIN_VERSION),
+        _ => None,
+    };
+    if let Some(min_version) = min_version {
         let has_centres = match version {
-            FirmwareVersion::Semver(major, minor) => {
-                (major, minor) >= BF_FFT_FREQ_CENTRES_MIN_VERSION
-            }
+            FirmwareVersion::Semver(major, minor) => (major, minor) >= min_version,
             FirmwareVersion::Datever(..) => true,
             FirmwareVersion::Unknown => false,
         };
@@ -745,15 +751,17 @@ mod tests {
         );
     }
 
-    // Betaflight 4.2 logs FFT_FREQ as 17 too, but debug[1] is the dynamic factor, not a notch centre.
+    // Betaflight 4.2 and EmuFlight 0.3.x log FFT_FREQ as 17 too, but debug[1] is the dynamic factor.
     #[test]
-    fn fft_freq_layout_rejects_betaflight_before_4_3() {
+    fn fft_freq_layout_rejects_firmware_without_centre_columns() {
         for fw in [
             "Betaflight 4.2.11 (d9ba6ee0e) STM32F7X2",
             "Betaflight 4.2.5 (afdac08b3) STM32F411",
             "Betaflight 4.1.7 (a1b2c3d4e) STM32F405",
             "Betaflight 3.5.7 (a1b2c3d4e) STM32F405",
             "Betaflight (a1b2c3d4e) STM32F405",
+            "EmuFlight 0.3.5 (a1b2c3d4e) STM32F405",
+            "EmuFlight 0.3.6 (a1b2c3d4e) STM32F405",
         ] {
             assert_eq!(fft_freq_layout(fw, 17), None, "{fw}");
         }

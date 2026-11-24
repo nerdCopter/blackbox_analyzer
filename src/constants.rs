@@ -548,6 +548,9 @@ pub const RPM_HEATMAP_LINE_WIDTH: u32 = 2; // Stroke width of the RPM harmonic l
 // Betaflight 4.2 and older (gyroanalyse.c) log the centre of one notch in debug[0] and the dynamic
 // factor in debug[1]; no centre columns follow the layouts above, so the plot needs 4.3+ (dyn_notch_filter.c).
 pub const BF_FFT_FREQ_CENTRES_MIN_VERSION: (u32, u32) = (4, 3);
+// EmuFlight 0.3.0 to 0.3.6 have the same old layout; 0.3.7 and 0.4.0+ log centres. The header version
+// parse keeps major.minor only, so all of 0.3.x is skipped.
+pub const EF_FFT_FREQ_CENTRES_MIN_VERSION: (u32, u32) = (0, 4);
 pub const DEBUG_MODE_FFT_FREQ_GYRO_FIRST: u32 = 16; // FFT_FREQ number of the 4.6+ layout (FFT_FREQ is 17 in the older layout)
 pub const DYN_NOTCH_ACTIVITY_MAX_NOTCHES: usize = 3; // Centre columns FFT_FREQ carries (debug has 4 columns, one holds the gyro)
 pub const FFT_FREQ_CENTRE_COLUMNS_CENTRES_FIRST: [usize; DYN_NOTCH_ACTIVITY_MAX_NOTCHES] =
