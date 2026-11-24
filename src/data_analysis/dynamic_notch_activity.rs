@@ -35,7 +35,7 @@ pub struct NotchActivity {
     /// Runs of consecutive rows with a centre above 0: `(time s, centre Hz)`. A row without a
     /// centre ends the run, so a gap is never drawn as a line.
     pub segments: Vec<Vec<(f64, f64)>>,
-    /// Rows with a finite value in this column.
+    /// Rows with a time stamp and a finite value in this column.
     pub samples: usize,
     /// Rows whose value is 0 or below: the firmware had no centre for this notch.
     pub no_peak_samples: usize,
