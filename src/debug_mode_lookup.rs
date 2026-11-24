@@ -3,6 +3,8 @@
 // Debug mode lookup tables for various firmware types and versions.
 // Used to decode the debug_mode integer from header metadata into human-readable names.
 
+use crate::constants::DEBUG_MODE_FFT_FREQ_GYRO_FIRST;
+use crate::data_analysis::dynamic_notch_activity::FftFreqLayout;
 use std::collections::HashMap;
 use std::fmt;
 
@@ -490,6 +492,21 @@ pub fn lookup_debug_mode(firmware_revision: &str, debug_mode_value: u32) -> Opti
     mode_map.get(&debug_mode_value).copied()
 }
 
+/// Layout of the FFT_FREQ debug columns for a log, or `None` when `debug_mode` is not FFT_FREQ for
+/// this firmware. FFT_FREQ is 16 in the Betaflight 4.6+ table (centres in debug[1..3]) and 17 in
+/// the older and EmuFlight tables (centres in debug[0..2]); the number selects the layout because
+/// only the 4.6+ table puts FFT_FREQ at 16.
+pub fn fft_freq_layout(firmware_revision: &str, debug_mode_value: u32) -> Option<FftFreqLayout> {
+    if lookup_debug_mode(firmware_revision, debug_mode_value) != Some("FFT_FREQ") {
+        return None;
+    }
+    Some(if debug_mode_value == DEBUG_MODE_FFT_FREQ_GYRO_FIRST {
+        FftFreqLayout::GyroFirst
+    } else {
+        FftFreqLayout::CentresFirst
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -688,5 +705,56 @@ mod tests {
             "2025.12.15"
         );
         assert_eq!(format!("{}", FirmwareVersion::Unknown), "Unknown");
+    }
+    // Real header pairs: (Firmware revision, debug_mode) of logs with FFT_FREQ.
+    #[test]
+    fn fft_freq_layout_follows_firmware_table() {
+        assert_eq!(
+            fft_freq_layout("Betaflight 4.5.1 (77d01ba3b) STM32H743", 17),
+            Some(FftFreqLayout::CentresFirst)
+        );
+        assert_eq!(
+            fft_freq_layout("Betaflight 4.6.0 (3a70ece36) STM32F405", 16),
+            Some(FftFreqLayout::GyroFirst)
+        );
+        assert_eq!(
+            fft_freq_layout("Betaflight 2025.12.2 (79065c96b) STM32F7X2", 16),
+            Some(FftFreqLayout::GyroFirst)
+        );
+        assert_eq!(
+            fft_freq_layout("Betaflight 2026.6.0-alpha (ac7ece0ac) STM32F405", 16),
+            Some(FftFreqLayout::GyroFirst)
+        );
+        assert_eq!(
+            fft_freq_layout("EmuFlight 0.4.3 (784cd2b6b) HELIOSPRING", 17),
+            Some(FftFreqLayout::CentresFirst)
+        );
+    }
+
+    // The same numbers name other modes elsewhere: 16 is FFT_TIME in the older tables and 17 is
+    // RX_FRSKY_SPI in 4.6+, so neither gives a layout there.
+    #[test]
+    fn fft_freq_layout_rejects_other_modes() {
+        assert_eq!(
+            fft_freq_layout("EmuFlight 0.4.3 (784cd2b6b) HELIOSPRING", 16),
+            None
+        );
+        assert_eq!(
+            fft_freq_layout("Betaflight 4.5.1 (77d01ba3b) STM32H743", 16),
+            None
+        );
+        assert_eq!(
+            fft_freq_layout("Betaflight 2025.12.2 (79065c96b) STM32F7X2", 17),
+            None
+        );
+        assert_eq!(
+            fft_freq_layout("Betaflight 2025.12.2 (79065c96b) STM32F7X2", 0),
+            None
+        );
+        assert_eq!(
+            fft_freq_layout("INAV 8.0.0 (ec2106af) FLYWOOF745", 17),
+            None
+        );
+        assert_eq!(fft_freq_layout("", 17), None);
     }
 }

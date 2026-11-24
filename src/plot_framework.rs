@@ -861,6 +861,35 @@ where
     Ok(())
 }
 
+/// Creates an image with one chart that fills the plot area. Nothing is written when the chart has
+/// no plottable data.
+pub fn draw_single_chart_plot(
+    output_filename: &str,
+    root_name: &str,
+    plot_type_name: &str,
+    plot_config: &PlotConfig,
+) -> Result<(), Box<dyn Error>> {
+    if !is_plot_config_valid(plot_config) {
+        print_no_axis_data_skip(plot_type_name);
+        return Ok(());
+    }
+
+    let root_area =
+        BitMapBackend::new(output_filename, (PLOT_WIDTH, PLOT_HEIGHT)).into_drawing_area();
+    root_area.fill(&WHITE)?;
+    root_area.draw(&Text::new(
+        root_name,
+        (10, 10),
+        FONT_TUPLE_MAIN_TITLE.into_font().color(&BLACK),
+    ))?;
+    let margined_root_area = root_area.margin(50, 5, 5, 5);
+    draw_single_axis_chart_with_config(&margined_root_area, plot_config)?;
+    root_area.present()?;
+    record_written_this_run(output_filename);
+    println!("  Plot saved as '{output_filename}'.");
+    Ok(())
+}
+
 /// Creates a stacked plot image with three rows and two columns for subplots.
 pub fn draw_dual_spectrum_plot<'a, F>(
     output_filename: &'a str,

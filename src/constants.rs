@@ -538,3 +538,21 @@ pub const RPM_HEATMAP_MIN_BIN_SAMPLES: usize = 20; // Throttle bins with fewer e
 pub const RPM_HEATMAP_LINE_COLOR: (u8, u8, u8) = (235, 30, 30); // Red: opposite the viridis heatmap's blue-green-yellow range so the harmonic lines stand out
 pub const RPM_HEATMAP_MIN_LINE_POINTS: usize = 5; // A heatmap RPM harmonic run shorter than this (a stub where the harmonic barely enters the plot) is not drawn or listed
 pub const RPM_HEATMAP_LINE_WIDTH: u32 = 2; // Stroke width of the RPM harmonic lines on the throttle-frequency heatmap
+
+// Dynamic Notch Activity plot (notch centre frequency vs time, from debug_mode FFT_FREQ)
+// FFT_FREQ debug layouts, from firmware source. Betaflight 4.5 and older and EmuFlight log the centres
+// in debug[0..2] and the pre-notch gyro in debug[3] (EmuFlight: gyroanalyse.c; Betaflight 4.5:
+// dyn_notch_filter.c). Betaflight 4.6+ / 2025.12+ log the pre-notch gyro in debug[0] and the centres in
+// debug[1..3]. Only the gyro_filter_debug_axis axis is logged, one column per notch.
+pub const DEBUG_MODE_FFT_FREQ_GYRO_FIRST: u32 = 16; // FFT_FREQ number of the 4.6+ layout (FFT_FREQ is 17 in the older layout)
+pub const DYN_NOTCH_ACTIVITY_MAX_NOTCHES: usize = 3; // Centre columns FFT_FREQ carries (debug has 4 columns, one holds the gyro)
+pub const FFT_FREQ_CENTRE_COLUMNS_CENTRES_FIRST: [usize; DYN_NOTCH_ACTIVITY_MAX_NOTCHES] =
+    [0, 1, 2];
+pub const FFT_FREQ_CENTRE_COLUMNS_GYRO_FIRST: [usize; DYN_NOTCH_ACTIVITY_MAX_NOTCHES] = [1, 2, 3];
+pub const COLOR_DYN_NOTCH_ACTIVITY: [&RGBColor; DYN_NOTCH_ACTIVITY_MAX_NOTCHES] =
+    [&RED, &LIGHTBLUE, &GREEN]; // Notch 1, 2, 3
+pub const DYN_NOTCH_ACTIVITY_LOW_PERCENTILE_PCT: usize = 5; // Lower edge of the reported centre spread
+pub const DYN_NOTCH_ACTIVITY_HIGH_PERCENTILE_PCT: usize = 95; // Upper edge of the reported centre spread
+pub const DYN_NOTCH_ACTIVITY_Y_PADDING_FRACTION: f64 = 0.05; // Y-axis padding, fraction of the plotted frequency span
+pub const DYN_NOTCH_ACTIVITY_MIN_Y_SPAN_HZ: f64 = 10.0; // Minimum Y-axis span so a constant centre still draws
+pub const DYN_NOTCH_ACTIVITY_MIN_X_SPAN_S: f64 = 1.0; // Minimum time-axis span, s, so a one-sample series still draws

@@ -87,6 +87,7 @@ struct PlotConfig {
     pub pid_activity: bool,
     pub rc_command_activity: bool,
     pub motor_erpm: bool,
+    pub dynamic_notch_activity: bool,
 }
 
 impl Default for PlotConfig {
@@ -110,6 +111,7 @@ impl Default for PlotConfig {
             pid_activity: false,
             rc_command_activity: true,
             motor_erpm: false,
+            dynamic_notch_activity: false,
         }
     }
 }
@@ -134,6 +136,7 @@ impl PlotConfig {
             pid_activity: false,
             rc_command_activity: false,
             motor_erpm: false,
+            dynamic_notch_activity: false,
         }
     }
 
@@ -156,6 +159,7 @@ impl PlotConfig {
             pid_activity: true,
             rc_command_activity: true,
             motor_erpm: true,
+            dynamic_notch_activity: true,
         }
     }
 }
@@ -188,12 +192,17 @@ use crate::constants::{
 };
 
 // Specific plot function imports
+use crate::data_analysis::dynamic_notch_activity::{
+    analyze_dynamic_notch_activity, console_lines as dynamic_notch_console_lines,
+    SKIP_NOTE_NOT_FFT_FREQ, SKIP_NOTE_NO_CENTRES,
+};
 use crate::data_analysis::stick_distribution::analyze_stick_distribution;
 use crate::plot_functions::motor_desync::{detect_motor_desync, fallback_oscillation_overlaps};
 use crate::plot_functions::plot_bode::plot_bode_analysis;
 use crate::plot_functions::plot_d_term_heatmap::plot_d_term_heatmap;
 use crate::plot_functions::plot_d_term_psd::plot_d_term_psd;
 use crate::plot_functions::plot_d_term_spectrums::plot_d_term_spectrums;
+use crate::plot_functions::plot_dynamic_notch_activity::plot_dynamic_notch_activity;
 use crate::plot_functions::plot_gyro_spectrums::plot_gyro_spectrums;
 use crate::plot_functions::plot_gyro_vs_unfilt::plot_gyro_vs_unfilt;
 use crate::plot_functions::plot_motor_erpm::plot_motor_erpm;
@@ -963,6 +972,10 @@ fn usage_text(program_name: &str) -> String {
     let _ = writeln!(
         out,
         "                   Motor vs eRPM (requires bidirectional DShot telemetry)."
+    );
+    let _ = writeln!(
+        out,
+        "                   Dynamic Notch Activity (needs debug_mode FFT_FREQ) is also added."
     );
     let _ = writeln!(out, "  --step           Step response only.");
     let _ = writeln!(
@@ -2505,6 +2518,55 @@ INFO: Skipping Step Response input data filtering for {input_file_str}: {reason}
     let stick_distribution_results =
         analyze_stick_distribution(&all_log_data, Some(&header_metadata));
 
+    // --- Dynamic notch activity (debug_mode FFT_FREQ only) ---
+    let dynamic_notch_activity = if plot_config.dynamic_notch_activity {
+        let header_value = |key: &str| {
+            header_metadata
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case(key))
+                .map(|(_, v)| v.as_str())
+        };
+        let layout = header_value("debug_mode")
+            .and_then(|v| v.trim().parse::<u32>().ok())
+            .and_then(|mode| {
+                crate::debug_mode_lookup::fft_freq_layout(
+                    header_value("Firmware revision").unwrap_or(""),
+                    mode,
+                )
+            });
+        match layout {
+            None => {
+                println!("  {SKIP_NOTE_NOT_FFT_FREQ}");
+                None
+            }
+            Some(layout) => {
+                let range_hz = filter_response::extract_dynamic_notch_range(Some(&header_metadata))
+                    .map(|c| (c.min_hz, c.max_hz));
+                match analyze_dynamic_notch_activity(
+                    &all_log_data,
+                    &header_metadata,
+                    layout,
+                    range_hz,
+                ) {
+                    None => {
+                        println!("  {SKIP_NOTE_NO_CENTRES}");
+                        None
+                    }
+                    Some(activity) => {
+                        println!("\n--- Dynamic Notch Activity ---");
+                        for line in dynamic_notch_console_lines(&activity) {
+                            println!("{line}");
+                        }
+                        plot_dynamic_notch_activity(&activity, &root_name_string)?;
+                        Some(activity)
+                    }
+                }
+            }
+        }
+    } else {
+        None
+    };
+
     // --- Filter configuration (from header metadata, independent of CSV data) ---
     let filter_config = Some(filter_response::parse_filter_config(&header_metadata));
     let dynamic_notch = filter_response::extract_dynamic_notch_range(Some(&header_metadata));
@@ -2667,6 +2729,14 @@ INFO: Skipping Step Response input data filtering for {input_file_str}: {reason}
             format!("{root_name_string}_PID_Activity_stacked.png"),
         );
     }
+    if plot_config.dynamic_notch_activity {
+        push_if_written(
+            &mut png_links,
+            &mut skipped_plots,
+            "Dynamic Notch Activity",
+            format!("{root_name_string}_Dynamic_Notch_Activity.png"),
+        );
+    }
     if plot_config.rc_command_activity {
         push_if_written(
             &mut png_links,
@@ -2698,6 +2768,7 @@ INFO: Skipping Step Response input data filtering for {input_file_str}: {reason}
         motor_desync_results,
         rc_command_steps,
         stick_distribution_results,
+        dynamic_notch_activity,
         png_links,
         skipped_plots,
         filter_config,
