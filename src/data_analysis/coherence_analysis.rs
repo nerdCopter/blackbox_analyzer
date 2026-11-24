@@ -128,8 +128,9 @@ fn remove_mean(signal: &[f32]) -> Vec<f32> {
 }
 
 /// Mean over the defined bins with `f <= COHERENCE_SUMMARY_MAX_HZ`, plus bin coverage of the band.
-fn mean_in_band(freq: &[f64], coh: &[f64], bin_hz: f64) -> Option<BandMean> {
-    let limit = COHERENCE_SUMMARY_MAX_HZ + FREQUENCY_EPSILON;
+/// The band ends at `nyquist_hz` when that is lower, since no bin exists above it.
+fn mean_in_band(freq: &[f64], coh: &[f64], bin_hz: f64, nyquist_hz: f64) -> Option<BandMean> {
+    let limit = COHERENCE_SUMMARY_MAX_HZ.min(nyquist_hz) + FREQUENCY_EPSILON;
     let band: Vec<f64> = freq
         .iter()
         .zip(coh)
@@ -191,7 +192,7 @@ pub fn analyze_axis(
     let bin_hz = sample_rate / segment_length_for(sample_rate) as f64;
     Ok(CoherenceResult {
         axis_name: name.to_string(),
-        mean_coherence: mean_in_band(&frequency_hz, &coh, bin_hz),
+        mean_coherence: mean_in_band(&frequency_hz, &coh, bin_hz, sample_rate / 2.0),
         coherent_bandwidth_hz: coherent_bandwidth(&frequency_hz, &coh, bin_hz),
         bin_hz,
         frequency_hz,
@@ -457,19 +458,34 @@ mod tests {
     fn mean_band_excludes_bins_above_the_limit() {
         let freq = [50.0, 100.0, 150.0];
         let coh = [0.2, 0.8, 1.0];
-        let b = mean_in_band(&freq, &coh, 50.0).expect("mean");
+        let b = mean_in_band(&freq, &coh, 50.0, 500.0).expect("mean");
         assert_eq!((b.bins, b.bins_total), (2, 2));
         assert!((b.mean - 0.5).abs() < 1e-12, "{}", b.mean);
-        assert!(mean_in_band(&[150.0], &[1.0], 50.0).is_none());
+        assert!(mean_in_band(&[150.0], &[1.0], 50.0, 500.0).is_none());
         // Omitted bins show up as a smaller count than the band holds.
-        let sparse = mean_in_band(&[50.0], &[0.2], 50.0).expect("mean");
+        let sparse = mean_in_band(&[50.0], &[0.2], 50.0, 500.0).expect("mean");
         assert_eq!((sparse.bins, sparse.bins_total), (1, 2));
+    }
+
+    // Spec: a 100 Hz sample rate has 64-sample segments, 50 Hz Nyquist and 32 positive bins, so
+    // full coverage reads 32 of 32 and not 32 of 64. A rate above 200 Hz leaves the band at 100 Hz.
+    #[test]
+    fn band_coverage_stops_at_nyquist() {
+        let sample_rate = 100.0;
+        let bin_hz = sample_rate / segment_length_for(sample_rate) as f64;
+        assert_eq!(segment_length_for(sample_rate), 64);
+        let freq: Vec<f64> = (1..=32).map(|i| f64::from(i) * bin_hz).collect();
+        let coh = vec![0.5; 32];
+        let b = mean_in_band(&freq, &coh, bin_hz, sample_rate / 2.0).expect("mean");
+        assert_eq!((b.bins, b.bins_total), (32, 32));
+        let wide = mean_in_band(&[50.0], &[0.5], 50.0, 4000.0).expect("mean");
+        assert_eq!(wide.bins_total, 2);
     }
 
     // A bin that float rounding puts a hair above 100 Hz still counts as 100 Hz.
     #[test]
     fn mean_band_limit_tolerates_rounding() {
-        let b = mean_in_band(&[100.0 + 1e-13], &[0.5], 1.0).expect("mean");
+        let b = mean_in_band(&[100.0 + 1e-13], &[0.5], 1.0, 500.0).expect("mean");
         assert_eq!(b.bins, 1);
     }
 
