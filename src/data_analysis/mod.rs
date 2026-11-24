@@ -5,6 +5,7 @@ pub mod d_term_delay;
 pub mod derivative;
 pub mod fft_utils;
 pub mod filter_delay;
+pub mod filter_group_delay;
 pub mod filter_response;
 pub mod optimal_p_estimation;
 pub mod rate_curve;

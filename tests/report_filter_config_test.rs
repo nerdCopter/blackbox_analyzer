@@ -31,6 +31,7 @@ fn base_report(filter_config: Option<AllFilterConfigs>) -> FlightReport {
         motor_desync_results: vec![],
         rc_command_steps: vec![],
         stick_distribution_results: vec![],
+        filter_group_delay_results: vec![],
         png_links: vec![],
         skipped_plots: vec![],
         filter_config,
@@ -423,4 +424,36 @@ fn same_d_report_carries_the_shared_note_and_drops_the_tier() {
     );
     assert!(!contents.contains("Recommendation (conservative)"));
     assert!(!contents.contains("No obvious tuning adjustments needed"));
+}
+
+#[test]
+fn report_carries_the_shared_group_delay_text() {
+    use blackbox_analyzer::data_analysis::filter_group_delay::{
+        analyze_group_delay, delays_text, stages_text,
+    };
+
+    let mut fc = AllFilterConfigs::default();
+    fc.gyro[0] = lpf1_only_axis_config();
+    let results = analyze_group_delay(&fc);
+    let chain = results[0].gyro.as_ref().expect("roll gyro chain");
+
+    let mut report = base_report(Some(fc));
+    report.filter_group_delay_results = results.clone();
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let out_path = dir.path().join("group_delay_report.md");
+    generate_markdown_report(&report, &out_path).expect("generate report");
+    let contents = fs::read_to_string(&out_path).expect("read report");
+
+    assert!(contents.contains("## Filter Group Delay"));
+    assert!(contents.contains(&delays_text(chain)));
+    assert!(contents.contains(&stages_text(&chain.stages)));
+    // Axes without a chain add no row.
+    assert!(!contents.contains("| Pitch | Gyro |"));
+
+    // No chain anywhere: no section.
+    let mut empty = base_report(None);
+    empty.filter_group_delay_results = analyze_group_delay(&AllFilterConfigs::default());
+    generate_markdown_report(&empty, &out_path).expect("generate report");
+    let contents = fs::read_to_string(&out_path).expect("read report");
+    assert!(!contents.contains("## Filter Group Delay"));
 }

@@ -4,8 +4,8 @@ use std::collections::HashMap;
 
 use crate::axis_names::AXIS_NAMES;
 use crate::constants::{
-    GYRO_RATE_MAX_HZ, GYRO_RATE_MIN_HZ, PARITY_DIVISOR, RATIO_TO_PERCENT,
-    RPM_FILTER_BAND_HIGH_PERCENTILE, RPM_FILTER_BAND_LOW_PERCENTILE,
+    BIQUAD_Q_MAX, BIQUAD_Q_MIN, GYRO_RATE_MAX_HZ, GYRO_RATE_MIN_HZ, PARITY_DIVISOR,
+    RATIO_TO_PERCENT, RPM_FILTER_BAND_HIGH_PERCENTILE, RPM_FILTER_BAND_LOW_PERCENTILE,
     RPM_FILTER_CURVE_MIN_ATTENUATION, RPM_FILTER_CURVE_START_FLOOR_HZ,
     RPM_FILTER_CURVE_START_FRACTION, RPM_FILTER_DEFAULT_GYRO_RATE_HZ, RPM_FILTER_ERPM_PER_LSB,
     RPM_FILTER_MAX_HZ_RATE_FRACTION, RPM_FILTER_MICROSECONDS_PER_SECOND,
@@ -250,8 +250,8 @@ pub fn biquad_response_with_q(frequency_hz: f64, cutoff_hz: f64, q_factor: f64) 
         return 1.0; // No filtering
     }
 
-    // Clamp Q-factor to documented safe range (0.5-10.0) to prevent numerical instabilities
-    let q_factor = q_factor.clamp(0.5, 10.0);
+    // Clamp Q-factor to documented safe range to prevent numerical instabilities
+    let q_factor = q_factor.clamp(BIQUAD_Q_MIN, BIQUAD_Q_MAX);
 
     let omega = 2.0 * std::f64::consts::PI * frequency_hz;
     let omega_0 = 2.0 * std::f64::consts::PI * cutoff_hz;
@@ -883,7 +883,7 @@ fn parse_dynamic_cutoffs(cutoff_str: &str) -> (f64, f64) {
 /// Example: For PT2 at 90 Hz combined:
 /// - Each PT1 stage runs at 90 * 1.554 = 140 Hz
 /// - Two stages at 140 Hz produce -3dB at 90 Hz combined
-fn calculate_ptn_per_stage_cutoff(configured_cutoff_hz: f64, ptn_order: u32) -> f64 {
+pub fn calculate_ptn_per_stage_cutoff(configured_cutoff_hz: f64, ptn_order: u32) -> f64 {
     // PTn cutoff correction factors from Betaflight/EmuFlight source
     // Formula: 1 / sqrt(2^(1/n) - 1) where n is the filter order
     const PTN_SCALE_FACTORS: [f64; 4] = [

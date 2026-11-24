@@ -538,3 +538,15 @@ pub const RPM_HEATMAP_MIN_BIN_SAMPLES: usize = 20; // Throttle bins with fewer e
 pub const RPM_HEATMAP_LINE_COLOR: (u8, u8, u8) = (235, 30, 30); // Red: opposite the viridis heatmap's blue-green-yellow range so the harmonic lines stand out
 pub const RPM_HEATMAP_MIN_LINE_POINTS: usize = 5; // A heatmap RPM harmonic run shorter than this (a stub where the harmonic barely enters the plot) is not drawn or listed
 pub const RPM_HEATMAP_LINE_WIDTH: u32 = 2; // Stroke width of the RPM harmonic lines on the throttle-frequency heatmap
+
+// Filter group delay vs frequency (theoretical, from the filter settings in the log header)
+pub const COLOR_GROUP_DELAY_GYRO: &RGBColor = &LIGHTBLUE;
+pub const COLOR_GROUP_DELAY_GYRO_MAX_CUTOFF: &RGBColor = &ORANGE;
+pub const COLOR_GROUP_DELAY_DTERM: &RGBColor = &GREEN;
+pub const COLOR_GROUP_DELAY_DTERM_MAX_CUTOFF: &RGBColor = &PURPLE;
+pub const GROUP_DELAY_PLOT_MAX_HZ: f64 = 500.0; // Upper end of the plotted frequency range
+pub const GROUP_DELAY_PLOT_POINTS: usize = 501; // Linear grid from 0 Hz to GROUP_DELAY_PLOT_MAX_HZ inclusive (1 Hz steps at 500 Hz)
+pub const GROUP_DELAY_REPORT_FREQS_HZ: [f64; 3] = [0.0, 100.0, 200.0]; // Frequencies listed in the console and report; 0 is the DC (f -> 0) delay
+pub const SECONDS_TO_MS: f64 = 1000.0; // Group delay is computed in seconds and shown in milliseconds
+pub const BIQUAD_Q_MIN: f64 = 0.5; // Lowest biquad Q accepted by the filter models
+pub const BIQUAD_Q_MAX: f64 = 10.0; // Highest biquad Q accepted by the filter models
