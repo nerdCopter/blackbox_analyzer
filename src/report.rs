@@ -15,7 +15,7 @@ use crate::constants::{
     MOTOR_OSCILLATION_FREQ_MIN_HZ, MOTOR_OSCILLATION_SECONDS_TO_MS, MOTOR_OSCILLATION_WINDOW_S,
     RATIO_TO_PERCENT, STICK_DIST_FULL_STICK_RC_COMMAND,
 };
-use crate::data_analysis::coherence_analysis::{summary_text, CoherenceResult};
+use crate::data_analysis::coherence_analysis::{segment_seconds, summary_text, CoherenceResult};
 use crate::data_analysis::filter_response::{
     rpm_motor_frequency_lines, AllFilterConfigs, DynamicNotchConfig, RpmFilterConfig,
     RpmMotorFrequencies,
@@ -95,6 +95,16 @@ pub struct FlightReport {
     /// True when gyroUnfilt came from debug channels instead of dedicated gyroUnfilt columns.
     pub debug_fallback: bool,
     pub debug_mode_name: Option<&'static str>,
+}
+
+/// Segment-length wording of the coherence note: the actual duration (the same for every axis,
+/// since the sample rate is shared) and the target it was rounded up from.
+fn segment_note(r: &CoherenceResult) -> String {
+    format!(
+        "segments of {:.2} s (the {:.1} s target rounded up to a power-of-two sample count),",
+        segment_seconds(r),
+        COHERENCE_SEGMENT_SECONDS
+    )
 }
 
 /// Generate a structured markdown report and write it to `output_path`.
@@ -843,8 +853,8 @@ pub fn generate_markdown_report(
         writeln!(md)?;
         writeln!(
             md,
-            "Magnitude-squared coherence between setpoint and filtered gyro, 0 (unrelated) to 1 (gyro fully explained by setpoint through a linear system). Welch estimate with {:.1} s segments, {:.0}% overlap and a {} window; the mean is removed first, and bins where setpoint or gyro power is below the estimator's numerical guard are omitted, and the mean states how many bins it covers. Coherence below {:.1} means setpoint does not explain gyro at that frequency (noise, nonlinearity or unmeasured disturbance), not a tuning fault by itself. Unrelated signals read about 1 / Segments, so a higher segment count gives a lower floor; the 0.4 level is a fixed reference, not a confidence bound.",
-            COHERENCE_SEGMENT_SECONDS,
+            "Magnitude-squared coherence between setpoint and filtered gyro, 0 (unrelated) to 1 (gyro fully explained by setpoint through a linear system). Welch estimate with {} {:.0}% overlap and a {} window; the mean is removed first, and bins where setpoint or gyro power is below the estimator's numerical guard are omitted, and the mean states how many bins it covers. Coherence below {:.1} means setpoint does not explain gyro at that frequency (noise, nonlinearity or unmeasured disturbance), not a tuning fault by itself. Unrelated signals read about 1 / Segments, so a higher segment count gives a lower floor; the 0.4 level is a fixed reference, not a confidence bound.",
+            segment_note(&report.coherence_results[0]),
             COHERENCE_OVERLAP_FRACTION * RATIO_TO_PERCENT,
             COHERENCE_WINDOW_NAME,
             COHERENCE_MEDIUM_THRESHOLD
@@ -1094,7 +1104,8 @@ mod tests {
             frequency_hz: vec![],
             coherence: vec![],
             segment_count: 40,
-            bin_hz: 2.0,
+            // 1600 Hz sampling: 1024-sample segments, 0.64 s.
+            bin_hz: 1600.0 / 1024.0,
             mean_coherence: Some(BandMean {
                 mean: 0.75,
                 bins: 49,
@@ -1114,7 +1125,9 @@ mod tests {
             "{text}"
         );
         assert!(
-            text.contains("0.5 s segments, 50% overlap and a Hann window"),
+            text.contains(
+                "segments of 0.64 s (the 0.5 s target rounded up to a power-of-two sample count), 50% overlap and a Hann window"
+            ),
             "{text}"
         );
 

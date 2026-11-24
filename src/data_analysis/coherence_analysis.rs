@@ -49,6 +49,12 @@ pub fn segment_length_for(sample_rate: f64) -> usize {
     ((sample_rate * COHERENCE_SEGMENT_SECONDS).round().max(1.0) as usize).next_power_of_two()
 }
 
+/// Actual Welch segment duration in seconds (`segment length / sample rate`), which is the
+/// `COHERENCE_SEGMENT_SECONDS` target rounded up to a power-of-two sample count.
+pub fn segment_seconds(r: &CoherenceResult) -> f64 {
+    1.0 / r.bin_hz
+}
+
 /// Welch hop size in samples, as `welch_psd` computes it.
 fn hop_size(segment_length: usize) -> usize {
     ((1.0 - COHERENCE_OVERLAP_FRACTION) * segment_length as f64) as usize
@@ -608,6 +614,23 @@ mod tests {
             row.time_sec = None;
         }
         assert!(analyze_axis(&rows, TEST_SAMPLE_RATE, 0).is_ok());
+    }
+
+    // Spec: at 1600 Hz the 0.5 s target is 800 samples, rounded up to 1024 samples = 0.64 s.
+    #[test]
+    fn segment_seconds_is_the_rounded_up_duration() {
+        let sample_rate = 1600.0;
+        let r = CoherenceResult {
+            axis_name: "Roll".to_string(),
+            frequency_hz: vec![],
+            coherence: vec![],
+            segment_count: 20,
+            bin_hz: sample_rate / segment_length_for(sample_rate) as f64,
+            mean_coherence: None,
+            coherent_bandwidth_hz: None,
+        };
+        assert_eq!(segment_length_for(sample_rate), 1024);
+        assert!((segment_seconds(&r) - 0.64).abs() < 1e-12);
     }
 
     #[test]
