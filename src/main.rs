@@ -87,6 +87,7 @@ struct PlotConfig {
     pub pid_activity: bool,
     pub rc_command_activity: bool,
     pub motor_erpm: bool,
+    pub coherence: bool,
 }
 
 impl Default for PlotConfig {
@@ -110,6 +111,7 @@ impl Default for PlotConfig {
             pid_activity: false,
             rc_command_activity: true,
             motor_erpm: false,
+            coherence: false,
         }
     }
 }
@@ -134,6 +136,7 @@ impl PlotConfig {
             pid_activity: false,
             rc_command_activity: false,
             motor_erpm: false,
+            coherence: false,
         }
     }
 
@@ -156,6 +159,7 @@ impl PlotConfig {
             pid_activity: true,
             rc_command_activity: true,
             motor_erpm: true,
+            coherence: true,
         }
     }
 }
@@ -188,9 +192,11 @@ use crate::constants::{
 };
 
 // Specific plot function imports
+use crate::data_analysis::coherence_analysis::{analyze_coherence, console_lines};
 use crate::data_analysis::stick_distribution::analyze_stick_distribution;
 use crate::plot_functions::motor_desync::{detect_motor_desync, fallback_oscillation_overlaps};
 use crate::plot_functions::plot_bode::plot_bode_analysis;
+use crate::plot_functions::plot_coherence::plot_coherence;
 use crate::plot_functions::plot_d_term_heatmap::plot_d_term_heatmap;
 use crate::plot_functions::plot_d_term_psd::plot_d_term_psd;
 use crate::plot_functions::plot_d_term_spectrums::plot_d_term_spectrums;
@@ -958,12 +964,13 @@ fn usage_text(program_name: &str) -> String {
     );
     let _ = writeln!(
         out,
-        "                   Setpoint Derivative, Gyro PSD, D-term PSD, heatmaps, and"
+        "                   Setpoint Derivative, Gyro PSD, D-term PSD, heatmaps,"
     );
     let _ = writeln!(
         out,
-        "                   Motor vs eRPM (requires bidirectional DShot telemetry)."
+        "                   Motor vs eRPM (requires bidirectional DShot telemetry), and"
     );
+    let _ = writeln!(out, "                   Setpoint-Gyro Coherence.");
     let _ = writeln!(out, "  --step           Step response only.");
     let _ = writeln!(
         out,
@@ -2494,6 +2501,21 @@ INFO: Skipping Step Response input data filtering for {input_file_str}: {reason}
         plot_pid_activity(&all_log_data, &root_name_string, Some(&header_metadata))?;
     }
 
+    let coherence_results = if plot_config.coherence {
+        let results = analyze_coherence(&all_log_data, sample_rate);
+        let lines = console_lines(&results);
+        if !lines.is_empty() {
+            println!("\n--- Setpoint-Gyro Coherence ---");
+            for line in &lines {
+                println!("{line}");
+            }
+        }
+        plot_coherence(&results, &root_name_string)?;
+        results
+    } else {
+        Vec::new()
+    };
+
     let rc_command_steps = if plot_config.rc_command_activity {
         plot_rc_command_activity(&all_log_data, &root_name_string)?
     } else {
@@ -2667,6 +2689,14 @@ INFO: Skipping Step Response input data filtering for {input_file_str}: {reason}
             format!("{root_name_string}_PID_Activity_stacked.png"),
         );
     }
+    if plot_config.coherence {
+        push_if_written(
+            &mut png_links,
+            &mut skipped_plots,
+            "Setpoint-Gyro Coherence",
+            format!("{root_name_string}_Coherence_stacked.png"),
+        );
+    }
     if plot_config.rc_command_activity {
         push_if_written(
             &mut png_links,
@@ -2698,6 +2728,7 @@ INFO: Skipping Step Response input data filtering for {input_file_str}: {reason}
         motor_desync_results,
         rc_command_steps,
         stick_distribution_results,
+        coherence_results,
         png_links,
         skipped_plots,
         filter_config,

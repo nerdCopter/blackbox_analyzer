@@ -10,10 +10,12 @@ use std::path::Path;
 
 use crate::axis_names::{AXIS_COUNT, AXIS_NAMES};
 use crate::constants::{
-    MOTOR_DESYNC_REPORT_MAX_TIMES, MOTOR_OSCILLATION_FREQ_MAX_HZ, MOTOR_OSCILLATION_FREQ_MIN_HZ,
-    MOTOR_OSCILLATION_SECONDS_TO_MS, MOTOR_OSCILLATION_WINDOW_S, RATIO_TO_PERCENT,
-    STICK_DIST_FULL_STICK_RC_COMMAND,
+    COHERENCE_MEDIUM_THRESHOLD, COHERENCE_OVERLAP_FRACTION, COHERENCE_SEGMENT_SECONDS,
+    COHERENCE_WINDOW_NAME, MOTOR_DESYNC_REPORT_MAX_TIMES, MOTOR_OSCILLATION_FREQ_MAX_HZ,
+    MOTOR_OSCILLATION_FREQ_MIN_HZ, MOTOR_OSCILLATION_SECONDS_TO_MS, MOTOR_OSCILLATION_WINDOW_S,
+    RATIO_TO_PERCENT, STICK_DIST_FULL_STICK_RC_COMMAND,
 };
+use crate::data_analysis::coherence_analysis::{segment_seconds, summary_text, CoherenceResult};
 use crate::data_analysis::filter_response::{
     rpm_motor_frequency_lines, AllFilterConfigs, DynamicNotchConfig, RpmFilterConfig,
     RpmMotorFrequencies,
@@ -80,6 +82,8 @@ pub struct FlightReport {
     pub motor_desync_results: Vec<MotorDesyncResult>,
     pub rc_command_steps: Vec<RcCommandStepResult>,
     pub stick_distribution_results: Vec<StickDistributionResult>,
+    /// Empty unless the Setpoint-Gyro Coherence plot is enabled.
+    pub coherence_results: Vec<CoherenceResult>,
     pub png_links: Vec<String>,
     /// Human-readable labels of plot types that were enabled but produced no plottable data.
     pub skipped_plots: Vec<String>,
@@ -91,6 +95,16 @@ pub struct FlightReport {
     /// True when gyroUnfilt came from debug channels instead of dedicated gyroUnfilt columns.
     pub debug_fallback: bool,
     pub debug_mode_name: Option<&'static str>,
+}
+
+/// Segment-length wording of the coherence note: the actual duration (the same for every axis,
+/// since the sample rate is shared) and the target it was rounded up from.
+fn segment_note(r: &CoherenceResult) -> String {
+    format!(
+        "segments of {:.2} s (the {:.1} s target rounded up to a power-of-two sample count),",
+        segment_seconds(r),
+        COHERENCE_SEGMENT_SECONDS
+    )
 }
 
 /// Generate a structured markdown report and write it to `output_path`.
@@ -821,6 +835,33 @@ pub fn generate_markdown_report(
         writeln!(md)?;
     }
 
+    // --- Setpoint-Gyro Coherence ---
+    if !report.coherence_results.is_empty() {
+        writeln!(md, "## Setpoint-Gyro Coherence")?;
+        writeln!(md)?;
+        writeln!(md, "| Axis | Segments | Summary |")?;
+        writeln!(md, "|------|----------|---------|")?;
+        for r in &report.coherence_results {
+            writeln!(
+                md,
+                "| {} | {} | {} |",
+                r.axis_name,
+                r.segment_count,
+                summary_text(r)
+            )?;
+        }
+        writeln!(md)?;
+        writeln!(
+            md,
+            "Magnitude-squared coherence between setpoint and filtered gyro, 0 (unrelated) to 1 (gyro fully explained by setpoint through a linear system). Welch estimate with {} {:.0}% overlap and a {} window; the mean is removed first, and bins where setpoint or gyro power is below the estimator's numerical guard are omitted, and the mean states how many bins it covers. Coherence below {:.1} means setpoint does not explain gyro at that frequency (noise, nonlinearity or unmeasured disturbance), not a tuning fault by itself. Unrelated signals read about 1 / Segments, so a higher segment count gives a lower floor; the 0.4 level is a fixed reference, not a confidence bound.",
+            segment_note(&report.coherence_results[0]),
+            COHERENCE_OVERLAP_FRACTION * RATIO_TO_PERCENT,
+            COHERENCE_WINDOW_NAME,
+            COHERENCE_MEDIUM_THRESHOLD
+        )?;
+        writeln!(md)?;
+    }
+
     // --- Generated Plots ---
     if !report.png_links.is_empty() {
         writeln!(md, "## Generated Plots")?;
@@ -965,6 +1006,7 @@ mod tests {
             motor_desync_results: Vec::new(),
             rc_command_steps: Vec::new(),
             stick_distribution_results: Vec::new(),
+            coherence_results: Vec::new(),
             png_links: Vec::new(),
             skipped_plots: Vec::new(),
             filter_config: None,
@@ -1051,5 +1093,49 @@ mod tests {
             text.contains("more P headroom is possible but not quantified"),
             "{text}"
         );
+    }
+
+    // Spec: the report table carries the shared summary text and the constants-derived Welch note.
+    #[test]
+    fn report_carries_the_shared_coherence_summary() {
+        use crate::data_analysis::coherence_analysis::BandMean;
+        let r = CoherenceResult {
+            axis_name: "Roll".to_string(),
+            frequency_hz: vec![],
+            coherence: vec![],
+            segment_count: 40,
+            // 1600 Hz sampling: 1024-sample segments, 0.64 s.
+            bin_hz: 1600.0 / 1024.0,
+            mean_coherence: Some(BandMean {
+                mean: 0.75,
+                bins: 49,
+                bins_total: 50,
+            }),
+            coherent_bandwidth_hz: Some(12.5),
+        };
+        let mut report = empty_report(Vec::new());
+        report.coherence_results = vec![r.clone()];
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("report.md");
+        generate_markdown_report(&report, &path).expect("report");
+        let text = fs::read_to_string(&path).expect("read");
+        assert!(text.contains("## Setpoint-Gyro Coherence"), "{text}");
+        assert!(
+            text.contains(&format!("| Roll | 40 | {} |", summary_text(&r))),
+            "{text}"
+        );
+        assert!(
+            text.contains(
+                "segments of 0.64 s (the 0.5 s target rounded up to a power-of-two sample count), 50% overlap and a Hann window"
+            ),
+            "{text}"
+        );
+
+        // No coherence results: no section.
+        let empty = empty_report(Vec::new());
+        generate_markdown_report(&empty, &path).expect("report");
+        assert!(!fs::read_to_string(&path)
+            .expect("read")
+            .contains("## Setpoint-Gyro Coherence"));
     }
 }

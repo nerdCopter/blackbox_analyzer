@@ -7,6 +7,7 @@ use crate::plot_framework::HeatmapOverlayLine;
 pub mod motor_desync;
 pub mod peak_detection;
 pub mod plot_bode;
+pub mod plot_coherence;
 pub mod plot_d_term_heatmap;
 pub mod plot_d_term_psd;
 pub mod plot_d_term_spectrums;

@@ -1,6 +1,7 @@
 // src/data_analysis/mod.rs
 
 pub mod calc_step_response;
+pub mod coherence_analysis;
 pub mod d_term_delay;
 pub mod derivative;
 pub mod fft_utils;
@@ -8,6 +9,7 @@ pub mod filter_delay;
 pub mod filter_response;
 pub mod optimal_p_estimation;
 pub mod rate_curve;
+pub mod sampling;
 pub mod spectral_analysis;
 pub mod stick_distribution;
 pub mod threshold_events;
