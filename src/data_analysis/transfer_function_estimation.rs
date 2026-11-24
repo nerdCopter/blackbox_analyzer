@@ -13,7 +13,7 @@ use crate::data_analysis::spectral_analysis::{
 use crate::data_input::log_data::LogRowData;
 
 /// Calculate signal variation (standard deviation)
-fn calculate_signal_variation(signal: &[f32]) -> f64 {
+pub fn calculate_signal_variation(signal: &[f32]) -> f64 {
     if signal.is_empty() {
         return 0.0;
     }

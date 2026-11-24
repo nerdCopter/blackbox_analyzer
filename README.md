@@ -60,8 +60,9 @@ Usage: ./blackbox_analyzer <input1> [<input2> ...] [OPTIONS]
                    Setpoint vs Gyro, Gyro vs Unfiltered, Motor Spectrums,
                    RC Command Activity.
   --extended       All plots except Bode — adds PIDsum/Error, PID Activity,
-                   Setpoint Derivative, Gyro PSD, D-term PSD, heatmaps, and
-                   Motor vs eRPM (requires bidirectional DShot telemetry).
+                   Setpoint Derivative, Gyro PSD, D-term PSD, heatmaps,
+                   Motor vs eRPM (requires bidirectional DShot telemetry), and
+                   Setpoint-Gyro Coherence.
   --step           Step response only.
   --bode           Bode only (requires chirp/sweep system-id test flight).
   --desync         Motor vs eRPM plot only (needs eRPM telemetry). Desync
@@ -180,6 +181,7 @@ per-tier baseline mechanics.
 - `*_PIDsum_PIDerror_Setpoint_stacked.png` — PIDsum, PID error, and setpoint traces
 - `*_PID_Activity_stacked.png` — P, I, D term activity over time
 - `*_SetpointDerivative_stacked.png` — Setpoint rate-of-change / feed-forward proxy
+- `*_Coherence_stacked.png` — Setpoint-gyro magnitude-squared coherence per axis (0-1 over frequency), with 0.7 and 0.4 reference lines
 - `*_Gyro_PSD_comparative.png` — Gyro power spectral density (dB scale)
 - `*_D_Term_PSD_comparative.png` — D-term power spectral density (dB scale)
 - `*_D_Term_Heatmap_comparative.png` — D-term throttle/frequency heatmap
@@ -189,7 +191,7 @@ per-tier baseline mechanics.
 
 #### Markdown Report (always generated)
 
-- `*_report.md` — Structured flight report written alongside PNGs on every run. Sections: Metadata, Gyro Filter Configuration, PID Tuning, Step Response Analysis, Gyro Analysis, D-Term Analysis, Motor Oscillation, Motor Desync Detection, Stick Input Smoothness, Stick Position & Rate Analysis, PNG links, and a Skipped Plots list. Optimal P Estimation and Bode Analysis sections appear when those features are active. See [OVERVIEW.md](OVERVIEW.md#generated-reports) for exact per-section content and omission conditions.
+- `*_report.md` — Structured flight report written alongside PNGs on every run. Sections: Metadata, Gyro Filter Configuration, PID Tuning, Step Response Analysis, Gyro Analysis, D-Term Analysis, Motor Oscillation, Motor Desync Detection, Stick Input Smoothness, Stick Position & Rate Analysis, PNG links, and a Skipped Plots list. Optimal P Estimation, Bode Analysis and Setpoint-Gyro Coherence sections appear when those features are active. See [OVERVIEW.md](OVERVIEW.md#generated-reports) for exact per-section content and omission conditions.
 
 #### Console Output:
 - Current P:D ratio and peak analysis with response assessment

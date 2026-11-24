@@ -369,6 +369,28 @@ pub const FREQUENCY_EPSILON: f64 = 1e-12; // Guard against division by zero for 
 pub const VALUE_EPSILON: f64 = 1e-12; // Guard against division by zero for value (magnitude/phase) differences
 pub const PSD_EPSILON: f64 = 1e-12; // Guard against division by zero for PSD values
 
+// Setpoint-gyro coherence plot (magnitude-squared coherence per axis, Welch estimate)
+// Segment length in seconds; samples = next power of two of (sample rate x seconds), so the
+// FFT needs no zero padding. Frequency resolution is the reciprocal of the segment duration.
+pub const COHERENCE_SEGMENT_SECONDS: f64 = 0.5;
+// Overlap between consecutive Welch segments, fraction of the segment length
+pub const COHERENCE_OVERLAP_FRACTION: f64 = 0.5;
+// Window name shown in the report; must match `hanning_window` in spectral_analysis.rs, which
+// every Welch estimate in this crate applies
+pub const COHERENCE_WINDOW_NAME: &str = "Hann";
+// Fewer averaged segments than this leave too much estimator bias: independent signals give a
+// mean coherence of about 1 / (segment count), so 16 segments bias a zero-coherence pair to ~0.06
+pub const COHERENCE_MIN_SEGMENTS: usize = 16;
+// Standard deviation below which a signal counts as constant (deg/s), same limit as the Bode estimate
+pub const COHERENCE_MIN_SIGNAL_STD: f64 = 1e-6;
+// Band for the mean-coherence summary, Hz; the DC bin is excluded (the mean is removed first)
+pub const COHERENCE_SUMMARY_MAX_HZ: f64 = 100.0;
+// Plot X-axis upper limit, Hz (also capped at Nyquist)
+pub const COHERENCE_PLOT_MAX_HZ: f64 = 500.0;
+pub const COLOR_COHERENCE: &RGBColor = &LIGHTBLUE;
+pub const COLOR_COHERENCE_HIGH_LINE: &RGBColor = &GREEN;
+pub const COLOR_COHERENCE_MEDIUM_LINE: &RGBColor = &AMBER;
+
 // Bode plot margin constants
 pub const MAGNITUDE_PLOT_MARGIN_DB: f64 = 10.0; // Padding above/below magnitude data for plot range
 pub const PHASE_PLOT_MARGIN_DEG: f64 = 30.0; // Padding above/below phase data for plot range
