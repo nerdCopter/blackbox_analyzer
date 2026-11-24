@@ -24,8 +24,10 @@ pub struct DelayStage {
     pub q_factor: Option<f64>,
 }
 
-/// Lowpass chain of one signal on one axis. `stages` use the dynamic LPF1 minimum cutoff (largest
-/// delay); `stages_at_max_cutoff` is set only when LPF1 is dynamic with a larger maximum cutoff.
+/// Lowpass chain of one signal on one axis. `stages` use the dynamic LPF1 minimum cutoff (the
+/// largest delay at DC); `stages_at_max_cutoff` is set only when LPF1 is dynamic with a larger
+/// maximum cutoff. At a given frequency the two curves can cross, so values at those two cutoffs
+/// are endpoints, not a delay range.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ChainDelay {
     pub signal: &'static str,
@@ -77,7 +79,8 @@ fn biquad_group_delay_s(frequency_hz: f64, cutoff_hz: f64, q_factor: f64) -> f64
 /// PT1..PT4 are cascades of PT1 stages whose cutoff is the configured cutoff times the PTn
 /// correction (`calculate_ptn_per_stage_cutoff`), as in the firmware filter code. A biquad uses
 /// the same Q clamp and Butterworth default as `biquad_response_with_q`. A cutoff of zero or less
-/// (or NaN) means no filtering (zero delay), matching the magnitude functions; a non-finite
+/// (or NaN), or a biquad Q of zero or less (or NaN), means no filtering (zero delay), matching
+/// the magnitude functions and checked before the frequency; otherwise a non-finite
 /// frequency gives NaN. The result is even in
 /// frequency, so a negative frequency uses its absolute value; frequency 0 gives the DC delay.
 pub fn stage_group_delay_s(
@@ -99,9 +102,12 @@ pub fn stage_group_delay_s(
             f64::from(stages) * pt1_group_delay_s(frequency_hz, per_stage_cutoff_hz)
         }
         None => {
-            let q = q_factor
-                .unwrap_or(std::f64::consts::FRAC_1_SQRT_2)
-                .clamp(BIQUAD_Q_MIN, BIQUAD_Q_MAX);
+            let q = q_factor.unwrap_or(std::f64::consts::FRAC_1_SQRT_2);
+            // Same rule as `biquad_response_with_q`: a Q of zero or less is no filtering.
+            if q.is_nan() || q <= 0.0 {
+                return 0.0;
+            }
+            let q = q.clamp(BIQUAD_Q_MIN, BIQUAD_Q_MAX);
             biquad_group_delay_s(frequency_hz, cutoff_hz, q)
         }
     }
@@ -499,6 +505,16 @@ mod tests {
         let pos = stage_group_delay_s(80.0, FilterType::PT2, 100.0, None);
         assert!((neg - pos).abs() < TOL);
         assert!(stage_group_delay_s(f64::INFINITY, FilterType::PT1, 100.0, None).is_nan());
+    }
+
+    #[test]
+    fn biquad_nonpositive_or_nan_q_is_no_filtering() {
+        for q in [0.0, -1.0, f64::NAN] {
+            assert_eq!(
+                stage_group_delay_s(50.0, FilterType::Biquad, 100.0, Some(q)),
+                0.0
+            );
+        }
     }
 
     #[test]
