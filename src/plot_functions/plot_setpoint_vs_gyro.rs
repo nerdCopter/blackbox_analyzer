@@ -81,36 +81,7 @@ pub fn plot_setpoint_vs_gyro(
     let color_gyro: RGBColor = *COLOR_SETPOINT_VS_GYRO_GYRO;
     let line_stroke_plot = LINE_WIDTH_PLOT;
 
-    // Collect all absolute values for percentile calculation (issue #125)
-    let mut all_abs_vals = Vec::new();
-
-    #[allow(clippy::needless_range_loop)]
-    for axis_index in 0..AXIS_NAMES.len() {
-        let data = &axis_plot_data[axis_index];
-        for (_, setpoint, gyro_filt) in data {
-            if let Some(s) = setpoint {
-                all_abs_vals.push(s.abs());
-            }
-            if let Some(g) = gyro_filt {
-                all_abs_vals.push(g.abs());
-            }
-        }
-    }
-
-    // Calculate 95th percentile for Y-axis scaling
-    // This provides better visualization by not letting outliers (crashes, hard landings)
-    // compress the normal flight data. Analysis of 148 logs shows P95 is typically
-    // only 27% of absolute max, meaning outliers dominate current scaling.
-    let half_range = if !all_abs_vals.is_empty() {
-        all_abs_vals.sort_by(|a, b| a.total_cmp(b));
-        let p95_idx =
-            ((all_abs_vals.len() - 1) as f64 * UNIFIED_Y_AXIS_PERCENTILE).floor() as usize;
-        let p95_val = all_abs_vals[p95_idx];
-        let scaled_p95 = p95_val * UNIFIED_Y_AXIS_HEADROOM_SCALE;
-        scaled_p95.max(UNIFIED_Y_AXIS_MIN_SCALE)
-    } else {
-        UNIFIED_Y_AXIS_MIN_SCALE
-    };
+    let half_range = unified_half_range(&axis_plot_data, &ff_series_by_axis);
 
     draw_stacked_plot(
         &output_file_setpoint_gyro,
@@ -220,6 +191,68 @@ pub fn plot_setpoint_vs_gyro(
             ))
         },
     )
+}
+
+/// Shared symmetric Y half-range: percentile of the absolute setpoint, gyro and
+/// feedforward values across all axes, so every plotted trace shares one scale.
+fn unified_half_range(
+    axis_plot_data: &AllAxisPlotData2,
+    ff_series_by_axis: &[Vec<(f64, f64)>],
+) -> f64 {
+    let mut all_abs_vals = Vec::new();
+    for data in axis_plot_data.iter() {
+        for (_, setpoint, gyro_filt) in data {
+            all_abs_vals.extend(setpoint.iter().map(|s| s.abs()));
+            all_abs_vals.extend(gyro_filt.iter().map(|g| g.abs()));
+        }
+    }
+    for series in ff_series_by_axis {
+        all_abs_vals.extend(series.iter().map(|(_, ff)| ff.abs()));
+    }
+
+    // The percentile keeps outliers (crashes, hard landings) from compressing normal flight.
+    if all_abs_vals.is_empty() {
+        return UNIFIED_Y_AXIS_MIN_SCALE;
+    }
+    all_abs_vals.sort_by(|a, b| a.total_cmp(b));
+    let p95_idx = ((all_abs_vals.len() - 1) as f64 * UNIFIED_Y_AXIS_PERCENTILE).floor() as usize;
+    (all_abs_vals[p95_idx] * UNIFIED_Y_AXIS_HEADROOM_SCALE).max(UNIFIED_Y_AXIS_MIN_SCALE)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn plot_data(setpoint: f64, gyro: f64, n: usize) -> AllAxisPlotData2 {
+        let mut data: AllAxisPlotData2 = Default::default();
+        for axis in data.iter_mut() {
+            for i in 0..n {
+                axis.push((i as f64, Some(setpoint), Some(gyro)));
+            }
+        }
+        data
+    }
+
+    #[test]
+    fn half_range_without_feedforward_follows_setpoint_and_gyro() {
+        let data = plot_data(-500.0, 400.0, 100);
+        let empty: Vec<Vec<(f64, f64)>> = vec![Vec::new(); AXIS_NAMES.len()];
+        let expected = 500.0 * UNIFIED_Y_AXIS_HEADROOM_SCALE;
+        assert_eq!(unified_half_range(&data, &empty), expected);
+    }
+
+    #[test]
+    fn half_range_covers_feedforward_above_setpoint_and_gyro() {
+        let data = plot_data(300.0, 300.0, 100);
+        let ff: Vec<Vec<(f64, f64)>> = (0..AXIS_NAMES.len())
+            .map(|_| (0..100).map(|i| (i as f64, -1500.0)).collect())
+            .collect();
+        let half = unified_half_range(&data, &ff);
+        assert!(
+            half >= 1500.0,
+            "feedforward trace must lie inside the range"
+        );
+    }
 }
 
 // src/plot_functions/plot_setpoint_vs_gyro.rs
