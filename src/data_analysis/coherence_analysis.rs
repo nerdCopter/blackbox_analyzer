@@ -4,7 +4,7 @@ use crate::axis_names::AXIS_NAMES;
 use crate::constants::{
     COHERENCE_BIN_MATCH_TOLERANCE, COHERENCE_MEDIUM_THRESHOLD, COHERENCE_MIN_SEGMENTS,
     COHERENCE_MIN_SIGNAL_STD, COHERENCE_OVERLAP_FRACTION, COHERENCE_SEGMENT_SECONDS,
-    COHERENCE_SUMMARY_MAX_HZ, PSD_EPSILON,
+    COHERENCE_SUMMARY_MAX_HZ, FREQUENCY_EPSILON, PSD_EPSILON,
 };
 use crate::data_analysis::spectral_analysis::{coherence, welch_cpsd, welch_psd, WelchConfig};
 use crate::data_analysis::transfer_function_estimation::calculate_signal_variation;
@@ -21,13 +21,25 @@ pub struct CoherenceResult {
     pub coherence: Vec<f64>,
     /// Averaged Welch segments behind every bin.
     pub segment_count: usize,
-    /// Mean coherence over the defined bins with `f <= COHERENCE_SUMMARY_MAX_HZ`, and the
-    /// lowest and highest frequency of those bins; `None` when no bin falls there.
-    pub mean_coherence: Option<(f64, f64, f64)>,
+    /// FFT bin spacing in Hz (`sample_rate / segment length`).
+    pub bin_hz: f64,
+    /// Mean coherence over the defined bins with `f <= COHERENCE_SUMMARY_MAX_HZ` and how many
+    /// bins that is out of all FFT bins in the band; `None` when no defined bin falls there.
+    pub mean_coherence: Option<BandMean>,
     /// Highest frequency reached by the unbroken run of bins at or above
     /// `COHERENCE_MEDIUM_THRESHOLD`, starting at the first bin above DC. `None` when that
     /// first bin is below the threshold or omitted.
     pub coherent_bandwidth_hz: Option<f64>,
+}
+
+/// Mean coherence over the defined bins of the summary band.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BandMean {
+    pub mean: f64,
+    /// Defined bins in the band.
+    pub bins: usize,
+    /// All FFT bins in the band (defined or omitted).
+    pub bins_total: usize,
 }
 
 /// Welch segment length in samples for a sample rate: next power of two of
@@ -115,20 +127,23 @@ fn remove_mean(signal: &[f32]) -> Vec<f32> {
     signal.iter().map(|&x| (x as f64 - mean) as f32).collect()
 }
 
-/// `(mean, lowest f, highest f)` over the bins with `f <= COHERENCE_SUMMARY_MAX_HZ`.
-fn mean_in_band(freq: &[f64], coh: &[f64]) -> Option<(f64, f64, f64)> {
-    let band: Vec<(f64, f64)> = freq
+/// Mean over the defined bins with `f <= COHERENCE_SUMMARY_MAX_HZ`, plus bin coverage of the band.
+fn mean_in_band(freq: &[f64], coh: &[f64], bin_hz: f64) -> Option<BandMean> {
+    let limit = COHERENCE_SUMMARY_MAX_HZ + FREQUENCY_EPSILON;
+    let band: Vec<f64> = freq
         .iter()
-        .copied()
-        .zip(coh.iter().copied())
-        .filter(|&(f, _)| f <= COHERENCE_SUMMARY_MAX_HZ)
+        .zip(coh)
+        .filter(|(&f, _)| f <= limit)
+        .map(|(_, &c)| c)
         .collect();
-    let (first, last) = (band.first()?.0, band.last()?.0);
-    Some((
-        band.iter().map(|&(_, c)| c).sum::<f64>() / band.len() as f64,
-        first,
-        last,
-    ))
+    if band.is_empty() {
+        return None;
+    }
+    Some(BandMean {
+        mean: band.iter().sum::<f64>() / band.len() as f64,
+        bins: band.len(),
+        bins_total: (limit / bin_hz).floor() as usize,
+    })
 }
 
 /// Highest frequency of the unbroken run of bins at or above `COHERENCE_MEDIUM_THRESHOLD`.
@@ -173,14 +188,12 @@ pub fn analyze_axis(
         }
     }
     let (frequency_hz, coh, segment_count) = estimate_coherence(&setpoint, &gyro, sample_rate)?;
+    let bin_hz = sample_rate / segment_length_for(sample_rate) as f64;
     Ok(CoherenceResult {
         axis_name: name.to_string(),
-        mean_coherence: mean_in_band(&frequency_hz, &coh),
-        coherent_bandwidth_hz: coherent_bandwidth(
-            &frequency_hz,
-            &coh,
-            sample_rate / segment_length_for(sample_rate) as f64,
-        ),
+        mean_coherence: mean_in_band(&frequency_hz, &coh, bin_hz),
+        coherent_bandwidth_hz: coherent_bandwidth(&frequency_hz, &coh, bin_hz),
+        bin_hz,
         frequency_hz,
         coherence: coh,
         segment_count,
@@ -208,11 +221,12 @@ pub fn analyze_coherence(
 
 /// One-line summary shared by console, report and plot legend.
 pub fn summary_text(r: &CoherenceResult) -> String {
-    let mean = r
-        .mean_coherence
-        .map_or("mean N/A".to_string(), |(m, lo, hi)| {
-            format!("mean {m:.2} over {lo:.1}-{hi:.1} Hz")
-        });
+    let mean = r.mean_coherence.map_or("mean N/A".to_string(), |b| {
+        format!(
+            "mean {:.2} over {} of {} bins up to {COHERENCE_SUMMARY_MAX_HZ:.0} Hz",
+            b.mean, b.bins, b.bins_total
+        )
+    });
     let bandwidth = r
         .coherent_bandwidth_hz
         .map_or("none".to_string(), |b| format!("{b:.1} Hz"));
@@ -437,14 +451,39 @@ mod tests {
         assert_eq!(coherent_bandwidth(&[20.0, 30.0], &[0.9, 0.9], 10.0), None);
     }
 
+    // Bins every 50 Hz: 0, 50, 100 count (100 is inside the band), 150 does not. The band holds
+    // 100 / 50 = 2 FFT bins above DC.
     #[test]
     fn mean_band_excludes_bins_above_the_limit() {
-        let freq = [0.0, 50.0, 100.0, 150.0];
-        let coh = [0.2, 0.2, 0.8, 1.0];
-        let (m, lo, hi) = mean_in_band(&freq, &coh).expect("mean");
-        assert!((m - 0.4).abs() < 1e-12, "{m}");
-        assert_eq!((lo, hi), (0.0, 100.0));
-        assert!(mean_in_band(&[150.0], &[1.0]).is_none());
+        let freq = [50.0, 100.0, 150.0];
+        let coh = [0.2, 0.8, 1.0];
+        let b = mean_in_band(&freq, &coh, 50.0).expect("mean");
+        assert_eq!((b.bins, b.bins_total), (2, 2));
+        assert!((b.mean - 0.5).abs() < 1e-12, "{}", b.mean);
+        assert!(mean_in_band(&[150.0], &[1.0], 50.0).is_none());
+        // Omitted bins show up as a smaller count than the band holds.
+        let sparse = mean_in_band(&[50.0], &[0.2], 50.0).expect("mean");
+        assert_eq!((sparse.bins, sparse.bins_total), (1, 2));
+    }
+
+    // A bin that float rounding puts a hair above 100 Hz still counts as 100 Hz.
+    #[test]
+    fn mean_band_limit_tolerates_rounding() {
+        let b = mean_in_band(&[100.0 + 1e-13], &[0.5], 1.0).expect("mean");
+        assert_eq!(b.bins, 1);
+    }
+
+    // 16 independent-noise segments sit at the minimum: the mean estimate is biased up to about
+    // 1 / 16 = 0.0625 (a little above for overlapped windows), far from 0.4.
+    #[test]
+    fn independent_noise_at_the_minimum_segment_count_reads_about_one_sixteenth() {
+        let len = 15 * 256 + 512;
+        let x = noise(19, len);
+        let y = noise(20, len);
+        let (_, c, segments) = estimate_coherence(&x, &y, TEST_SAMPLE_RATE).expect("ok");
+        assert_eq!(segments, COHERENCE_MIN_SEGMENTS);
+        let m = mean(&c);
+        assert!((0.03..0.15).contains(&m), "mean coherence {m}");
     }
 
     #[test]
@@ -508,11 +547,19 @@ mod tests {
             frequency_hz: vec![],
             coherence: vec![],
             segment_count: 20,
-            mean_coherence: Some((0.5, 2.0, 98.0)),
+            bin_hz: 2.0,
+            mean_coherence: Some(BandMean {
+                mean: 0.5,
+                bins: 49,
+                bins_total: 50,
+            }),
             coherent_bandwidth_hz: None,
         };
         let t = summary_text(&r);
-        assert_eq!(t, "mean 0.50 over 2.0-98.0 Hz, coherence >= 0.4 up to none");
+        assert_eq!(
+            t,
+            "mean 0.50 over 49 of 50 bins up to 100 Hz, coherence >= 0.4 up to none"
+        );
         assert!(console_lines(&[r])[0].contains(&t));
     }
 }

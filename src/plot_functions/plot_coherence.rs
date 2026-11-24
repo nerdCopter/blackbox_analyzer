@@ -2,6 +2,7 @@
 
 use std::error::Error;
 
+use crate::constants::COHERENCE_BIN_MATCH_TOLERANCE;
 use crate::constants::{
     COHERENCE_HIGH_THRESHOLD, COHERENCE_MEDIUM_THRESHOLD, COHERENCE_PLOT_MAX_HZ, COLOR_COHERENCE,
     COLOR_COHERENCE_HIGH_LINE, COLOR_COHERENCE_MEDIUM_LINE, LINE_WIDTH_PLOT,
@@ -17,37 +18,49 @@ const REFERENCE_LINE_WIDTH: u32 = 1;
 fn axis_series(r: &CoherenceResult) -> Option<(f64, Vec<PlotSeries>)> {
     let last = *r.frequency_hz.last()?;
     let x_max = last.min(COHERENCE_PLOT_MAX_HZ);
-    let data: Vec<(f64, f64)> = r
-        .frequency_hz
-        .iter()
-        .copied()
-        .zip(r.coherence.iter().copied())
-        .filter(|&(f, _)| f <= x_max)
-        .collect();
+    // Runs of adjacent bins; a gap of omitted bins ends a run so no line crosses it.
+    let tolerance = r.bin_hz * COHERENCE_BIN_MATCH_TOLERANCE;
+    let mut runs: Vec<Vec<(f64, f64)>> = Vec::new();
+    let mut previous: Option<f64> = None;
+    for (&f, &c) in r.frequency_hz.iter().zip(&r.coherence) {
+        if f > x_max {
+            break;
+        }
+        if previous.is_none_or(|p| f - p > r.bin_hz + tolerance) {
+            runs.push(Vec::new());
+        }
+        runs.last_mut()?.push((f, c));
+        previous = Some(f);
+    }
     let line = |level: f64| vec![(0.0, level), (x_max, level)];
-    Some((
-        x_max,
-        vec![
-            PlotSeries {
-                data,
-                label: format!("Coherence ({})", summary_text(r)),
-                color: *COLOR_COHERENCE,
-                stroke_width: LINE_WIDTH_PLOT,
+    // Only the first run carries the legend entry.
+    let mut series: Vec<PlotSeries> = runs
+        .into_iter()
+        .enumerate()
+        .map(|(i, data)| PlotSeries {
+            data,
+            label: if i == 0 {
+                format!("Coherence ({})", summary_text(r))
+            } else {
+                String::new()
             },
-            PlotSeries {
-                data: line(COHERENCE_HIGH_THRESHOLD),
-                label: format!("High ({COHERENCE_HIGH_THRESHOLD:.1})"),
-                color: *COLOR_COHERENCE_HIGH_LINE,
-                stroke_width: REFERENCE_LINE_WIDTH,
-            },
-            PlotSeries {
-                data: line(COHERENCE_MEDIUM_THRESHOLD),
-                label: format!("Medium ({COHERENCE_MEDIUM_THRESHOLD:.1})"),
-                color: *COLOR_COHERENCE_MEDIUM_LINE,
-                stroke_width: REFERENCE_LINE_WIDTH,
-            },
-        ],
-    ))
+            color: *COLOR_COHERENCE,
+            stroke_width: LINE_WIDTH_PLOT,
+        })
+        .collect();
+    series.push(PlotSeries {
+        data: line(COHERENCE_HIGH_THRESHOLD),
+        label: format!("High ({COHERENCE_HIGH_THRESHOLD:.1})"),
+        color: *COLOR_COHERENCE_HIGH_LINE,
+        stroke_width: REFERENCE_LINE_WIDTH,
+    });
+    series.push(PlotSeries {
+        data: line(COHERENCE_MEDIUM_THRESHOLD),
+        label: format!("Medium ({COHERENCE_MEDIUM_THRESHOLD:.1})"),
+        color: *COLOR_COHERENCE_MEDIUM_LINE,
+        stroke_width: REFERENCE_LINE_WIDTH,
+    });
+    Some((x_max, series))
 }
 
 /// Generates the stacked per-axis setpoint-gyro coherence plot. No file is written when no
@@ -91,6 +104,7 @@ pub fn plot_coherence(results: &[CoherenceResult], root_name: &str) -> Result<()
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::data_analysis::coherence_analysis::BandMean;
 
     fn result(axis: &str, freq: Vec<f64>, coh: Vec<f64>) -> CoherenceResult {
         CoherenceResult {
@@ -98,7 +112,12 @@ mod tests {
             frequency_hz: freq,
             coherence: coh,
             segment_count: 20,
-            mean_coherence: Some((0.5, 2.0, 98.0)),
+            bin_hz: 2.0,
+            mean_coherence: Some(BandMean {
+                mean: 0.5,
+                bins: 49,
+                bins_total: 50,
+            }),
             coherent_bandwidth_hz: Some(10.0),
         }
     }
@@ -117,7 +136,8 @@ mod tests {
     #[test]
     fn series_cap_the_axis_and_place_reference_lines() {
         let freq: Vec<f64> = (1..=10).map(|i| f64::from(i) * 100.0).collect();
-        let r = result("Roll", freq, vec![0.5; 10]);
+        let mut r = result("Roll", freq, vec![0.5; 10]);
+        r.bin_hz = 100.0;
         let (x_max, series) = axis_series(&r).expect("series");
         assert_eq!(x_max, COHERENCE_PLOT_MAX_HZ);
         assert_eq!(series[0].data.len(), 5);
@@ -128,6 +148,18 @@ mod tests {
         assert_eq!(series[1].data, [(0.0, 0.7), (x_max, 0.7)]);
         assert_eq!(series[2].data, [(0.0, 0.4), (x_max, 0.4)]);
         assert!(series[0].label.contains(&summary_text(&r)));
+    }
+
+    // Spec: bins 2, 4, 8 Hz with 6 Hz omitted (bin spacing 2 Hz) give two curve runs, so no
+    // line crosses the gap; only the first run has a legend label.
+    #[test]
+    fn omitted_bins_split_the_curve() {
+        let r = result("Roll", vec![2.0, 4.0, 8.0], vec![0.9, 0.8, 0.7]);
+        let (_, series) = axis_series(&r).expect("series");
+        assert_eq!(series.len(), 4);
+        assert_eq!(series[0].data, [(2.0, 0.9), (4.0, 0.8)]);
+        assert_eq!(series[1].data, [(8.0, 0.7)]);
+        assert!(!series[0].label.is_empty() && series[1].label.is_empty());
     }
 
     #[test]

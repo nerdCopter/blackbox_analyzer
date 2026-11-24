@@ -843,7 +843,7 @@ pub fn generate_markdown_report(
         writeln!(md)?;
         writeln!(
             md,
-            "Magnitude-squared coherence between setpoint and filtered gyro, 0 (unrelated) to 1 (gyro fully explained by setpoint through a linear system). Welch estimate with {:.1} s segments, {:.0}% overlap and a {} window; the mean is removed first, and bins where setpoint or gyro has no measurable power (the ratio is undefined) are omitted. Coherence below {:.1} means setpoint does not explain gyro at that frequency (noise, nonlinearity or unmeasured disturbance), not a tuning fault by itself. Unrelated signals read about 1 / Segments, so a higher segment count gives a lower floor.",
+            "Magnitude-squared coherence between setpoint and filtered gyro, 0 (unrelated) to 1 (gyro fully explained by setpoint through a linear system). Welch estimate with {:.1} s segments, {:.0}% overlap and a {} window; the mean is removed first, and bins where setpoint or gyro power is below the estimator's numerical guard are omitted, and the mean states how many bins it covers. Coherence below {:.1} means setpoint does not explain gyro at that frequency (noise, nonlinearity or unmeasured disturbance), not a tuning fault by itself. Unrelated signals read about 1 / Segments, so a higher segment count gives a lower floor; the 0.4 level is a fixed reference, not a confidence bound.",
             COHERENCE_SEGMENT_SECONDS,
             COHERENCE_OVERLAP_FRACTION * RATIO_TO_PERCENT,
             COHERENCE_WINDOW_NAME,
@@ -1088,12 +1088,18 @@ mod tests {
     // Spec: the report table carries the shared summary text and the constants-derived Welch note.
     #[test]
     fn report_carries_the_shared_coherence_summary() {
+        use crate::data_analysis::coherence_analysis::BandMean;
         let r = CoherenceResult {
             axis_name: "Roll".to_string(),
             frequency_hz: vec![],
             coherence: vec![],
             segment_count: 40,
-            mean_coherence: Some((0.75, 2.0, 98.0)),
+            bin_hz: 2.0,
+            mean_coherence: Some(BandMean {
+                mean: 0.75,
+                bins: 49,
+                bins_total: 50,
+            }),
             coherent_bandwidth_hz: Some(12.5),
         };
         let mut report = empty_report(Vec::new());
