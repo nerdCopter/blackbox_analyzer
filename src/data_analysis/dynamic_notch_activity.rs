@@ -69,7 +69,7 @@ pub struct DynamicNotchActivity {
 
 /// Why no activity was produced; the text goes to the console as a one-line note.
 pub const SKIP_NOTE_NOT_FFT_FREQ: &str =
-    "Dynamic Notch Activity skipped: debug_mode is not FFT_FREQ, or the firmware (Betaflight 4.2 and older, EmuFlight 0.3.x) logs no notch centre frequencies in it.";
+    "Dynamic Notch Activity skipped: debug_mode is not FFT_FREQ, or the FFT_FREQ layout or firmware version (Betaflight before 4.3, EmuFlight before 0.4) is not supported.";
 pub const SKIP_NOTE_NO_CENTRES: &str =
     "Dynamic Notch Activity skipped: no notch centre frequency above 0 in the FFT_FREQ debug columns.";
 
