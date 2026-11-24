@@ -540,10 +540,13 @@ pub const RPM_HEATMAP_MIN_LINE_POINTS: usize = 5; // A heatmap RPM harmonic run 
 pub const RPM_HEATMAP_LINE_WIDTH: u32 = 2; // Stroke width of the RPM harmonic lines on the throttle-frequency heatmap
 
 // Dynamic Notch Activity plot (notch centre frequency vs time, from debug_mode FFT_FREQ)
-// FFT_FREQ debug layouts, from firmware source. Betaflight 4.5 and older and EmuFlight log the centres
+// FFT_FREQ debug layouts, from firmware source. Betaflight 4.3 to 4.5 and EmuFlight log the centres
 // in debug[0..2] and the pre-notch gyro in debug[3] (EmuFlight: gyroanalyse.c; Betaflight 4.5:
 // dyn_notch_filter.c). Betaflight 4.6+ / 2025.12+ log the pre-notch gyro in debug[0] and the centres in
 // debug[1..3]. Only the gyro_filter_debug_axis axis is logged, one column per notch.
+// Betaflight 4.2 and older (gyroanalyse.c) log the centre of one notch in debug[0] and the dynamic
+// factor in debug[1]; no centre columns follow the layouts above, so the plot needs 4.3+ (dyn_notch_filter.c).
+pub const BF_FFT_FREQ_CENTRES_MIN_VERSION: (u32, u32) = (4, 3);
 pub const DEBUG_MODE_FFT_FREQ_GYRO_FIRST: u32 = 16; // FFT_FREQ number of the 4.6+ layout (FFT_FREQ is 17 in the older layout)
 pub const DYN_NOTCH_ACTIVITY_MAX_NOTCHES: usize = 3; // Centre columns FFT_FREQ carries (debug has 4 columns, one holds the gyro)
 pub const FFT_FREQ_CENTRE_COLUMNS_CENTRES_FIRST: [usize; DYN_NOTCH_ACTIVITY_MAX_NOTCHES] =
