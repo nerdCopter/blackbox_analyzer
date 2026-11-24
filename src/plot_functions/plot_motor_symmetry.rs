@@ -14,19 +14,19 @@ use crate::data_analysis::motor_symmetry::{
 };
 use crate::plot_framework::record_written_this_run;
 
-/// Y-axis range covering every whisker, padded by `MOTOR_SYMMETRY_Y_PADDING_FRACTION` of the
-/// whisker span and at least `MOTOR_SYMMETRY_Y_MIN_SPAN` wide. `None` when `motors` is empty.
+/// Y-axis range covering every whisker and mean marker, padded by `MOTOR_SYMMETRY_Y_PADDING_FRACTION` of the
+/// span and at least `MOTOR_SYMMETRY_Y_MIN_SPAN` wide. `None` when `motors` is empty.
 pub fn y_axis_range(motors: &[MotorCommandStats]) -> Option<(f64, f64)> {
     if motors.is_empty() {
         return None;
     }
     let lo = motors
         .iter()
-        .map(MotorCommandStats::whisker_low)
+        .map(|m| m.whisker_low().min(m.mean))
         .fold(f64::INFINITY, f64::min);
     let hi = motors
         .iter()
-        .map(MotorCommandStats::whisker_high)
+        .map(|m| m.whisker_high().max(m.mean))
         .fold(f64::NEG_INFINITY, f64::max);
     let span = (hi - lo).max(MOTOR_SYMMETRY_Y_MIN_SPAN);
     let center = (hi + lo) / 2.0;
@@ -212,6 +212,16 @@ mod tests {
         assert!(hi - lo >= MOTOR_SYMMETRY_Y_MIN_SPAN);
         assert!(lo < 500.0 && hi > 500.0);
         assert!(y_axis_range(&[]).is_none());
+
+        // Skewed motor: 96 samples at 100 and 4 at 1000 give both whiskers 100 but mean 136.
+        let mut skewed = rows(&[100.0], 96);
+        skewed.extend(rows(&[1000.0], 4));
+        let result = analyze_motor_symmetry(&skewed);
+        let m = &result.motors[0];
+        assert_eq!((m.whisker_low(), m.whisker_high()), (100.0, 100.0));
+        assert!((m.mean - 136.0).abs() < 1e-9);
+        let (lo, hi) = y_axis_range(&result.motors).expect("range");
+        assert!(lo < 100.0 && hi > m.mean);
     }
 
     // Spec: the title carries the shared imbalance text.
