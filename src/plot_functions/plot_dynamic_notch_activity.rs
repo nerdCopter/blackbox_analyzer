@@ -183,6 +183,14 @@ mod tests {
         assert!(s[1].label.is_empty() && s[2].label.is_empty());
     }
 
+    // Runs of one sample are single-point series: the framework draws them as markers.
+    #[test]
+    fn isolated_samples_become_single_point_series() {
+        let a = activity(&[100.0, 0.0, 200.0, 0.0, 300.0], None);
+        let s = build_series(&a);
+        assert!(s.iter().all(|x| x.data.len() == 1 && x.stroke_width > 0));
+    }
+
     #[test]
     fn plot_is_written_for_one_sample_and_not_for_no_segments() {
         let dir = tempfile::tempdir().expect("tempdir");

@@ -23,3 +23,6 @@ rusttype = "0.9"
 [build-dependencies]
 anyhow = "1.0"
 vergen = { version = "8", features = ["git", "gitcl"] }
+
+[dev-dependencies]
+image = { version = "0.24", default-features = false, features = ["png"] }
