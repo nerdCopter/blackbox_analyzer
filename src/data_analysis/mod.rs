@@ -6,6 +6,7 @@ pub mod derivative;
 pub mod fft_utils;
 pub mod filter_delay;
 pub mod filter_response;
+pub mod motor_symmetry;
 pub mod optimal_p_estimation;
 pub mod rate_curve;
 pub mod spectral_analysis;

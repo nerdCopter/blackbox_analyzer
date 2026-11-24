@@ -87,6 +87,7 @@ struct PlotConfig {
     pub pid_activity: bool,
     pub rc_command_activity: bool,
     pub motor_erpm: bool,
+    pub motor_symmetry: bool,
 }
 
 impl Default for PlotConfig {
@@ -110,6 +111,7 @@ impl Default for PlotConfig {
             pid_activity: false,
             rc_command_activity: true,
             motor_erpm: false,
+            motor_symmetry: false,
         }
     }
 }
@@ -134,6 +136,7 @@ impl PlotConfig {
             pid_activity: false,
             rc_command_activity: false,
             motor_erpm: false,
+            motor_symmetry: false,
         }
     }
 
@@ -156,6 +159,7 @@ impl PlotConfig {
             pid_activity: true,
             rc_command_activity: true,
             motor_erpm: true,
+            motor_symmetry: true,
         }
     }
 }
@@ -188,6 +192,9 @@ use crate::constants::{
 };
 
 // Specific plot function imports
+use crate::data_analysis::motor_symmetry::{
+    analyze_motor_symmetry, console_lines as motor_symmetry_console_lines,
+};
 use crate::data_analysis::stick_distribution::analyze_stick_distribution;
 use crate::plot_functions::motor_desync::{detect_motor_desync, fallback_oscillation_overlaps};
 use crate::plot_functions::plot_bode::plot_bode_analysis;
@@ -200,6 +207,7 @@ use crate::plot_functions::plot_motor_erpm::plot_motor_erpm;
 use crate::plot_functions::plot_motor_spectrums::{
     detect_motor_oscillations, plot_motor_spectrums,
 };
+use crate::plot_functions::plot_motor_symmetry::plot_motor_symmetry;
 use crate::plot_functions::plot_pid_activity::plot_pid_activity;
 use crate::plot_functions::plot_pidsum_error_setpoint::plot_pidsum_error_setpoint;
 use crate::plot_functions::plot_psd::plot_psd;
@@ -962,7 +970,11 @@ fn usage_text(program_name: &str) -> String {
     );
     let _ = writeln!(
         out,
-        "                   Motor vs eRPM (requires bidirectional DShot telemetry)."
+        "                   Motor vs eRPM (requires bidirectional DShot telemetry),"
+    );
+    let _ = writeln!(
+        out,
+        "                   Motor Symmetry (per-motor command distribution)."
     );
     let _ = writeln!(out, "  --step           Step response only.");
     let _ = writeln!(
@@ -2431,6 +2443,21 @@ INFO: Skipping Step Response input data filtering for {input_file_str}: {reason}
         plot_motor_erpm(&all_log_data, &root_name_string, &motor_desync_results)?;
     }
 
+    let motor_symmetry_result = if plot_config.motor_symmetry {
+        let result = analyze_motor_symmetry(&all_log_data);
+        let lines = motor_symmetry_console_lines(&result);
+        if !lines.is_empty() {
+            println!("\n--- Motor Command Symmetry ---");
+            for line in &lines {
+                println!("{line}");
+            }
+        }
+        plot_motor_symmetry(&result, &root_name_string)?;
+        result
+    } else {
+        Default::default()
+    };
+
     if plot_config.psd {
         plot_psd(
             &all_log_data,
@@ -2619,6 +2646,14 @@ INFO: Skipping Step Response input data filtering for {input_file_str}: {reason}
             format!("{root_name_string}_Motor_vs_eRPM_stacked.png"),
         );
     }
+    if plot_config.motor_symmetry {
+        push_if_written(
+            &mut png_links,
+            &mut skipped_plots,
+            "Motor Symmetry",
+            format!("{root_name_string}_Motor_Symmetry.png"),
+        );
+    }
     if plot_config.psd {
         push_if_written(
             &mut png_links,
@@ -2698,6 +2733,7 @@ INFO: Skipping Step Response input data filtering for {input_file_str}: {reason}
         motor_desync_results,
         rc_command_steps,
         stick_distribution_results,
+        motor_symmetry: motor_symmetry_result,
         png_links,
         skipped_plots,
         filter_config,

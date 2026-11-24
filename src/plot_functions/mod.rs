@@ -14,6 +14,7 @@ pub mod plot_gyro_spectrums;
 pub mod plot_gyro_vs_unfilt;
 pub mod plot_motor_erpm;
 pub mod plot_motor_spectrums;
+pub mod plot_motor_symmetry;
 pub mod plot_pid_activity;
 pub mod plot_pidsum_error_setpoint;
 pub mod plot_psd;

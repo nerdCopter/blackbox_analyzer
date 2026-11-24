@@ -538,3 +538,27 @@ pub const RPM_HEATMAP_MIN_BIN_SAMPLES: usize = 20; // Throttle bins with fewer e
 pub const RPM_HEATMAP_LINE_COLOR: (u8, u8, u8) = (235, 30, 30); // Red: opposite the viridis heatmap's blue-green-yellow range so the harmonic lines stand out
 pub const RPM_HEATMAP_MIN_LINE_POINTS: usize = 5; // A heatmap RPM harmonic run shorter than this (a stub where the harmonic barely enters the plot) is not drawn or listed
 pub const RPM_HEATMAP_LINE_WIDTH: u32 = 2; // Stroke width of the RPM harmonic lines on the throttle-frequency heatmap
+
+// Motor Command Symmetry (per-motor command distribution, box plot)
+// Box-plot percentiles, whole numbers in percent: whisker low, Q1, median, Q3, whisker high.
+// The value at percentile p of n sorted samples is sorted[(n - 1) * p / 100] (integer division).
+pub const MOTOR_SYMMETRY_PERCENTILES_PCT: [usize; 5] = [5, 25, 50, 75, 95];
+// Positions in MOTOR_SYMMETRY_PERCENTILES_PCT
+pub const MOTOR_SYMMETRY_IDX_WHISKER_LOW: usize = 0;
+pub const MOTOR_SYMMETRY_IDX_Q1: usize = 1;
+pub const MOTOR_SYMMETRY_IDX_MEDIAN: usize = 2;
+pub const MOTOR_SYMMETRY_IDX_Q3: usize = 3;
+pub const MOTOR_SYMMETRY_IDX_WHISKER_HIGH: usize = 4;
+// Y-axis padding above and below the whisker extremes, fraction of the whisker span
+pub const MOTOR_SYMMETRY_Y_PADDING_FRACTION: f64 = 0.1;
+// Minimum Y-axis span (raw command units) so equal-valued motors still draw a readable chart
+pub const MOTOR_SYMMETRY_Y_MIN_SPAN: f64 = 10.0;
+// Box width as a fraction of the slot width reserved for one motor
+pub const MOTOR_SYMMETRY_BOX_WIDTH_FRACTION: f64 = 0.5;
+// Half of one slot width; pads the X range so the first and last box stay inside the chart
+pub const MOTOR_SYMMETRY_SLOT_HALF_WIDTH: f64 = 0.5;
+pub const MOTOR_SYMMETRY_BOX_COLOR: RGBColor = RGBColor(0, 102, 204);
+pub const MOTOR_SYMMETRY_MEDIAN_COLOR: RGBColor = RGBColor(0, 0, 0);
+pub const MOTOR_SYMMETRY_MEAN_COLOR: RGBColor = RGBColor(200, 0, 0);
+pub const MOTOR_SYMMETRY_MEAN_MARKER_SIZE: u32 = 6;
+pub const MOTOR_SYMMETRY_MEDIAN_LINE_WIDTH: u32 = 3;
