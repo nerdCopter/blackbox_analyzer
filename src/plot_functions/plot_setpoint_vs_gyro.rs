@@ -4,22 +4,27 @@ use plotters::style::RGBColor;
 use std::error::Error;
 
 use crate::axis_names::AXIS_NAMES;
+use crate::data_analysis::feedforward::{axis_has_feedforward, ff_equivalent_scale};
+use crate::data_input::pid_metadata::PidMetadata;
 use crate::types::AllAxisPlotData2;
 
 use crate::constants::{
-    COLOR_SETPOINT_VS_GYRO_GYRO, COLOR_SETPOINT_VS_GYRO_SP, LINE_WIDTH_PLOT,
-    UNIFIED_Y_AXIS_HEADROOM_SCALE, UNIFIED_Y_AXIS_MIN_SCALE, UNIFIED_Y_AXIS_PERCENTILE,
+    COLOR_SETPOINT_VS_GYRO_FF, COLOR_SETPOINT_VS_GYRO_GYRO, COLOR_SETPOINT_VS_GYRO_SP,
+    LINE_WIDTH_PLOT, UNIFIED_Y_AXIS_HEADROOM_SCALE, UNIFIED_Y_AXIS_MIN_SCALE,
+    UNIFIED_Y_AXIS_PERCENTILE,
 };
 use crate::data_analysis::filter_delay;
 use crate::data_analysis::filter_delay::DelayAnalysisResult;
 use crate::data_input::log_data::LogRowData;
 use crate::plot_framework::{draw_stacked_plot, PlotSeries};
 
-/// Generates the Stacked Setpoint vs Gyro Plot (Orange, Blue)
+/// Generates the Stacked Setpoint vs Gyro Plot (Orange, Blue). An axis whose log carries
+/// non-zero axisF on Betaflight also gets the P-equivalent feedforward trace (Green), deg/s.
 pub fn plot_setpoint_vs_gyro(
     log_data: &[LogRowData],
     root_name: &str,
     sample_rate: Option<f64>,
+    pid_metadata: &PidMetadata,
 ) -> Result<(), Box<dyn Error>> {
     let output_file_setpoint_gyro = format!("{root_name}_SetpointVsGyro_stacked.png");
     let plot_type_name = "Setpoint/Gyro";
@@ -54,6 +59,23 @@ pub fn plot_setpoint_vs_gyro(
             }
         }
     }
+
+    // Per axis: deg/s per axisF unit, only where the axis has feedforward to show.
+    let ff_scales: Vec<Option<f64>> = (0..AXIS_NAMES.len())
+        .map(|axis_index| {
+            ff_equivalent_scale(pid_metadata, axis_index)
+                .filter(|_| axis_has_feedforward(log_data, axis_index))
+        })
+        .collect();
+    let ff_series_by_axis: Vec<Vec<(f64, f64)>> = (0..AXIS_NAMES.len())
+        .map(|axis_index| match ff_scales[axis_index] {
+            Some(scale) => log_data
+                .iter()
+                .filter_map(|row| Some((row.time_sec?, row.f_term[axis_index]? * scale)))
+                .collect(),
+            None => Vec::new(),
+        })
+        .collect();
 
     let color_sp: RGBColor = *COLOR_SETPOINT_VS_GYRO_SP;
     let color_gyro: RGBColor = *COLOR_SETPOINT_VS_GYRO_GYRO;
@@ -175,6 +197,15 @@ pub fn plot_setpoint_vs_gyro(
                     data: setpoint_series_data,
                     label: "Setpoint".to_string(),
                     color: color_sp,
+                    stroke_width: line_stroke_plot,
+                });
+            }
+
+            if !ff_series_by_axis[axis_index].is_empty() {
+                series.push(PlotSeries {
+                    data: ff_series_by_axis[axis_index].clone(),
+                    label: "Feedforward (axisF, P-equivalent)".to_string(),
+                    color: *COLOR_SETPOINT_VS_GYRO_FF,
                     stroke_width: line_stroke_plot,
                 });
             }

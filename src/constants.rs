@@ -538,3 +538,8 @@ pub const RPM_HEATMAP_MIN_BIN_SAMPLES: usize = 20; // Throttle bins with fewer e
 pub const RPM_HEATMAP_LINE_COLOR: (u8, u8, u8) = (235, 30, 30); // Red: opposite the viridis heatmap's blue-green-yellow range so the harmonic lines stand out
 pub const RPM_HEATMAP_MIN_LINE_POINTS: usize = 5; // A heatmap RPM harmonic run shorter than this (a stub where the harmonic barely enters the plot) is not drawn or listed
 pub const RPM_HEATMAP_LINE_WIDTH: u32 = 2; // Stroke width of the RPM harmonic lines on the throttle-frequency heatmap
+
+// Feedforward overlay (Setpoint vs Gyro plot)
+pub const COLOR_SETPOINT_VS_GYRO_FF: &RGBColor = &GREEN; // Feedforward (axisF) trace on the Setpoint vs Gyro plot
+pub const BETAFLIGHT_PTERM_SCALE: f64 = 0.032029; // Betaflight pid.c PTERM_SCALE: logged axisP = P gain * this * (setpoint - gyro). Verified on real logs: regression slope of axisP on error is within ~3% of header P * this
+pub const FEEDFORWARD_ACTIVE_EPSILON: f64 = 1e-9; // |axisF| above this counts as feedforward active (logged axisF is an integer, so any non-zero value passes)

@@ -14,6 +14,7 @@ use crate::constants::{
     MOTOR_OSCILLATION_SECONDS_TO_MS, MOTOR_OSCILLATION_WINDOW_S, RATIO_TO_PERCENT,
     STICK_DIST_FULL_STICK_RC_COMMAND,
 };
+use crate::data_analysis::feedforward::{feedforward_summary_text, FeedforwardResult};
 use crate::data_analysis::filter_response::{
     rpm_motor_frequency_lines, AllFilterConfigs, DynamicNotchConfig, RpmFilterConfig,
     RpmMotorFrequencies,
@@ -80,6 +81,8 @@ pub struct FlightReport {
     pub motor_desync_results: Vec<MotorDesyncResult>,
     pub rc_command_steps: Vec<RcCommandStepResult>,
     pub stick_distribution_results: Vec<StickDistributionResult>,
+    /// Empty unless the Setpoint vs Gyro plot is enabled and the log carries Betaflight axisF.
+    pub feedforward_results: Vec<FeedforwardResult>,
     pub png_links: Vec<String>,
     /// Human-readable labels of plot types that were enabled but produced no plottable data.
     pub skipped_plots: Vec<String>,
@@ -821,6 +824,29 @@ pub fn generate_markdown_report(
         writeln!(md)?;
     }
 
+    // --- Feedforward ---
+    if !report.feedforward_results.is_empty() {
+        writeln!(md, "## Feedforward")?;
+        writeln!(md)?;
+        writeln!(md, "| Axis | Samples | Summary |")?;
+        writeln!(md, "|------|---------|---------|")?;
+        for r in &report.feedforward_results {
+            writeln!(
+                md,
+                "| {} | {} | {} |",
+                r.axis_name,
+                r.sample_count,
+                feedforward_summary_text(r)
+            )?;
+        }
+        writeln!(md)?;
+        writeln!(
+            md,
+            "Logged axisF and axisP share one unit, and Betaflight computes axisP = P gain * 0.032029 * (setpoint - gyro). FF-equivalent is axisF / (P gain * 0.032029): the error in deg/s that would make P push as hard as feedforward does. FF active is the share of samples with non-zero axisF. FF:error is the RMS FF-equivalent divided by the RMS of (setpoint - gyro) over the same samples. These describe how large the feedforward contribution is next to the tracking error; they do not show what tracking would be with feedforward off. TPA is not applied. Betaflight logs only."
+        )?;
+        writeln!(md)?;
+    }
+
     // --- Generated Plots ---
     if !report.png_links.is_empty() {
         writeln!(md, "## Generated Plots")?;
@@ -965,6 +991,7 @@ mod tests {
             motor_desync_results: Vec::new(),
             rc_command_steps: Vec::new(),
             stick_distribution_results: Vec::new(),
+            feedforward_results: Vec::new(),
             png_links: Vec::new(),
             skipped_plots: Vec::new(),
             filter_config: None,
@@ -1051,5 +1078,41 @@ mod tests {
             text.contains("more P headroom is possible but not quantified"),
             "{text}"
         );
+    }
+
+    // Spec: the report row carries the shared summary text (constant F and error give 100.0%
+    // active, FF-equivalent RMS 1.0 deg/s, error RMS 4.0 deg/s, ratio 0.25).
+    #[test]
+    fn report_carries_the_shared_feedforward_summary() {
+        let result = FeedforwardResult {
+            axis_name: "Roll".to_string(),
+            sample_count: 10,
+            active_pct: 100.0,
+            ff_equivalent_rms: 1.0,
+            error_rms: 4.0,
+        };
+        let mut report = empty_report(Vec::new());
+        report.feedforward_results = vec![result.clone()];
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("report.md");
+        generate_markdown_report(&report, &path).expect("report");
+        let text = fs::read_to_string(&path).expect("read");
+        assert!(text.contains("## Feedforward"), "{text}");
+        assert!(
+            text.contains(&format!(
+                "| Roll | 10 | {} |",
+                feedforward_summary_text(&result)
+            )),
+            "{text}"
+        );
+        assert!(
+            text.contains("FF active 100.0% / FF-equivalent RMS 1.0 deg/s / error RMS 4.0 deg/s / FF:error 0.25"),
+            "{text}"
+        );
+        let empty = empty_report(Vec::new());
+        generate_markdown_report(&empty, &path).expect("report");
+        assert!(!fs::read_to_string(&path)
+            .expect("read")
+            .contains("## Feedforward"));
     }
 }
