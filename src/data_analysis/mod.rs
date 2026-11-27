@@ -3,6 +3,7 @@
 pub mod calc_step_response;
 pub mod d_term_delay;
 pub mod derivative;
+pub mod feedforward;
 pub mod fft_utils;
 pub mod filter_delay;
 pub mod filter_response;

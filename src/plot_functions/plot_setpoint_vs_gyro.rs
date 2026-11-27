@@ -4,22 +4,27 @@ use plotters::style::RGBColor;
 use std::error::Error;
 
 use crate::axis_names::AXIS_NAMES;
+use crate::data_analysis::feedforward::{axis_has_feedforward, ff_equivalent_scale};
+use crate::data_input::pid_metadata::PidMetadata;
 use crate::types::AllAxisPlotData2;
 
 use crate::constants::{
-    COLOR_SETPOINT_VS_GYRO_GYRO, COLOR_SETPOINT_VS_GYRO_SP, LINE_WIDTH_PLOT,
-    UNIFIED_Y_AXIS_HEADROOM_SCALE, UNIFIED_Y_AXIS_MIN_SCALE, UNIFIED_Y_AXIS_PERCENTILE,
+    COLOR_SETPOINT_VS_GYRO_FF, COLOR_SETPOINT_VS_GYRO_GYRO, COLOR_SETPOINT_VS_GYRO_SP,
+    LINE_WIDTH_PLOT, UNIFIED_Y_AXIS_HEADROOM_SCALE, UNIFIED_Y_AXIS_MIN_SCALE,
+    UNIFIED_Y_AXIS_PERCENTILE,
 };
 use crate::data_analysis::filter_delay;
 use crate::data_analysis::filter_delay::DelayAnalysisResult;
 use crate::data_input::log_data::LogRowData;
 use crate::plot_framework::{draw_stacked_plot, PlotSeries};
 
-/// Generates the Stacked Setpoint vs Gyro Plot (Orange, Blue)
+/// Generates the Stacked Setpoint vs Gyro Plot (Orange, Blue). An axis whose log carries
+/// non-zero axisF on Betaflight also gets the P-equivalent feedforward trace (Green), deg/s.
 pub fn plot_setpoint_vs_gyro(
     log_data: &[LogRowData],
     root_name: &str,
     sample_rate: Option<f64>,
+    pid_metadata: &PidMetadata,
 ) -> Result<(), Box<dyn Error>> {
     let output_file_setpoint_gyro = format!("{root_name}_SetpointVsGyro_stacked.png");
     let plot_type_name = "Setpoint/Gyro";
@@ -55,40 +60,28 @@ pub fn plot_setpoint_vs_gyro(
         }
     }
 
+    // Per axis: deg/s per axisF unit, only where the axis has feedforward to show.
+    let ff_scales: Vec<Option<f64>> = (0..AXIS_NAMES.len())
+        .map(|axis_index| {
+            ff_equivalent_scale(pid_metadata, axis_index)
+                .filter(|_| axis_has_feedforward(log_data, axis_index))
+        })
+        .collect();
+    let ff_series_by_axis: Vec<Vec<(f64, f64)>> = (0..AXIS_NAMES.len())
+        .map(|axis_index| match ff_scales[axis_index] {
+            Some(scale) => log_data
+                .iter()
+                .filter_map(|row| Some((row.time_sec?, row.f_term[axis_index]? * scale)))
+                .collect(),
+            None => Vec::new(),
+        })
+        .collect();
+
     let color_sp: RGBColor = *COLOR_SETPOINT_VS_GYRO_SP;
     let color_gyro: RGBColor = *COLOR_SETPOINT_VS_GYRO_GYRO;
     let line_stroke_plot = LINE_WIDTH_PLOT;
 
-    // Collect all absolute values for percentile calculation (issue #125)
-    let mut all_abs_vals = Vec::new();
-
-    #[allow(clippy::needless_range_loop)]
-    for axis_index in 0..AXIS_NAMES.len() {
-        let data = &axis_plot_data[axis_index];
-        for (_, setpoint, gyro_filt) in data {
-            if let Some(s) = setpoint {
-                all_abs_vals.push(s.abs());
-            }
-            if let Some(g) = gyro_filt {
-                all_abs_vals.push(g.abs());
-            }
-        }
-    }
-
-    // Calculate 95th percentile for Y-axis scaling
-    // This provides better visualization by not letting outliers (crashes, hard landings)
-    // compress the normal flight data. Analysis of 148 logs shows P95 is typically
-    // only 27% of absolute max, meaning outliers dominate current scaling.
-    let half_range = if !all_abs_vals.is_empty() {
-        all_abs_vals.sort_by(|a, b| a.total_cmp(b));
-        let p95_idx =
-            ((all_abs_vals.len() - 1) as f64 * UNIFIED_Y_AXIS_PERCENTILE).floor() as usize;
-        let p95_val = all_abs_vals[p95_idx];
-        let scaled_p95 = p95_val * UNIFIED_Y_AXIS_HEADROOM_SCALE;
-        scaled_p95.max(UNIFIED_Y_AXIS_MIN_SCALE)
-    } else {
-        UNIFIED_Y_AXIS_MIN_SCALE
-    };
+    let half_range = unified_half_range(&axis_plot_data, &ff_series_by_axis);
 
     draw_stacked_plot(
         &output_file_setpoint_gyro,
@@ -179,6 +172,15 @@ pub fn plot_setpoint_vs_gyro(
                 });
             }
 
+            if !ff_series_by_axis[axis_index].is_empty() {
+                series.push(PlotSeries {
+                    data: ff_series_by_axis[axis_index].clone(),
+                    label: "Feedforward (axisF, nominal P-equivalent)".to_string(),
+                    color: *COLOR_SETPOINT_VS_GYRO_FF,
+                    stroke_width: line_stroke_plot,
+                });
+            }
+
             Some((
                 { format!("{} Setpoint vs Gyro", AXIS_NAMES[axis_index]) },
                 x_range,
@@ -189,6 +191,68 @@ pub fn plot_setpoint_vs_gyro(
             ))
         },
     )
+}
+
+/// Shared symmetric Y half-range: percentile of the absolute setpoint, gyro and
+/// feedforward values across all axes, so every plotted trace shares one scale.
+fn unified_half_range(
+    axis_plot_data: &AllAxisPlotData2,
+    ff_series_by_axis: &[Vec<(f64, f64)>],
+) -> f64 {
+    let mut all_abs_vals = Vec::new();
+    for data in axis_plot_data.iter() {
+        for (_, setpoint, gyro_filt) in data {
+            all_abs_vals.extend(setpoint.iter().map(|s| s.abs()));
+            all_abs_vals.extend(gyro_filt.iter().map(|g| g.abs()));
+        }
+    }
+    for series in ff_series_by_axis {
+        all_abs_vals.extend(series.iter().map(|(_, ff)| ff.abs()));
+    }
+
+    // The percentile keeps outliers (crashes, hard landings) from compressing normal flight.
+    if all_abs_vals.is_empty() {
+        return UNIFIED_Y_AXIS_MIN_SCALE;
+    }
+    all_abs_vals.sort_by(|a, b| a.total_cmp(b));
+    let p95_idx = ((all_abs_vals.len() - 1) as f64 * UNIFIED_Y_AXIS_PERCENTILE).floor() as usize;
+    (all_abs_vals[p95_idx] * UNIFIED_Y_AXIS_HEADROOM_SCALE).max(UNIFIED_Y_AXIS_MIN_SCALE)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn plot_data(setpoint: f64, gyro: f64, n: usize) -> AllAxisPlotData2 {
+        let mut data: AllAxisPlotData2 = Default::default();
+        for axis in data.iter_mut() {
+            for i in 0..n {
+                axis.push((i as f64, Some(setpoint), Some(gyro)));
+            }
+        }
+        data
+    }
+
+    #[test]
+    fn half_range_without_feedforward_follows_setpoint_and_gyro() {
+        let data = plot_data(-500.0, 400.0, 100);
+        let empty: Vec<Vec<(f64, f64)>> = vec![Vec::new(); AXIS_NAMES.len()];
+        let expected = 500.0 * UNIFIED_Y_AXIS_HEADROOM_SCALE;
+        assert_eq!(unified_half_range(&data, &empty), expected);
+    }
+
+    #[test]
+    fn half_range_covers_feedforward_above_setpoint_and_gyro() {
+        let data = plot_data(300.0, 300.0, 100);
+        let ff: Vec<Vec<(f64, f64)>> = (0..AXIS_NAMES.len())
+            .map(|_| (0..100).map(|i| (i as f64, -1500.0)).collect())
+            .collect();
+        let half = unified_half_range(&data, &ff);
+        assert!(
+            half >= 1500.0,
+            "feedforward trace must lie inside the range"
+        );
+    }
 }
 
 // src/plot_functions/plot_setpoint_vs_gyro.rs

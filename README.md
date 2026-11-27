@@ -169,7 +169,7 @@ per-tier baseline mechanics.
 
 **Core (default):**
 - `*_Step_Response_stacked_plot_*.png` — Step response analysis with P:D recommendations; axes with non-zero parsed F-term samples are titled "Invalid due to Feed-Forward"
-- `*_SetpointVsGyro_stacked.png` — Setpoint vs. filtered gyro comparison
+- `*_SetpointVsGyro_stacked.png` — Setpoint vs. filtered gyro comparison; Betaflight logs with `axisF` add a nominal P-equivalent feedforward trace (deg/s), with per-axis FF figures in the console and report. An axis gets the trace and figures only with a positive header P gain and nonzero feedforward on a row that also has setpoint and gyro data; `axisF` alone does not guarantee output
 - `*_GyroVsUnfilt_stacked.png` — Filtered vs. unfiltered gyro comparison with delay estimates
 - `*_Gyro_Spectrums_comparative.png` — Frequency-domain gyro amplitude spectrums
 - `*_D_Term_Spectrums_comparative.png` — Frequency-domain D-term amplitude spectrums

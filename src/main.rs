@@ -188,6 +188,7 @@ use crate::constants::{
 };
 
 // Specific plot function imports
+use crate::data_analysis::feedforward::{self, analyze_feedforward};
 use crate::data_analysis::stick_distribution::analyze_stick_distribution;
 use crate::plot_functions::motor_desync::{detect_motor_desync, fallback_oscillation_overlaps};
 use crate::plot_functions::plot_bode::plot_bode_analysis;
@@ -2321,7 +2322,24 @@ INFO: Skipping Step Response input data filtering for {input_file_str}: {reason}
     }
 
     if plot_config.setpoint_vs_gyro {
-        plot_setpoint_vs_gyro(&all_log_data, &root_name_string, sample_rate)?;
+        plot_setpoint_vs_gyro(
+            &all_log_data,
+            &root_name_string,
+            sample_rate,
+            &pid_context.pid_metadata,
+        )?;
+    }
+
+    let feedforward_results = if plot_config.setpoint_vs_gyro {
+        analyze_feedforward(&all_log_data, &pid_context.pid_metadata)
+    } else {
+        Vec::new()
+    };
+    if !feedforward_results.is_empty() {
+        println!("\n--- Feedforward (Setpoint vs Gyro overlay) ---");
+        for line in feedforward::console_lines(&feedforward_results) {
+            println!("{line}");
+        }
     }
 
     if plot_config.setpoint_derivative {
@@ -2698,6 +2716,7 @@ INFO: Skipping Step Response input data filtering for {input_file_str}: {reason}
         motor_desync_results,
         rc_command_steps,
         stick_distribution_results,
+        feedforward_results,
         png_links,
         skipped_plots,
         filter_config,
